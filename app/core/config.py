@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     CACHE_HLS: bool = True
     CACHE_PARALLEL_CHUNKS: bool = True
     CACHE_MAX_WORKERS: int = 2
-    CACHE_CHUNK_MB: int = 4
+    CACHE_CHUNK_MB: int = 1
     CACHE_WARM_DELAY_SEC: int = 6
     
     # CHANGED: Replaced ADMIN_EMAIL with ADMIN_PHONE

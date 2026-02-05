@@ -37,12 +37,21 @@ def _is_video_item(item: FileSystemItem) -> bool:
     name = (item.name or "").lower()
     return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg"))
 
+def _align_offset(start: int, align: int = 512) -> tuple[int, int]:
+    if start < 0:
+        start = 0
+    aligned = start - (start % align)
+    skip = start - aligned
+    return aligned, skip
+
+
 async def telegram_stream_generator(
     client: Client,
     chat_id: int | str,
     message_id: int,
     offset: int,
-    limit: int | None = None
+    limit: int | None = None,
+    skip_bytes: int = 0
 ):
     try:
         # Refresh File Reference
@@ -62,9 +71,16 @@ async def telegram_stream_generator(
         if not file_id:
             return
 
+        remaining_skip = skip_bytes
         async for chunk in client.stream_media(file_id, offset=offset, limit=limit or 0):
             if not chunk:
                 break
+            if remaining_skip:
+                if len(chunk) <= remaining_skip:
+                    remaining_skip -= len(chunk)
+                    continue
+                chunk = chunk[remaining_skip:]
+                remaining_skip = 0
             yield chunk
     except Exception as e:
         print(f"Stream Error: {e}")
@@ -222,7 +238,9 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             if chat_id == "me":
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                async for chunk in telegram_stream_generator(client, chat_id, msg_id, start, limit):
+                aligned_offset, skip = _align_offset(start)
+                aligned_limit = (limit + skip) if limit is not None else None
+                async for chunk in telegram_stream_generator(client, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                     if limit is not None:
                         remaining = limit - sent
                         if remaining <= 0:
@@ -235,7 +253,9 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             elif storage_client:
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                async for chunk in telegram_stream_generator(storage_client, chat_id, msg_id, start, limit):
+                aligned_offset, skip = _align_offset(start)
+                aligned_limit = (limit + skip) if limit is not None else None
+                async for chunk in telegram_stream_generator(storage_client, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                     if limit is not None:
                         remaining = limit - sent
                         if remaining <= 0:

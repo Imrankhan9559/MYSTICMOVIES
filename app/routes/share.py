@@ -14,7 +14,7 @@ from beanie.operators import In, Or
 from beanie import PydanticObjectId
 from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress
 from app.core.config import settings
-from app.routes.stream import telegram_stream_generator
+from app.routes.stream import telegram_stream_generator, _align_offset
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id
 from app.core.cache import cache_enabled, file_cache_path, is_file_cached, iter_file_range, touch_path, schedule_cache_warm
 from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media
@@ -509,7 +509,9 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             if chat_id == "me":
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                async for chunk in telegram_stream_generator(client, chat_id, msg_id, start, limit):
+                aligned_offset, skip = _align_offset(start)
+                aligned_limit = (limit + skip) if limit is not None else None
+                async for chunk in telegram_stream_generator(client, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                     if limit is not None:
                         remaining = limit - sent
                         if remaining <= 0:
@@ -522,7 +524,9 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             elif client:
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                async for chunk in telegram_stream_generator(client, chat_id, msg_id, start, limit):
+                aligned_offset, skip = _align_offset(start)
+                aligned_limit = (limit + skip) if limit is not None else None
+                async for chunk in telegram_stream_generator(client, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                     if limit is not None:
                         remaining = limit - sent
                         if remaining <= 0:

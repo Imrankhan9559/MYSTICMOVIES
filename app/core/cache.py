@@ -332,8 +332,17 @@ async def _download_parallel_pyrogram(item, chat_id: int | str, dest_path: Path)
     if workers <= 1:
         return await _download_single_client(usable[0], chat_id, msg_id, dest_path)
 
-    queue: asyncio.Queue[int] = asyncio.Queue()
+    # Probe actual file size using one client to avoid invalid offsets
     size = int(getattr(item, "size", 0) or 0)
+    try:
+        probe_msg = await usable[0].get_messages(chat_id, message_ids=msg_id)
+        probe_size = _extract_file_size(probe_msg)
+        if probe_size:
+            size = probe_size
+    except Exception:
+        pass
+
+    queue: asyncio.Queue[int] = asyncio.Queue()
     if size <= 0:
         return False
 
@@ -396,4 +405,20 @@ def _extract_file_id(msg) -> Optional[str]:
         return msg.audio.file_id
     if getattr(msg, "photo", None):
         return msg.photo.file_id
+    return None
+
+
+def _extract_file_size(msg) -> Optional[int]:
+    if not msg:
+        return None
+    if getattr(msg, "document", None):
+        return getattr(msg.document, "file_size", None)
+    if getattr(msg, "video", None):
+        return getattr(msg.video, "file_size", None)
+    if getattr(msg, "audio", None):
+        return getattr(msg.audio, "file_size", None)
+    if getattr(msg, "photo", None):
+        sizes = getattr(msg.photo, "sizes", None)
+        if sizes:
+            return getattr(sizes[-1], "size", None)
     return None
