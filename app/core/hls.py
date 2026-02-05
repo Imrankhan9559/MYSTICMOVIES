@@ -8,20 +8,12 @@ from typing import Optional
 
 from pyrogram import Client
 
-from app.core.cache import (
-    cache_enabled,
-    file_cache_path,
-    hls_root,
-    is_file_cached,
-    link_or_copy,
-    wait_for_cache,
-)
 from app.core.config import settings
 from app.core.telethon_storage import get_message as tl_get_message, download_media as tl_download_media
 
 logger = logging.getLogger(__name__)
 
-HLS_ROOT = hls_root() if getattr(settings, "CACHE_HLS", True) else Path("app/static/hls")
+HLS_ROOT = Path("app/static/hls")
 HLS_ROOT.mkdir(parents=True, exist_ok=True)
 
 SEGMENT_TIME = 6
@@ -42,8 +34,8 @@ def master_playlist_path(item_id: str) -> Path:
 
 def hls_url_for(item_id: str) -> str:
     if master_playlist_path(item_id).exists():
-        return f"/hls/{item_id}/master.m3u8"
-    return f"/hls/{item_id}/index.m3u8"
+        return f"/static/hls/{item_id}/master.m3u8"
+    return f"/static/hls/{item_id}/index.m3u8"
 
 
 def is_hls_ready(item_id: str) -> bool:
@@ -84,18 +76,6 @@ async def ensure_hls(item, chat_id: str, user_session_string: Optional[str] = No
 
 
 async def _download_source(item, chat_id: str, user_session_string: Optional[str], dest_path: Path) -> None:
-    item_id = str(getattr(item, "id"))
-    size = int(getattr(item, "size", 0) or 0)
-    if cache_enabled() and getattr(settings, "CACHE_HLS", True):
-        cache_path = file_cache_path(item_id)
-        if is_file_cached(item_id, size):
-            link_or_copy(cache_path, dest_path)
-            return
-        await wait_for_cache(item_id, timeout=30)
-        if is_file_cached(item_id, size):
-            link_or_copy(cache_path, dest_path)
-            return
-
     msg_id = item.parts[0].message_id
     if chat_id == "me":
         if not user_session_string:
@@ -116,14 +96,6 @@ async def _download_source(item, chat_id: str, user_session_string: Optional[str
     else:
         msg = await tl_get_message(msg_id)
         await tl_download_media(msg, str(dest_path))
-
-    if cache_enabled() and getattr(settings, "CACHE_HLS", True):
-        cache_path = file_cache_path(item_id)
-        if not is_file_cached(item_id, size):
-            try:
-                link_or_copy(dest_path, cache_path)
-            except Exception:
-                pass
 
 
 async def _run_ffmpeg(cmd: list[str]) -> subprocess.CompletedProcess:

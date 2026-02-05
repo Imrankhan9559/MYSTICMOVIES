@@ -5,7 +5,6 @@ from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.core.cache import init_cache, hls_root
 from app.core.telegram_bot import start_telegram, stop_telegram
 from app.core.telethon_storage import get_client as get_telethon_client, stop_client as stop_telethon_client
 from app.db.models import init_db
@@ -15,7 +14,6 @@ from app.routes import auth, dashboard, stream, admin, share
 async def lifespan(app: FastAPI):
     # Startup: Connect to DB and Start Telegram Client
     await init_db()
-    await init_cache()
     await start_telegram()
     await get_telethon_client()
     yield
@@ -34,10 +32,6 @@ if not os.path.exists(static_dir):
 # Mount Static Files (CSS/JS)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-# Mount HLS cache (separate from /static so it can live on Render Disk)
-hls_dir = hls_root() if getattr(settings, "CACHE_HLS", True) else os.path.join(static_dir, "hls")
-os.makedirs(hls_dir, exist_ok=True)
-app.mount("/hls", StaticFiles(directory=str(hls_dir)), name="hls")
 
 # Fix for annoying 404 Favicon errors in browser console
 @app.get('/favicon.ico', include_in_schema=False)

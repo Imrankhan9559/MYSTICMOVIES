@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     STORAGE_CHANNEL_TITLE: str = ""
     BOT_USERNAME: str = ""
 
-    # Cache / speed settings
-    CACHE_ENABLED: bool = True
+    # Cache / speed settings (disabled by default)
+    CACHE_ENABLED: bool = False
     CACHE_DIR: str = ""
     CACHE_MAX_GB: int = 20
     CACHE_HLS: bool = True

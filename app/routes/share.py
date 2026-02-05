@@ -3,6 +3,7 @@ import re
 import os
 import shutil
 import tempfile
+import logging
 from datetime import datetime
 from typing import List
 from fastapi import APIRouter, Request, HTTPException, Body, Header
@@ -16,7 +17,6 @@ from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgre
 from app.core.config import settings
 from app.routes.stream import telegram_stream_generator, _align_offset
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id
-from app.core.cache import cache_enabled, file_cache_path, is_file_cached, iter_file_range, touch_path, schedule_cache_warm
 from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media
 from app.core.hls import ensure_hls, is_hls_ready, hls_url_for
 from app.utils.file_utils import format_size, get_icon_for_mime
@@ -24,6 +24,7 @@ from app.routes.dashboard import get_current_user
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+logger = logging.getLogger(__name__)
 
 def _natural_key(value: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", value or "")]
@@ -254,6 +255,8 @@ async def public_view(request: Request, token: str):
             raise HTTPException(404, "No items found")
         collection = await SharedCollection.find_one(SharedCollection.token == token)
         ordered_items = _order_items(files, collection.item_ids if collection else None)
+        if not ordered_items:
+            raise HTTPException(404, "No items found")
 
         # Keep bundle in sync for admin reorder (and new episodes)
         if collection:
@@ -281,15 +284,20 @@ async def public_view(request: Request, token: str):
         if episode_override:
             active_item = next((i for i in ordered_items if str(i.id) == episode_override), None)
         if not active_item:
-            active_item = next((i for i in ordered_items if _is_video_item(i)), ordered_items[0])
+            active_item = next((i for i in ordered_items if _is_video_item(i)), ordered_items[0] if ordered_items else None)
+        if not active_item:
+            raise HTTPException(404, "No items found")
 
         active_hls = ""
         if active_item and active_item.is_video:
             storage_chat_id = normalize_chat_id(get_storage_chat_id() or "me")
             if storage_chat_id != "me":
-                await ensure_hls(active_item, storage_chat_id)
-                if is_hls_ready(str(active_item.id)):
-                    active_hls = hls_url_for(str(active_item.id))
+                try:
+                    await ensure_hls(active_item, storage_chat_id)
+                    if is_hls_ready(str(active_item.id)):
+                        active_hls = hls_url_for(str(active_item.id))
+                except Exception as e:
+                    logger.warning(f"HLS prep failed for shared folder item: {e}")
 
         return templates.TemplateResponse("shared_folder.html", {
             "request": request,
@@ -373,15 +381,20 @@ async def public_view(request: Request, token: str):
         if episode_override:
             active_item = next((i for i in ordered_items if str(i.id) == episode_override), None)
         if not active_item:
-            active_item = next((i for i in ordered_items if _is_video_item(i)), ordered_items[0])
+            active_item = next((i for i in ordered_items if _is_video_item(i)), ordered_items[0] if ordered_items else None)
+        if not active_item:
+            raise HTTPException(404, "No items found")
 
         active_hls = ""
         if active_item and active_item.is_video:
             storage_chat_id = normalize_chat_id(get_storage_chat_id() or "me")
             if storage_chat_id != "me":
-                await ensure_hls(active_item, storage_chat_id)
-                if is_hls_ready(str(active_item.id)):
-                    active_hls = hls_url_for(str(active_item.id))
+                try:
+                    await ensure_hls(active_item, storage_chat_id)
+                    if is_hls_ready(str(active_item.id)):
+                        active_hls = hls_url_for(str(active_item.id))
+                except Exception as e:
+                    logger.warning(f"HLS prep failed for shared collection item: {e}")
 
         return templates.TemplateResponse("shared_folder.html", {
             "request": request,
@@ -406,9 +419,12 @@ async def public_view(request: Request, token: str):
         if "video" in (item.mime_type or "") or (item.name or "").lower().endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg")):
             storage_chat_id = normalize_chat_id(get_storage_chat_id() or "me")
             if storage_chat_id != "me":
-                await ensure_hls(item, storage_chat_id)
-                if is_hls_ready(str(item.id)):
-                    active_hls = hls_url_for(str(item.id))
+                try:
+                    await ensure_hls(item, storage_chat_id)
+                    if is_hls_ready(str(item.id)):
+                        active_hls = hls_url_for(str(item.id))
+                except Exception as e:
+                    logger.warning(f"HLS prep failed for shared item: {e}")
         return templates.TemplateResponse("shared.html", {
             "request": request,
             "item": item,
@@ -460,33 +476,6 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             end = file_size - 1 if file_size else 0
 
     disposition = "attachment" if download else "inline"
-
-    if cache_enabled():
-        cache_path = file_cache_path(str(item.id))
-        if is_file_cached(str(item.id), file_size):
-            touch_path(cache_path)
-            headers = {
-                'Content-Disposition': f'{disposition}; filename="{item.name}"',
-                'Accept-Ranges': 'bytes',
-            }
-            if file_size:
-                headers.update({
-                    'Content-Range': f'bytes {start}-{end}/{file_size}',
-                    'Content-Length': str(max((end - start + 1), 0)),
-                })
-            if item.mime_type:
-                headers['Content-Type'] = item.mime_type
-            return StreamingResponse(
-                iter_file_range(cache_path, start, end),
-                status_code=206 if range else 200,
-                headers=headers,
-                media_type=item.mime_type
-            )
-        owner_session = None
-        if chat_id == "me":
-            owner = await User.find_one(User.phone_number == item.owner_phone)
-            owner_session = owner.session_string if owner else None
-        schedule_cache_warm(item, chat_id, owner_session)
 
     use_ephemeral = False
     if chat_id == "me":
