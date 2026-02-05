@@ -73,7 +73,8 @@
                 </div>
                 <div class="p-3 space-y-2">
                     {% for ep in episodes %}
-                        <a href="/s/{{ token }}?e={{ ep.id }}" class="flex items-center gap-3 p-2 rounded-lg transition border {% if ep.id|string == item.id|string %}bg-gray-800 border-red-500{% else %}bg-gray-900 border-gray-800 hover:border-gray-600{% endif %}">
+                        {% set viewer_q = ("&u=" ~ viewer_name) if viewer_name else "" %}
+                        <a href="/s/{{ token }}?e={{ ep.id }}{{ viewer_q }}" class="flex items-center gap-3 p-2 rounded-lg transition border {% if ep.id|string == item.id|string %}bg-gray-800 border-red-500{% else %}bg-gray-900 border-gray-800 hover:border-gray-600{% endif %}">
                             <div class="w-9 h-9 rounded bg-gray-800 flex items-center justify-center">
                                 <i class="fas {{ ep.icon }} text-red-500"></i>
                             </div>
@@ -231,6 +232,8 @@
 const publicApp = document.getElementById("publicApp");
 const token = publicApp.dataset.token;
 const viewerName = publicApp.dataset.username;
+const params = new URLSearchParams(window.location.search);
+const currentEpisode = params.get("e");
 
 const viewerGate = document.getElementById("viewerGate");
 const viewerInput = document.getElementById("viewerInput");
@@ -264,7 +267,8 @@ viewerSubmit?.addEventListener("click", async () => {
     const raw = (viewerInput?.value || "").trim();
     if (!raw) return;
     const resolved = await resolveViewerName(raw);
-    window.location.href = `/s/${token}/u=${encodeURIComponent(resolved)}`;
+    const episodePart = currentEpisode ? `&e=${encodeURIComponent(currentEpisode)}` : "";
+    window.location.href = `/s/${token}?u=${encodeURIComponent(resolved)}${episodePart}`;
 });
 
 const itemId = publicApp.dataset.itemId;

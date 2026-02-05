@@ -57,6 +57,15 @@ def _align_offset(start: int, align: int = 4096) -> tuple[int, int]:
     skip = start - aligned
     return aligned, skip
 
+def _align_range(start: int, length: int, align: int = 4096) -> tuple[int, int, int]:
+    aligned_start, skip = _align_offset(start, align)
+    aligned_length = length + skip
+    if aligned_length % align != 0:
+        aligned_length = ((aligned_length // align) + 1) * align
+    if aligned_length < align:
+        aligned_length = align
+    return aligned_start, aligned_length, skip
+
 
 def _extract_file_id(msg):
     if not msg:
@@ -167,8 +176,11 @@ async def parallel_stream_generator(
                     break
                 offset = aligned_start + idx * chunk_size
                 limit = min(chunk_size, total_aligned - idx * chunk_size)
+                request_limit = limit
+                if request_limit % align != 0:
+                    request_limit = ((request_limit // align) + 1) * align
                 buf = bytearray()
-                async for part in client.stream_media(file_id, offset=offset, limit=limit):
+                async for part in client.stream_media(file_id, offset=offset, limit=request_limit):
                     if not part:
                         break
                     buf.extend(part)
@@ -356,9 +368,17 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
         if from_storage:
             chat_id = normalize_chat_id(get_storage_chat_id())
         try:
-            storage_client = await pick_storage_client(chat_id)
+            if bot_pool:
+                candidate = get_pool_client()
+                if candidate and await ensure_peer_access(candidate, chat_id):
+                    storage_client = candidate
         except Exception:
             storage_client = None
+        if not storage_client:
+            try:
+                storage_client = await pick_storage_client(chat_id)
+            except Exception:
+                storage_client = None
         try:
             parallel_clients = await _get_parallel_clients(chat_id)
         except Exception:
@@ -412,8 +432,7 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             if chat_id == "me":
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                aligned_offset, skip = _align_offset(start)
-                aligned_limit = (limit + skip) if limit is not None else None
+                aligned_offset, aligned_limit, skip = _align_range(start, limit or 0)
                 async for chunk in telegram_stream_generator(client, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                     if limit is not None:
                         remaining = limit - sent
@@ -437,8 +456,7 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
                         resume_start = start + sent
                         if limit is not None and resume_start <= end:
                             remaining_total = end - resume_start + 1
-                            aligned_offset, skip = _align_offset(resume_start)
-                            aligned_limit = remaining_total + skip
+                            aligned_offset, aligned_limit, skip = _align_range(resume_start, remaining_total)
                             sent_fallback = 0
                             async for chunk in telegram_stream_generator(storage_primary, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                                 remaining = remaining_total - sent_fallback
@@ -458,8 +476,7 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
                                     pass
                 else:
                     sent = 0
-                    aligned_offset, skip = _align_offset(start)
-                    aligned_limit = (limit + skip) if limit is not None else None
+                    aligned_offset, aligned_limit, skip = _align_range(start, limit or 0)
                     async for chunk in telegram_stream_generator(storage_primary, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                         if limit is not None:
                             remaining = limit - sent
