@@ -40,7 +40,7 @@
         <div class="player-panel">
             <div class="player-frame">
                 <video id="seriesPlayer" class="player-video" controls autoplay playsinline preload="auto" data-hls="{{ hls_url or '' }}">
-                    <source src="{{ stream_url }}" type="video/mp4">
+                    <source src="{{ stream_url }}" type="{{ active_item.mime_type or 'video/mp4' }}">
                 </video>
                 <div class="skip-zone left" id="skipLeft"></div>
                 <div class="skip-zone right" id="skipRight"></div>
@@ -93,7 +93,7 @@
             <ul id="episodeList" class="episode-list">
                 {% for ep in episodes %}
                     <li class="episode-item {% if ep.id == active_item.id %}is-active{% endif %}"
-                        data-id="{{ ep.id }}" data-url="/s/stream/file/{{ ep.id }}" data-hls="{% if ep.is_video %}/static/hls/{{ ep.id }}/master.m3u8{% endif %}" data-name="{{ ep.name | e }}" data-size="{{ ep.formatted_size }}" data-share="{{ ep.share_token }}" data-index="{{ loop.index }}">
+                        data-id="{{ ep.id }}" data-url="/s/stream/file/{{ ep.id }}" data-hls="{% if ep.is_video %}/static/hls/{{ ep.id }}/index.m3u8{% endif %}" data-name="{{ ep.name | e }}" data-size="{{ ep.formatted_size }}" data-share="{{ ep.share_token }}" data-index="{{ loop.index }}">
                     <div class="episode-index">{{ loop.index }}</div>
                     <div class="episode-info">
                         <div class="episode-name">{{ ep.name }}</div>
@@ -622,6 +622,7 @@ const nowEpisode = document.getElementById("nowEpisode");
 const episodeItems = Array.from(document.querySelectorAll(".episode-item"));
 let currentIndex = episodeItems.findIndex(el => el.dataset.id === appEl.dataset.activeId);
 if (currentIndex === -1) currentIndex = 0;
+window.__hlsSwitchToken = 0;
 
 function resetTrackSelects() {
     if (qualitySelect) {
@@ -810,57 +811,74 @@ async function loadWatched() {
 
 async function setPlayerSource(el) {
     if (!el) return;
-    const hlsUrl = el.dataset.hls || "";
-    const hlsFallback = hlsUrl ? hlsUrl.replace("/master.m3u8", "/index.m3u8") : "";
-    if (hlsUrl) {
-        await fetch(`/s/hls/prepare/${el.dataset.id}`, { method: "POST" });
-        let ready = false;
-        let chosenUrl = hlsUrl;
-        for (let i = 0; i < 6; i++) {
-            try {
-                const res = await fetch(chosenUrl, { method: "HEAD" });
-                if (res.ok) { ready = true; break; }
-            } catch (e) {}
-            await new Promise(r => setTimeout(r, 800));
-        }
-        if (!ready && hlsFallback && hlsFallback !== hlsUrl) {
-            chosenUrl = hlsFallback;
-            for (let i = 0; i < 4; i++) {
-                try {
-                    const res = await fetch(chosenUrl, { method: "HEAD" });
-                    if (res.ok) { ready = true; break; }
-                } catch (e) {}
-                await new Promise(r => setTimeout(r, 800));
-            }
-        }
-        if (ready) {
-            if (window.Hls && Hls.isSupported()) {
-                if (hlsInstance) hlsInstance.destroy();
-                hlsInstance = new Hls({
-                    maxBufferLength: 300,
-                    maxMaxBufferLength: 600,
-                    maxBufferSize: 120 * 1000 * 1000,
-                    backBufferLength: 60
-                });
-                hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-                    setupHlsControls(hlsInstance);
-                });
-                hlsInstance.loadSource(chosenUrl);
-                hlsInstance.attachMedia(player);
-                return;
-            }
-            if (player.canPlayType("application/vnd.apple.mpegurl")) {
-                player.src = chosenUrl;
-                return;
-            }
-        }
-    }
+    const hlsUrl = el.dataset.hls || `/static/hls/${el.dataset.id}/index.m3u8`;
+    const hlsFallback = hlsUrl
+        ? (hlsUrl.includes("/index.m3u8")
+            ? hlsUrl.replace("/index.m3u8", "/master.m3u8")
+            : hlsUrl.replace("/master.m3u8", "/index.m3u8"))
+        : "";
+
+    // Start direct stream immediately
     if (hlsInstance) {
         hlsInstance.destroy();
         hlsInstance = null;
     }
     resetTrackSelects();
     player.src = el.dataset.url;
+
+    // Warm HLS in background and switch when ready
+    const token = ++window.__hlsSwitchToken;
+    fetch(`/s/hls/prepare/${el.dataset.id}`, { method: "POST" });
+    (async () => {
+        let ready = false;
+        let chosenUrl = hlsUrl;
+        for (let i = 0; i < 20; i++) {
+            if (token !== window.__hlsSwitchToken) return;
+            try {
+                const res = await fetch(chosenUrl, { method: "HEAD" });
+                if (res.ok) { ready = true; break; }
+            } catch (e) {}
+            await new Promise(r => setTimeout(r, 2000));
+        }
+        if (!ready && hlsFallback && hlsFallback !== hlsUrl) {
+            chosenUrl = hlsFallback;
+            for (let i = 0; i < 20; i++) {
+                if (token !== window.__hlsSwitchToken) return;
+                try {
+                    const res = await fetch(chosenUrl, { method: "HEAD" });
+                    if (res.ok) { ready = true; break; }
+                } catch (e) {}
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
+        if (!ready || token !== window.__hlsSwitchToken) return;
+
+        const currentTime = player.currentTime || 0;
+        const wasPlaying = !player.paused;
+        if (window.Hls && Hls.isSupported()) {
+            if (hlsInstance) hlsInstance.destroy();
+            hlsInstance = new Hls({
+                maxBufferLength: 300,
+                maxMaxBufferLength: 600,
+                maxBufferSize: 120 * 1000 * 1000,
+                backBufferLength: 60
+            });
+            hlsInstance.startPosition = currentTime;
+            hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+                setupHlsControls(hlsInstance);
+                if (currentTime > 0) player.currentTime = currentTime;
+                if (wasPlaying) player.play();
+            });
+            hlsInstance.loadSource(chosenUrl);
+            hlsInstance.attachMedia(player);
+            return;
+        }
+        if (player.canPlayType("application/vnd.apple.mpegurl")) {
+            player.src = chosenUrl;
+            if (currentTime > 0) player.currentTime = currentTime;
+            if (wasPlaying) player.play();
+        }
+    })();
 }
 
 // Speed control

@@ -38,7 +38,7 @@
             
             {% if "video" in item.mime_type or item.name.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.avi')) %}
                 <video id="publicPlayer" controls autoplay preload="auto" data-hls="{{ hls_url or '' }}" class="w-full max-h-[70vh] outline-none">
-                    <source src="{{ stream_url }}" type="video/mp4">
+                    <source src="{{ stream_url }}" type="{{ item.mime_type or 'video/mp4' }}">
                     Your browser does not support the video tag.
                 </video>
             
@@ -250,6 +250,8 @@ const qualitySelect = document.getElementById("publicQuality");
 const subtitleSelect = document.getElementById("publicSubtitle");
 const audioSelect = document.getElementById("publicAudio");
 
+let hlsInstance = null;
+
 function resetPublicTracks() {
     if (qualitySelect) qualitySelect.innerHTML = `<option value="-1">Quality: Original</option>`;
     if (subtitleSelect) subtitleSelect.innerHTML = `<option value="-1">Subtitles: Off</option>`;
@@ -305,26 +307,67 @@ function setupPublicHlsControls(hls) {
     }
 }
 
-if (player) {
-    const hlsUrl = player.dataset.hls;
-    if (hlsUrl) {
-        fetch(`/s/hls/prepare/${itemId}`, { method: "POST" });
-        if (window.Hls && Hls.isSupported()) {
-            const hls = new Hls({
-                maxBufferLength: 300,
-                maxMaxBufferLength: 600,
-                maxBufferSize: 120 * 1000 * 1000,
-                backBufferLength: 60
-            });
-            hls.on(Hls.Events.MANIFEST_PARSED, () => setupPublicHlsControls(hls));
-            hls.loadSource(hlsUrl);
-            hls.attachMedia(player);
-        } else if (player.canPlayType("application/vnd.apple.mpegurl")) {
-            player.src = hlsUrl;
-        }
-    } else {
-        resetPublicTracks();
+function switchToHls(hlsUrl) {
+    const currentTime = player.currentTime || 0;
+    const wasPlaying = !player.paused;
+    if (window.Hls && Hls.isSupported()) {
+        if (hlsInstance) hlsInstance.destroy();
+        hlsInstance = new Hls({
+            maxBufferLength: 300,
+            maxMaxBufferLength: 600,
+            maxBufferSize: 120 * 1000 * 1000,
+            backBufferLength: 60
+        });
+        hlsInstance.startPosition = currentTime;
+        hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+            setupPublicHlsControls(hlsInstance);
+            if (currentTime > 0) player.currentTime = currentTime;
+            if (wasPlaying) player.play();
+        });
+        hlsInstance.loadSource(hlsUrl);
+        hlsInstance.attachMedia(player);
+    } else if (player.canPlayType("application/vnd.apple.mpegurl")) {
+        player.src = hlsUrl;
+        if (currentTime > 0) player.currentTime = currentTime;
+        if (wasPlaying) player.play();
     }
+}
+
+async function warmHls() {
+    const hlsPrimary = player.dataset.hls || `/static/hls/${itemId}/index.m3u8`;
+    const hlsAlt = hlsPrimary.includes("/index.m3u8")
+        ? hlsPrimary.replace("/index.m3u8", "/master.m3u8")
+        : hlsPrimary.replace("/master.m3u8", "/index.m3u8");
+    await fetch(`/s/hls/prepare/${itemId}`, { method: "POST" });
+
+    let ready = false;
+    let chosen = hlsPrimary;
+    for (let i = 0; i < 20; i++) {
+        try {
+            const res = await fetch(chosen, { method: "HEAD" });
+            if (res.ok) { ready = true; break; }
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 2000));
+    }
+    if (!ready && hlsAlt !== hlsPrimary) {
+        chosen = hlsAlt;
+        for (let i = 0; i < 20; i++) {
+            try {
+                const res = await fetch(chosen, { method: "HEAD" });
+                if (res.ok) { ready = true; break; }
+            } catch (e) {}
+            await new Promise(r => setTimeout(r, 2000));
+        }
+    }
+    if (ready) {
+        switchToHls(chosen);
+    }
+}
+
+if (player) {
+    resetPublicTracks();
+    player.src = "{{ stream_url }}";
+    warmHls();
     document.getElementById("publicSpeed").addEventListener("change", (e) => {
         player.playbackRate = parseFloat(e.target.value);
     });
