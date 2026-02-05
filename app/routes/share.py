@@ -1,10 +1,14 @@
 import uuid
 import re
+import os
+import shutil
+import tempfile
 from datetime import datetime
 from typing import List
 from fastapi import APIRouter, Request, HTTPException, Body, Header
-from fastapi.responses import StreamingResponse, RedirectResponse
+from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, FileResponse
 from fastapi.templating import Jinja2Templates
+from starlette.background import BackgroundTask
 from pyrogram import Client
 from beanie.operators import In, Or
 from beanie import PydanticObjectId
@@ -12,8 +16,8 @@ from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgre
 from app.core.config import settings
 from app.routes.stream import telegram_stream_generator
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id
-from app.core.cache import cache_enabled, file_cache_path, is_file_cached, iter_file_range, touch_path, warm_cache_for_item
-from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download
+from app.core.cache import cache_enabled, file_cache_path, is_file_cached, iter_file_range, touch_path, schedule_cache_warm
+from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media
 from app.core.hls import ensure_hls, is_hls_ready, hls_url_for
 from app.utils.file_utils import format_size, get_icon_for_mime
 from app.routes.dashboard import get_current_user
@@ -65,6 +69,138 @@ async def _collect_folder_files(folder_id: str) -> List[FileSystemItem]:
             items.append(child)
     return items
 
+
+async def _resolve_shared_items(token: str) -> tuple[str | None, List[FileSystemItem]]:
+    folder = await FileSystemItem.find_one(FileSystemItem.share_token == token, FileSystemItem.is_folder == True)
+    if folder:
+        items = await _collect_folder_files(str(folder.id))
+        return "folder", items
+
+    collection = await SharedCollection.find_one(SharedCollection.token == token)
+    if collection:
+        items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(collection.item_ids))).to_list()
+        if any(item.is_folder for item in items):
+            expanded: List[FileSystemItem] = []
+            for item in items:
+                if item.is_folder:
+                    expanded.extend(await _collect_folder_files(str(item.id)))
+                else:
+                    expanded.append(item)
+            items = expanded
+        # Deduplicate while preserving order
+        seen = set()
+        unique_items: List[FileSystemItem] = []
+        for item in items:
+            key = str(item.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_items.append(item)
+        items = unique_items
+        return "collection", items
+
+    item = await FileSystemItem.find_one(FileSystemItem.share_token == token, FileSystemItem.is_folder == False)
+    if item:
+        return "file", [item]
+
+    return None, []
+
+
+async def _download_item_recursive_public(item: FileSystemItem, base_path: str):
+    try:
+        if item.is_folder:
+            new_folder_path = os.path.join(base_path, item.name)
+            os.makedirs(new_folder_path, exist_ok=True)
+            children = await FileSystemItem.find(FileSystemItem.parent_id == str(item.id)).to_list()
+            for child in children:
+                await _download_item_recursive_public(child, new_folder_path)
+            return
+
+        if not item.parts:
+            return
+
+        if item.parts and item.parts[0].chat_id:
+            chat_id = item.parts[0].chat_id
+        else:
+            chat_id = get_storage_chat_id() or "me"
+        chat_id = normalize_chat_id(chat_id)
+
+        if chat_id == "me":
+            owner = await User.find_one(User.phone_number == item.owner_phone)
+            if not owner or not owner.session_string:
+                return
+            async with Client(
+                "pub_downloader",
+                api_id=settings.API_ID,
+                api_hash=settings.API_HASH,
+                session_string=owner.session_string,
+                in_memory=True
+            ) as app:
+                msg = await app.get_messages("me", message_ids=item.parts[0].message_id)
+                file_id = None
+                if msg.document:
+                    file_id = msg.document.file_id
+                elif msg.video:
+                    file_id = msg.video.file_id
+                elif msg.audio:
+                    file_id = msg.audio.file_id
+                elif msg.photo:
+                    file_id = msg.photo.file_id
+                if file_id:
+                    await app.download_media(file_id, file_name=os.path.join(base_path, item.name))
+            return
+
+        if chat_id == "me":
+            return
+        msg = await tl_get_message(item.parts[0].message_id)
+        await tl_download_media(msg, os.path.join(base_path, item.name))
+    except Exception:
+        return
+
+
+def _build_bulk_download_page(base_url: str, items: List[FileSystemItem]) -> str:
+    links = [f"{base_url}/d/file/{item.id}" for item in items]
+    links_html = "\n".join([f'<li><a href="{url}" target="_blank" rel="noopener">{url}</a></li>' for url in links])
+    links_js = ",\n".join([f'"{url}"' for url in links])
+
+    return f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Preparing Downloads</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; padding: 24px; background: #0f172a; color: #e2e8f0; }}
+    h2 {{ margin-bottom: 8px; }}
+    p {{ margin-top: 0; color: #94a3b8; }}
+    ul {{ margin-top: 12px; }}
+    a {{ color: #38bdf8; }}
+  </style>
+</head>
+<body>
+  <h2>Starting your downloads…</h2>
+  <p>If your browser blocks multiple downloads, use the links below.</p>
+  <ul>{links_html}</ul>
+  <script>
+    const links = [{links_js}];
+    let idx = 0;
+    function triggerNext() {{
+      if (idx >= links.length) return;
+      const a = document.createElement('a');
+      a.href = links[idx];
+      a.download = '';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      idx += 1;
+      setTimeout(triggerNext, 700);
+    }}
+    triggerNext();
+  </script>
+</body>
+</html>
+"""
+
 @router.post("/share/bundle")
 async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
     user = await get_current_user(request)
@@ -96,7 +232,12 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
     bundle = SharedCollection(token=token, item_ids=sorted_ids, owner_phone=user.phone_number, name=f"Shared by {user.first_name or 'User'}")
     await bundle.insert()
     base_url = str(request.base_url).rstrip("/")
-    return {"link": f"{base_url}/s/{token}"}
+    links = {
+        "view": f"{base_url}/s/{token}",
+        "download": f"{base_url}/d/{token}",
+        "telegram": f"{base_url}/t/{token}",
+    }
+    return {"code": token, "links": links, "link": links["view"]}
 
 @router.get("/s/{token}")
 async def public_view(request: Request, token: str):
@@ -287,7 +428,7 @@ async def public_view_with_user(token: str, username: str):
     return RedirectResponse(url=f"/s/{token}?u={username}")
 
 @router.get("/s/stream/file/{item_id}")
-async def public_stream_by_id(item_id: str, request: Request, range: str = Header(None)):
+async def public_stream_by_id(item_id: str, request: Request, range: str = Header(None), download: bool = False):
     item = await FileSystemItem.get(item_id)
     if not item: raise HTTPException(404)
     if item.parts and item.parts[0].chat_id:
@@ -318,12 +459,14 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             start = 0
             end = file_size - 1 if file_size else 0
 
+    disposition = "attachment" if download else "inline"
+
     if cache_enabled():
         cache_path = file_cache_path(str(item.id))
         if is_file_cached(str(item.id), file_size):
             touch_path(cache_path)
             headers = {
-                'Content-Disposition': f'inline; filename="{item.name}"',
+                'Content-Disposition': f'{disposition}; filename="{item.name}"',
                 'Accept-Ranges': 'bytes',
             }
             if file_size:
@@ -343,7 +486,7 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
         if chat_id == "me":
             owner = await User.find_one(User.phone_number == item.owner_phone)
             owner_session = owner.session_string if owner else None
-        await warm_cache_for_item(item, chat_id, owner_session)
+        schedule_cache_warm(item, chat_id, owner_session)
 
     use_ephemeral = False
     if chat_id == "me":
@@ -366,7 +509,7 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             if chat_id == "me":
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                async for chunk in telegram_stream_generator(client, chat_id, msg_id, start):
+                async for chunk in telegram_stream_generator(client, chat_id, msg_id, start, limit):
                     if limit is not None:
                         remaining = limit - sent
                         if remaining <= 0:
@@ -379,7 +522,7 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             elif client:
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                async for chunk in telegram_stream_generator(client, chat_id, msg_id, start):
+                async for chunk in telegram_stream_generator(client, chat_id, msg_id, start, limit):
                     if limit is not None:
                         remaining = limit - sent
                         if remaining <= 0:
@@ -399,7 +542,7 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
                 await client.disconnect()
 
     headers = {
-        'Content-Disposition': f'inline; filename="{item.name}"',
+        'Content-Disposition': f'{disposition}; filename="{item.name}"',
         'Accept-Ranges': 'bytes',
     }
     if file_size:
@@ -429,6 +572,76 @@ async def public_stream_token(request: Request, token: str, range: str = Header(
     item = await FileSystemItem.find_one(FileSystemItem.share_token == token)
     if not item: raise HTTPException(404)
     return await public_stream_by_id(str(item.id), request, range)
+
+
+@router.get("/d/file/{item_id}")
+async def public_download_by_id(item_id: str, request: Request, range: str = Header(None)):
+    return await public_stream_by_id(item_id, request, range, download=True)
+
+
+@router.get("/d/{token}")
+async def public_download_token(request: Request, token: str, range: str = Header(None)):
+    kind, items = await _resolve_shared_items(token)
+    if not kind or not items:
+        raise HTTPException(404)
+
+    if kind == "file":
+        return await public_stream_by_id(str(items[0].id), request, range, download=True)
+
+    video_items = [i for i in items if _is_video_item(i)]
+    if not video_items:
+        raise HTTPException(404, "No video files found.")
+
+    video_items = sorted(video_items, key=lambda i: _natural_key(i.name))
+
+    if len(video_items) > 30:
+        temp_dir = tempfile.mkdtemp()
+        zip_filename = f"Mystic_Bundle_{uuid.uuid4().hex[:6]}.zip"
+        zip_path = os.path.join(tempfile.gettempdir(), zip_filename)
+        try:
+            for item in video_items:
+                await _download_item_recursive_public(item, temp_dir)
+            shutil.make_archive(zip_path.replace(".zip", ""), "zip", temp_dir)
+            shutil.rmtree(temp_dir)
+            return FileResponse(
+                zip_path,
+                filename=zip_filename,
+                background=BackgroundTask(lambda: os.remove(zip_path))
+            )
+        except Exception:
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir)
+            raise HTTPException(500, "Download failed.")
+
+    base_url = str(request.base_url).rstrip("/")
+    html = _build_bulk_download_page(base_url, video_items)
+    return HTMLResponse(html)
+
+
+@router.get("/t/{token}")
+async def telegram_redirect(token: str):
+    kind, items = await _resolve_shared_items(token)
+    if not kind:
+        raise HTTPException(404)
+    bot_username = (getattr(settings, "BOT_USERNAME", "") or "").lstrip("@")
+    if not bot_username:
+        return HTMLResponse("Bot username is not configured.", status_code=400)
+    tg_url = f"https://t.me/{bot_username}?start=share_{token}"
+    html = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="refresh" content="0; url={tg_url}" />
+  <title>Redirecting…</title>
+</head>
+<body>
+  <p>Redirecting to Telegram…</p>
+  <script>window.location.href = "{tg_url}";</script>
+</body>
+</html>
+"""
+    return HTMLResponse(html)
 
 @router.post("/s/hls/prepare/{item_id}")
 async def prepare_public_hls(item_id: str):

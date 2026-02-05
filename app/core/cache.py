@@ -29,17 +29,17 @@ def _cache_max_bytes() -> int:
 
 def _chunk_bytes() -> int:
     try:
-        mb = int(getattr(settings, "CACHE_CHUNK_MB", 8))
+        mb = int(getattr(settings, "CACHE_CHUNK_MB", 4))
         return max(1, mb) * 1024 * 1024
     except Exception:
-        return 8 * 1024 * 1024
+        return 4 * 1024 * 1024
 
 
 def _max_workers() -> int:
     try:
-        return max(1, int(getattr(settings, "CACHE_MAX_WORKERS", 4)))
+        return max(1, int(getattr(settings, "CACHE_MAX_WORKERS", 2)))
     except Exception:
-        return 4
+        return 2
 
 
 def get_cache_root() -> Path:
@@ -208,6 +208,29 @@ async def warm_cache_for_item(item, chat_id: int | str, user_session_string: Opt
         _cache_tasks[item_id] = asyncio.create_task(
             _download_full_file(item, chat_id, user_session_string)
         )
+
+
+def schedule_cache_warm(
+    item,
+    chat_id: int | str,
+    user_session_string: Optional[str] = None,
+    delay_seconds: float | None = None
+) -> None:
+    if not cache_enabled():
+        return
+
+    async def _delayed():
+        try:
+            delay = delay_seconds
+            if delay is None:
+                delay = float(getattr(settings, "CACHE_WARM_DELAY_SEC", 6) or 0)
+            if delay and delay > 0:
+                await asyncio.sleep(delay)
+        except Exception:
+            pass
+        await warm_cache_for_item(item, chat_id, user_session_string)
+
+    asyncio.create_task(_delayed())
 
 
 async def _download_full_file(item, chat_id: int | str, user_session_string: Optional[str]) -> None:

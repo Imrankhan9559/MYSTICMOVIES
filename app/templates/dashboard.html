@@ -153,7 +153,46 @@
     </div>
 </div>
 
-<div id="shareModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm"><div class="bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-600 shadow-2xl"><h3 class="text-white text-xl font-bold mb-4 flex items-center"><i class="fas fa-share-alt text-blue-500 mr-2"></i> Share Link</h3><input type="text" id="shareInput" readonly class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-green-400 text-sm font-mono mb-6"><div class="flex justify-end space-x-3"><button onclick="document.getElementById('shareModal').classList.add('hidden')" class="text-gray-400 font-bold text-sm">Close</button><button onclick="copyLink()" class="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold">Copy</button></div></div></div>
+<div id="shareModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm">
+  <div class="bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-600 shadow-2xl">
+    <h3 class="text-white text-xl font-bold mb-4 flex items-center">
+      <i class="fas fa-share-alt text-blue-500 mr-2"></i> Share
+    </h3>
+    <div class="space-y-4">
+      <div>
+        <label class="text-xs uppercase text-gray-400 font-bold">Code</label>
+        <div class="flex space-x-2 mt-2">
+          <input type="text" id="shareCode" readonly class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-green-400 text-sm font-mono">
+          <button onclick="copyField('shareCode')" class="bg-blue-600 text-white px-3 rounded-lg font-bold text-sm">Copy</button>
+        </div>
+      </div>
+      <div>
+        <label class="text-xs uppercase text-gray-400 font-bold">View Link</label>
+        <div class="flex space-x-2 mt-2">
+          <input type="text" id="shareViewLink" readonly class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm font-mono text-gray-200">
+          <button onclick="copyField('shareViewLink')" class="bg-blue-600 text-white px-3 rounded-lg font-bold text-sm">Copy</button>
+        </div>
+      </div>
+      <div>
+        <label class="text-xs uppercase text-gray-400 font-bold">Download Link</label>
+        <div class="flex space-x-2 mt-2">
+          <input type="text" id="shareDownloadLink" readonly class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm font-mono text-gray-200">
+          <button onclick="copyField('shareDownloadLink')" class="bg-blue-600 text-white px-3 rounded-lg font-bold text-sm">Copy</button>
+        </div>
+      </div>
+      <div>
+        <label class="text-xs uppercase text-gray-400 font-bold">Telegram Link</label>
+        <div class="flex space-x-2 mt-2">
+          <input type="text" id="shareTelegramLink" readonly class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm font-mono text-gray-200">
+          <button onclick="copyField('shareTelegramLink')" class="bg-blue-600 text-white px-3 rounded-lg font-bold text-sm">Copy</button>
+        </div>
+      </div>
+    </div>
+    <div class="flex justify-end space-x-3 mt-6">
+      <button onclick="document.getElementById('shareModal').classList.add('hidden')" class="text-gray-400 font-bold text-sm">Close</button>
+    </div>
+  </div>
+</div>
 <div id="collabModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm"><div class="bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-600 shadow-2xl"><h3 class="text-white text-xl font-bold mb-1 flex items-center"><i class="fas fa-users-cog text-purple-500 mr-2"></i> Manage Team</h3><p class="text-gray-500 text-xs mb-6">Folder: <span id="collabFolderName" class="text-white font-bold"></span></p><input type="hidden" id="collabFolderId"><div class="mb-6"><div class="text-xs uppercase text-gray-500 font-bold mb-2">Current Members</div><div id="teamList" class="max-h-32 overflow-y-auto bg-gray-900 rounded-lg border border-gray-700 p-2 space-y-2"></div></div><div class="border-t border-gray-700 pt-4"><label class="block text-gray-500 text-xs uppercase font-bold mb-2">Add New Member</label><div class="flex space-x-2"><input type="text" id="collabPhone" placeholder="+91..." class="flex-grow bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none"><button onclick="submitCollab()" class="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg font-bold text-sm">Add</button></div></div><div class="flex justify-end mt-6"><button onclick="document.getElementById('collabModal').classList.add('hidden')" class="text-gray-400 font-bold text-sm">Done</button></div></div></div>
 
 <div id="renameModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm">
@@ -278,9 +317,19 @@ async function downloadSelectedZip() {
 }
 
 async function deleteSelected() { if (selectedIds.size === 0) return alert("Select items first"); if (!confirm("Are you sure?")) return; try { const res = await fetch('/delete/bundle', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Array.from(selectedIds)) }); if((await res.json()).status === 'success') window.location.reload(); else alert("Error"); } catch(e) { alert("Network Error"); } }
-async function shareSelected() { if(selectedIds.size===0) return alert("Select items"); const res = await fetch('/share/bundle', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Array.from(selectedIds)) }); const data = await res.json(); if(data.link) { document.getElementById('shareInput').value = data.link; document.getElementById('shareModal').classList.remove('hidden'); toggleSelectMode(); } else if (data.error) { alert(data.error); } }
-async function shareFile(itemId) { const res = await fetch(`/share/${itemId}`, { method: 'POST' }); const data = await res.json(); if(data.link) { document.getElementById('shareInput').value = data.link; document.getElementById('shareModal').classList.remove('hidden'); } else if (data.error) { alert(data.error); } }
-function copyLink() { document.getElementById("shareInput").select(); document.execCommand("copy"); alert("Copied!"); document.getElementById('shareModal').classList.add('hidden'); }
+function openShareModal(data) {
+    const code = data.code || (data.link ? data.link.split('/').pop() : '');
+    const links = data.links || {};
+    const base = window.location.origin;
+    document.getElementById('shareCode').value = code || '';
+    document.getElementById('shareViewLink').value = links.view || data.link || '';
+    document.getElementById('shareDownloadLink').value = links.download || (code ? `${base}/d/${code}` : '');
+    document.getElementById('shareTelegramLink').value = links.telegram || (code ? `${base}/t/${code}` : '');
+    document.getElementById('shareModal').classList.remove('hidden');
+}
+function copyField(id) { const el = document.getElementById(id); el.select(); document.execCommand("copy"); }
+async function shareSelected() { if(selectedIds.size===0) return alert("Select items"); const res = await fetch('/share/bundle', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Array.from(selectedIds)) }); const data = await res.json(); if(data.link || data.code) { openShareModal(data); toggleSelectMode(); } else if (data.error) { alert(data.error); } }
+async function shareFile(itemId) { const res = await fetch(`/share/${itemId}`, { method: 'POST' }); const data = await res.json(); if(data.link || data.code) { openShareModal(data); } else if (data.error) { alert(data.error); } }
 async function openCollabModal(id, name) { document.getElementById('collabFolderId').value = id; document.getElementById('collabFolderName').innerText = name; document.getElementById('collabModal').classList.remove('hidden'); await loadTeam(id); }
 async function loadTeam(folderId) { const listDiv = document.getElementById('teamList'); listDiv.innerHTML = '<div class="text-center text-gray-500 text-xs">Loading...</div>'; const res = await fetch(`/folder/team/${folderId}`); const data = await res.json(); if (data.collaborators.length === 0) listDiv.innerHTML = '<div class="text-center text-gray-500 text-xs">No members.</div>'; else { listDiv.innerHTML = ''; data.collaborators.forEach(phone => { listDiv.innerHTML += `<div class="flex justify-between items-center bg-gray-800 p-2 rounded border border-gray-700"><span class="text-gray-300 text-xs font-mono"><i class="fas fa-user mr-2 text-purple-500"></i>${phone}</span><button onclick="removeUser('${phone}')" class="text-red-500 hover:text-red-400 text-xs px-2"><i class="fas fa-times"></i></button></div>`; }); } }
 async function submitCollab() { const id = document.getElementById('collabFolderId').value; const phone = document.getElementById('collabPhone').value; if(!phone) return alert("Enter phone"); const formData = new FormData(); formData.append('folder_id', id); formData.append('phone', phone); const res = await fetch('/folder/add_collaborator', { method: 'POST', body: formData }); if((await res.json()).status === 'success') { document.getElementById('collabPhone').value = ''; await loadTeam(id); } else alert("Error"); }

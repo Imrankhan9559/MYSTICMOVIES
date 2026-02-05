@@ -7,7 +7,7 @@ from pyrogram import Client
 from app.db.models import FileSystemItem, User, PlaybackProgress
 from app.core.config import settings
 from app.core.telegram_bot import tg_client, get_pool_client, ensure_peer_access, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id
-from app.core.cache import cache_enabled, file_cache_path, is_file_cached, iter_file_range, touch_path, warm_cache_for_item
+from app.core.cache import cache_enabled, file_cache_path, is_file_cached, iter_file_range, touch_path, schedule_cache_warm
 from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download
 from app.core.hls import ensure_hls, is_hls_ready, hls_url_for
 
@@ -37,25 +37,38 @@ def _is_video_item(item: FileSystemItem) -> bool:
     name = (item.name or "").lower()
     return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg"))
 
-async def telegram_stream_generator(client: Client, chat_id: int | str, message_id: int, offset: int):
+async def telegram_stream_generator(
+    client: Client,
+    chat_id: int | str,
+    message_id: int,
+    offset: int,
+    limit: int | None = None
+):
     try:
         # Refresh File Reference
         if not await ensure_peer_access(client, chat_id):
-            raise Exception(f"Peer access failed for {chat_id}")
+            return
         msg = await client.get_messages(chat_id, message_ids=message_id)
-        
-        file_id = None
-        if msg.document: file_id = msg.document.file_id
-        elif msg.video: file_id = msg.video.file_id
-        elif msg.audio: file_id = msg.audio.file_id
-        elif msg.photo: file_id = msg.photo.file_id
-        else: yield b""; return
 
-        async for chunk in client.stream_media(file_id, offset=offset, limit=0):
+        file_id = None
+        if msg.document:
+            file_id = msg.document.file_id
+        elif msg.video:
+            file_id = msg.video.file_id
+        elif msg.audio:
+            file_id = msg.audio.file_id
+        elif msg.photo:
+            file_id = msg.photo.file_id
+        if not file_id:
+            return
+
+        async for chunk in client.stream_media(file_id, offset=offset, limit=limit or 0):
+            if not chunk:
+                break
             yield chunk
     except Exception as e:
         print(f"Stream Error: {e}")
-        yield b""
+        return
 
 @router.get("/player/{item_id}", response_class=HTMLResponse)
 async def player_page(request: Request, item_id: str):
@@ -182,7 +195,7 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
                 headers=headers,
                 media_type=item.mime_type
             )
-        await warm_cache_for_item(
+        schedule_cache_warm(
             item,
             chat_id,
             user.session_string if chat_id == "me" else None
@@ -209,7 +222,7 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             if chat_id == "me":
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                async for chunk in telegram_stream_generator(client, chat_id, msg_id, start):
+                async for chunk in telegram_stream_generator(client, chat_id, msg_id, start, limit):
                     if limit is not None:
                         remaining = limit - sent
                         if remaining <= 0:
@@ -222,7 +235,7 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             elif storage_client:
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                async for chunk in telegram_stream_generator(storage_client, chat_id, msg_id, start):
+                async for chunk in telegram_stream_generator(storage_client, chat_id, msg_id, start, limit):
                     if limit is not None:
                         remaining = limit - sent
                         if remaining <= 0:

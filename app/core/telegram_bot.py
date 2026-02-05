@@ -9,7 +9,9 @@ from itertools import cycle
 from pyrogram import Client, filters
 from pyrogram.handlers import MessageHandler
 from app.core.config import settings
-from app.db.models import FileSystemItem, FilePart, User
+from app.db.models import FileSystemItem, FilePart, User, SharedCollection
+from beanie import PydanticObjectId
+from beanie.operators import In
 from app.core.telethon_storage import check_storage_access as tl_check_storage, get_message as tl_get_message, forward_message_to as tl_forward_to_user, send_file as tl_send_file, send_text as tl_send_text
 
 # Configure Logging
@@ -83,6 +85,68 @@ def normalize_chat_id(chat_id: int | str) -> int | str:
             return raw
         return f"@{raw}"
     return chat_id
+
+
+def _cast_ids(raw_ids: list[str]) -> list:
+    casted = []
+    for value in raw_ids or []:
+        try:
+            casted.append(PydanticObjectId(str(value)))
+        except Exception:
+            pass
+    return casted or (raw_ids or [])
+
+
+def _is_video_item(item: FileSystemItem) -> bool:
+    name = (item.name or "").lower()
+    return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi"))
+
+
+async def _collect_folder_files(folder_id: str) -> list[FileSystemItem]:
+    items: list[FileSystemItem] = []
+    children = await FileSystemItem.find(FileSystemItem.parent_id == str(folder_id)).to_list()
+    for child in children:
+        if child.is_folder:
+            items.extend(await _collect_folder_files(str(child.id)))
+        else:
+            items.append(child)
+    return items
+
+
+async def _resolve_shared_items(token: str) -> list[FileSystemItem]:
+    folder = await FileSystemItem.find_one(FileSystemItem.share_token == token, FileSystemItem.is_folder == True)
+    if folder:
+        items = await _collect_folder_files(str(folder.id))
+        return items
+
+    collection = await SharedCollection.find_one(SharedCollection.token == token)
+    if collection:
+        items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(collection.item_ids))).to_list()
+        if any(item.is_folder for item in items):
+            expanded: list[FileSystemItem] = []
+            for item in items:
+                if item.is_folder:
+                    expanded.extend(await _collect_folder_files(str(item.id)))
+                else:
+                    expanded.append(item)
+            items = expanded
+        # Deduplicate while preserving order
+        seen = set()
+        unique_items: list[FileSystemItem] = []
+        for item in items:
+            key = str(item.id)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_items.append(item)
+        items = unique_items
+        return items
+
+    item = await FileSystemItem.find_one(FileSystemItem.share_token == token, FileSystemItem.is_folder == False)
+    if item:
+        return [item]
+
+    return []
 
 def get_storage_chat_id() -> int | str:
     global _storage_chat_id_override
@@ -440,18 +504,35 @@ async def handle_start_command(client: Client, message):
         payload = parts[1]
         if payload.startswith("share_"):
             token = payload.replace("share_", "", 1)
-            item = await FileSystemItem.find_one(FileSystemItem.share_token == token)
-            if not item or not item.parts:
+            items = await _resolve_shared_items(token)
+            if not items:
                 await client.send_message(message.chat.id, "File not found or expired.")
                 return
-            chat_id = (item.parts[0].chat_id if item.parts else None) or get_storage_chat_id() or "me"
-            chat_id = normalize_chat_id(chat_id)
-            if chat_id == "me":
-                await client.forward_messages(message.chat.id, "me", item.parts[0].message_id)
-            else:
+
+            items = [i for i in items if _is_video_item(i)]
+            if not items:
+                await client.send_message(message.chat.id, "No video files found.")
+                return
+
+            unavailable = 0
+            sent = 0
+            for item in items:
+                if not item.parts:
+                    continue
+                chat_id = (item.parts[0].chat_id if item.parts else None) or get_storage_chat_id() or "me"
+                chat_id = normalize_chat_id(chat_id)
+                if chat_id == "me":
+                    unavailable += 1
+                    continue
                 msg = await tl_get_message(item.parts[0].message_id)
                 await tl_forward_to_user(message.chat.id, msg)
-            await client.send_message(message.chat.id, "Here is your file.")
+                sent += 1
+                await asyncio.sleep(0.35)
+
+            if sent:
+                await client.send_message(message.chat.id, f"Sent {sent} file(s).")
+            if unavailable:
+                await client.send_message(message.chat.id, "Some files were not available from storage.")
     except Exception as e:
         logger.error(f"Start command failed: {e}")
 
@@ -524,44 +605,65 @@ async def _handle_bot_api_message(message: dict):
                 payload = parts[1].strip()
                 if payload.startswith("share_"):
                     token = payload.replace("share_", "", 1)
-                    item = await FileSystemItem.find_one(FileSystemItem.share_token == token)
-                    if not item or not item.parts:
+                    items = await _resolve_shared_items(token)
+                    if not items:
                         await _bot_api_call(
                             settings.BOT_TOKEN,
                             "sendMessage",
                             {"chat_id": chat_id, "text": "File not found or expired."}
                         )
                         return
-                    part = item.parts[0]
-                    source_chat = part.chat_id or normalize_chat_id(get_storage_chat_id())
-                    if not source_chat or source_chat == "me":
+
+                    items = [i for i in items if _is_video_item(i)]
+                    if not items:
                         await _bot_api_call(
                             settings.BOT_TOKEN,
                             "sendMessage",
-                            {"chat_id": chat_id, "text": "File is not available from storage."}
+                            {"chat_id": chat_id, "text": "No video files found."}
                         )
                         return
-                    copy_resp = await _bot_api_call(
-                        settings.BOT_TOKEN,
-                        "copyMessage",
-                        {
-                            "chat_id": chat_id,
-                            "from_chat_id": source_chat,
-                            "message_id": part.message_id
-                        }
-                    )
-                    if not copy_resp.get("ok"):
+
+                    sent = 0
+                    unavailable = 0
+                    for item in items:
+                        if not item.parts:
+                            continue
+                        part = item.parts[0]
+                        source_chat = part.chat_id or normalize_chat_id(get_storage_chat_id())
+                        if not source_chat or source_chat == "me":
+                            unavailable += 1
+                            continue
+                        copy_resp = await _bot_api_call(
+                            settings.BOT_TOKEN,
+                            "copyMessage",
+                            {
+                                "chat_id": chat_id,
+                                "from_chat_id": source_chat,
+                                "message_id": part.message_id
+                            }
+                        )
+                        if not copy_resp.get("ok"):
+                            await _bot_api_call(
+                                settings.BOT_TOKEN,
+                                "sendMessage",
+                                {"chat_id": chat_id, "text": f"Failed to send file: {copy_resp.get('description', 'unknown error')}"}
+                            )
+                            continue
+                        sent += 1
+                        await asyncio.sleep(0.35)
+
+                    if sent:
                         await _bot_api_call(
                             settings.BOT_TOKEN,
                             "sendMessage",
-                            {"chat_id": chat_id, "text": f"Failed to send file: {copy_resp.get('description', 'unknown error')}"}
+                            {"chat_id": chat_id, "text": f"Sent {sent} file(s)."}
                         )
-                        return
-                    await _bot_api_call(
-                        settings.BOT_TOKEN,
-                        "sendMessage",
-                        {"chat_id": chat_id, "text": "Here is your file."}
-                    )
+                    if unavailable:
+                        await _bot_api_call(
+                            settings.BOT_TOKEN,
+                            "sendMessage",
+                            {"chat_id": chat_id, "text": "Some files were not available from storage."}
+                        )
                     return
 
             await _bot_api_call(

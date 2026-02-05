@@ -7,6 +7,7 @@ import uuid
 import re
 import zipfile
 import asyncio
+import logging
 from typing import Optional, Dict, List
 
 from fastapi import APIRouter, Request, UploadFile, File, Form, BackgroundTasks, Body
@@ -16,14 +17,15 @@ from pyrogram import Client
 from beanie.operators import Or, In
 from app.db.models import FileSystemItem, FilePart, User, SharedCollection
 from app.core.config import settings
-from app.core.telegram_bot import tg_client, get_pool_client, get_storage_chat_id, ensure_peer_access, get_storage_client, pick_storage_client, normalize_chat_id
-from app.core.telethon_storage import send_file as tl_send_file, get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media, delete_message as tl_delete_message, iter_storage_messages as tl_iter_storage_messages
+from app.core.telegram_bot import tg_client, user_client, get_pool_client, get_storage_chat_id, ensure_peer_access, get_storage_client, pick_storage_client, normalize_chat_id
+from app.core.telethon_storage import send_file as tl_send_file, get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media, delete_message as tl_delete_message
 from app.utils.file_utils import format_size, get_icon_for_mime
 from starlette.background import BackgroundTask
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 mimetypes.init()
+logger = logging.getLogger(__name__)
 
 # --- IN-MEMORY JOB TRACKER ---
 upload_jobs: Dict[str, dict] = {}
@@ -81,6 +83,19 @@ async def _sync_storage_folder(folder: FileSystemItem, limit: int | None = 200) 
     if storage_chat_id in (None, "me"):
         return 0
 
+    history_client = user_client or (tg_client if not getattr(tg_client, "_is_bot", False) else None)
+    if not history_client:
+        logger.warning("Storage sync skipped: no user session available.")
+        return 0
+
+    try:
+        if not await ensure_peer_access(history_client, storage_chat_id):
+            logger.warning("Storage sync skipped: user client lacks access to storage channel.")
+            return 0
+    except Exception as e:
+        logger.warning(f"Storage sync skipped: access check failed ({e}).")
+        return 0
+
     existing_items = await FileSystemItem.find(FileSystemItem.parent_id == str(folder.id)).to_list()
     existing_ids = set()
     for item in existing_items:
@@ -89,36 +104,48 @@ async def _sync_storage_folder(folder: FileSystemItem, limit: int | None = 200) 
                 existing_ids.add(part.message_id)
 
     count = 0
-    async for msg in tl_iter_storage_messages(limit=limit):
-        if not getattr(msg, "file", None):
-            continue
-        msg_id = getattr(msg, "id", None)
-        if not msg_id or msg_id in existing_ids:
-            continue
-        name = getattr(msg.file, "name", None) or "file"
-        mime_type = getattr(msg.file, "mime_type", None) or "application/octet-stream"
-        if not _is_video_name(name, mime_type):
-            continue
-        size = getattr(msg.file, "size", 0) or 0
+    try:
+        history_iter = history_client.get_chat_history(storage_chat_id, limit=limit) if limit is not None else history_client.get_chat_history(storage_chat_id)
+        async for msg in history_iter:
+            msg_id = getattr(msg, "id", None)
+            if not msg_id or msg_id in existing_ids:
+                continue
 
-        new_file = FileSystemItem(
-            name=name,
-            is_folder=False,
-            parent_id=str(folder.id),
-            owner_phone=folder.owner_phone,
-            size=size,
-            mime_type=mime_type,
-            source="storage",
-            parts=[FilePart(
-                telegram_file_id=str(msg_id),
-                message_id=msg_id,
-                chat_id=storage_chat_id,
-                part_number=1,
-                size=size
-            )]
-        )
-        await new_file.insert()
-        count += 1
+            file_obj = getattr(msg, "video", None) or getattr(msg, "document", None)
+            if not file_obj:
+                continue
+
+            name = getattr(file_obj, "file_name", None) or getattr(msg, "file_name", None)
+            mime_type = getattr(file_obj, "mime_type", None) or "application/octet-stream"
+            if not name:
+                name = f"video_{msg_id}.mp4" if mime_type.startswith("video") else f"file_{msg_id}"
+
+            if not _is_video_name(name, mime_type):
+                continue
+
+            size = getattr(file_obj, "file_size", 0) or 0
+            file_id = getattr(file_obj, "file_id", None) or str(msg_id)
+
+            new_file = FileSystemItem(
+                name=name,
+                is_folder=False,
+                parent_id=str(folder.id),
+                owner_phone=folder.owner_phone,
+                size=size,
+                mime_type=mime_type,
+                source="storage",
+                parts=[FilePart(
+                    telegram_file_id=str(file_id),
+                    message_id=msg_id,
+                    chat_id=storage_chat_id,
+                    part_number=1,
+                    size=size
+                )]
+            )
+            await new_file.insert()
+            count += 1
+    except Exception as e:
+        logger.warning(f"Storage sync failed: {e}")
     return count
 
 @router.post("/storage/sync_all")
@@ -328,7 +355,10 @@ async def dashboard(request: Request, folder_id: Optional[str] = None):
             return RedirectResponse("/dashboard")
 
         if storage_folder and str(storage_folder.id) == str(folder_id):
-            await _sync_storage_folder(storage_folder, limit=200)
+            try:
+                await _sync_storage_folder(storage_folder, limit=200)
+            except Exception as e:
+                logger.warning(f"Storage folder sync failed: {e}")
 
         items = await FileSystemItem.find(FileSystemItem.parent_id == folder_id).to_list()
     else:
@@ -532,12 +562,23 @@ async def share_item(request: Request, item_id: str):
                 name=item.name or "Shared Folder"
             )
             await bundle.insert()
-        return JSONResponse({"link": f"{base_url}/s/{token}"})
+        links = {
+            "view": f"{base_url}/s/{token}",
+            "download": f"{base_url}/d/{token}",
+            "telegram": f"{base_url}/t/{token}",
+        }
+        return JSONResponse({"code": token, "links": links, "link": links["view"]})
 
     if not item.share_token:
         item.share_token = str(uuid.uuid4())
         await item.save()
-    return JSONResponse({"link": f"{base_url}/s/{item.share_token}"})
+    token = item.share_token
+    links = {
+        "view": f"{base_url}/s/{token}",
+        "download": f"{base_url}/d/{token}",
+        "telegram": f"{base_url}/t/{token}",
+    }
+    return JSONResponse({"code": token, "links": links, "link": links["view"]})
 
 @router.post("/create_folder")
 async def create_folder(request: Request, folder_name: str = Form(...), parent_id: str = Form("")):
@@ -743,7 +784,12 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
     bundle = SharedCollection(token=token, item_ids=item_ids, owner_phone=user.phone_number, name=f"Shared by {user.first_name or 'User'}")
     await bundle.insert()
     base_url = str(request.base_url).rstrip("/")
-    return {"link": f"{base_url}/s/{token}"}
+    links = {
+        "view": f"{base_url}/s/{token}",
+        "download": f"{base_url}/d/{token}",
+        "telegram": f"{base_url}/t/{token}",
+    }
+    return {"code": token, "links": links, "link": links["view"]}
 
 @router.get("/profile")
 async def profile_page(request: Request):
