@@ -1,0 +1,947 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div id="seriesApp" class="series-shell max-w-7xl mx-auto" data-token="{{ token }}" data-username="{{ viewer_name }}" data-active-id="{{ active_item.id }}">
+    <div id="viewerGate" class="viewer-gate hidden">
+        <div class="viewer-card">
+            <div class="viewer-title">Who's watching?</div>
+            <div class="viewer-sub">Enter your name to save progress and resume later.</div>
+            <input id="viewerInput" type="text" placeholder="Your name" class="viewer-input" />
+            <button id="viewerSubmit" class="btn btn-primary viewer-btn">Continue</button>
+            <div id="viewerHint" class="viewer-hint"></div>
+        </div>
+    </div>
+    <section class="series-hero">
+        <div class="hero-left">
+            <div class="hero-badge">Shared Series</div>
+            <h1 class="hero-title">{{ bundle_name }}</h1>
+            <p class="hero-sub">Shared via MorganXMystic</p>
+            <div class="hero-meta">
+                <span class="meta-pill">{{ episodes|length }} Episodes</span>
+                <span class="meta-pill">Auto-Play</span>
+                <span class="meta-pill">Full HD</span>
+            </div>
+        </div>
+        <div class="hero-actions">
+            <a href="{{ stream_url }}" download="{{ active_item.name }}" class="btn btn-primary">
+                <i class="fas fa-download"></i>
+                Download
+            </a>
+            {% if bot_username and active_item.share_token %}
+            <a href="https://t.me/{{ bot_username }}?start=share_{{ active_item.share_token }}" target="_blank" class="btn btn-ghost">
+                <i class="fab fa-telegram"></i>
+                Get on Telegram
+            </a>
+            {% endif %}
+        </div>
+    </section>
+
+    <section class="series-layout">
+        <div class="player-panel">
+            <div class="player-frame">
+                <video id="seriesPlayer" class="player-video" controls autoplay playsinline preload="auto" data-hls="{{ hls_url or '' }}">
+                    <source src="{{ stream_url }}" type="video/mp4">
+                </video>
+                <div class="skip-zone left" id="skipLeft"></div>
+                <div class="skip-zone right" id="skipRight"></div>
+            </div>
+
+            <div class="player-bar">
+                <div class="now-playing">
+                    <div class="now-label">Now Playing</div>
+                    <div id="nowPlaying" class="now-title">{{ active_item.name }}</div>
+                    <div class="now-meta" id="nowEpisode">Episode 1</div>
+                </div>
+                <div class="player-actions">
+                    <select id="qualitySelect" class="control-select">
+                        <option>Quality: Original</option>
+                    </select>
+                    <select id="speedSelect" class="control-select">
+                        <option value="1">Speed: 1x</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="2">2x</option>
+                    </select>
+                    <select id="subtitleSelect" class="control-select">
+                        <option>Subtitles: Off</option>
+                    </select>
+                    <select id="audioSelect" class="control-select">
+                        <option>Audio: Default</option>
+                    </select>
+                </div>
+            </div>
+
+            {% if is_admin %}
+            <div class="admin-panel">
+                <div class="admin-text"><i class="fas fa-tools"></i> Admin Reorder Mode</div>
+                <div class="admin-actions">
+                    <button onclick="toggleReorder()" class="btn btn-muted">Toggle Reorder</button>
+                    <button onclick="saveOrder()" class="btn btn-danger">Save Order</button>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <aside class="episode-panel">
+            <div class="episode-header">
+                <div>
+                    <div class="episode-label">Episodes</div>
+                    <div class="episode-count">{{ episodes|length }} Items</div>
+                </div>
+                <div class="episode-hint">Tap to play</div>
+            </div>
+            <ul id="episodeList" class="episode-list">
+                {% for ep in episodes %}
+                    <li class="episode-item {% if ep.id == active_item.id %}is-active{% endif %}"
+                        data-id="{{ ep.id }}" data-url="/s/stream/file/{{ ep.id }}" data-hls="{% if ep.is_video %}/static/hls/{{ ep.id }}/master.m3u8{% endif %}" data-name="{{ ep.name | e }}" data-size="{{ ep.formatted_size }}" data-share="{{ ep.share_token }}" data-index="{{ loop.index }}">
+                    <div class="episode-index">{{ loop.index }}</div>
+                    <div class="episode-info">
+                        <div class="episode-name">{{ ep.name }}</div>
+                        <div class="episode-meta">{{ ep.formatted_size }}</div>
+                    </div>
+                    <div class="episode-play"><i class="fas fa-play"></i></div>
+                    <div class="episode-status"></div>
+                    {% if is_admin %}
+                    <div class="episode-controls hidden">
+                        <button onclick="event.stopPropagation(); moveEpisode(this, -1)" class="btn btn-ghost tiny"><i class="fas fa-chevron-up"></i></button>
+                        <button onclick="event.stopPropagation(); moveEpisode(this, 1)" class="btn btn-ghost tiny"><i class="fas fa-chevron-down"></i></button>
+                    </div>
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ul>
+        </aside>
+    </section>
+</div>
+
+<style>
+:root {
+    --mx-red: #e50914;
+    --mx-red-soft: #ff3741;
+    --mx-dark: #0b0f1a;
+    --mx-card: #111827;
+    --mx-card-2: #0f172a;
+    --mx-border: #1f2a44;
+    --mx-text: #f3f4f6;
+    --mx-muted: #9aa4b2;
+}
+
+.series-shell {
+    position: relative;
+    padding: 24px;
+    border-radius: 24px;
+    background: radial-gradient(1200px 500px at 10% -10%, rgba(229, 9, 20, 0.25), transparent 70%),
+                radial-gradient(800px 400px at 90% -20%, rgba(15, 23, 42, 0.9), transparent 70%),
+                linear-gradient(135deg, #0b0f1a, #0f172a 60%, #111827);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+}
+
+.series-shell::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(120deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.03) 1px, transparent 1px, transparent 8px);
+    opacity: 0.12;
+    pointer-events: none;
+}
+
+.series-hero {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.hero-left {
+    max-width: 720px;
+}
+
+.hero-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    font-weight: 700;
+    background: rgba(229, 9, 20, 0.15);
+    color: var(--mx-red-soft);
+}
+
+.hero-title {
+    font-size: clamp(28px, 4vw, 44px);
+    font-weight: 800;
+    margin-top: 12px;
+    color: var(--mx-text);
+}
+
+.hero-sub {
+    margin-top: 8px;
+    color: var(--mx-muted);
+    font-size: 14px;
+}
+
+.hero-highlight {
+    color: #fff;
+    font-weight: 700;
+}
+
+.hero-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+.meta-pill {
+    background: rgba(255, 255, 255, 0.08);
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    color: #d1d5db;
+}
+
+.hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 18px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 13px;
+    border: 1px solid transparent;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.btn i { font-size: 14px; }
+
+.btn-primary {
+    background: var(--mx-red);
+    color: #fff;
+    box-shadow: 0 10px 30px rgba(229, 9, 20, 0.35);
+}
+
+.btn-primary:hover {
+    transform: translateY(-1px);
+    background: #f3121b;
+}
+
+.btn-ghost {
+    background: rgba(15, 23, 42, 0.8);
+    color: #e2e8f0;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.btn-ghost:hover {
+    transform: translateY(-1px);
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+.btn-muted {
+    background: rgba(255, 255, 255, 0.08);
+    color: #e5e7eb;
+}
+
+.btn-danger {
+    background: #dc2626;
+    color: #fff;
+}
+
+.btn.tiny {
+    padding: 6px 8px;
+    border-radius: 10px;
+}
+
+.series-layout {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 24px;
+    margin-top: 24px;
+}
+
+.player-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.player-frame {
+    position: relative;
+    background: #000;
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+    aspect-ratio: 16 / 9;
+}
+
+.player-video {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+}
+
+.skip-zone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 50%;
+}
+
+.skip-zone.left { left: 0; }
+.skip-zone.right { right: 0; }
+
+.player-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    background: rgba(15, 23, 42, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    padding: 14px 16px;
+}
+
+.now-playing {
+    flex: 1;
+    min-width: 220px;
+}
+
+.now-label {
+    font-size: 12px;
+    color: var(--mx-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.now-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: #fff;
+    margin-top: 2px;
+}
+
+.now-meta {
+    font-size: 12px;
+    color: #9ca3af;
+    margin-top: 4px;
+}
+
+.player-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.control-select {
+    background: rgba(17, 24, 39, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #e5e7eb;
+    border-radius: 10px;
+    padding: 8px 12px;
+    font-size: 12px;
+}
+
+.admin-panel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(17, 24, 39, 0.9);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 12px 16px;
+    border-radius: 14px;
+    gap: 12px;
+}
+
+.admin-text {
+    font-size: 12px;
+    color: #cbd5f5;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.admin-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.episode-panel {
+    background: rgba(15, 23, 42, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 18px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.episode-header {
+    padding: 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.episode-label {
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--mx-muted);
+}
+
+.episode-count {
+    font-size: 15px;
+    font-weight: 700;
+    color: #fff;
+    margin-top: 4px;
+}
+
+.episode-hint {
+    font-size: 12px;
+    color: #94a3b8;
+}
+
+.episode-list {
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.episode-item {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 16px;
+    cursor: pointer;
+    transition: background 0.2s ease, transform 0.2s ease;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.episode-item:hover {
+    background: rgba(255, 255, 255, 0.06);
+}
+
+.episode-item.is-active {
+    background: linear-gradient(120deg, rgba(229, 9, 20, 0.25), rgba(15, 23, 42, 0.9));
+    border-left: 3px solid var(--mx-red);
+}
+
+.episode-index {
+    width: 38px;
+    height: 38px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.episode-info {
+    min-width: 0;
+}
+
+.episode-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: #f9fafb;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.episode-meta {
+    font-size: 12px;
+    color: #94a3b8;
+    margin-top: 4px;
+}
+
+.episode-play {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.1);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+}
+
+.episode-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-left: 8px;
+}
+
+@media (max-width: 1024px) {
+    .series-layout {
+        grid-template-columns: 1fr;
+    }
+    .episode-panel {
+        max-height: none;
+    }
+    .episode-list {
+        max-height: none;
+    }
+}
+
+@media (max-width: 640px) {
+    .series-shell {
+        padding: 18px;
+    }
+    .hero-actions,
+    .player-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+    .player-bar {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    .episode-item {
+        grid-template-columns: auto 1fr;
+    }
+    .episode-play {
+        display: none;
+    }
+}
+
+.viewer-gate {
+    position: fixed;
+    inset: 0;
+    background: rgba(5, 6, 12, 0.92);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+    backdrop-filter: blur(10px);
+}
+
+.viewer-gate.hidden {
+    display: none;
+}
+
+.viewer-card {
+    width: min(420px, 90vw);
+    background: rgba(17, 24, 39, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 18px;
+    padding: 24px;
+    text-align: center;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+}
+
+.viewer-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: #fff;
+}
+
+.viewer-sub {
+    margin-top: 8px;
+    font-size: 13px;
+    color: #9aa4b2;
+}
+
+.viewer-input {
+    margin-top: 16px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(5, 8, 18, 0.9);
+    color: #fff;
+    font-size: 14px;
+}
+
+.viewer-btn {
+    width: 100%;
+    justify-content: center;
+    margin-top: 12px;
+}
+
+.viewer-hint {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #9aa4b2;
+}
+
+.episode-status {
+    width: 10px;
+    height: 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    margin-left: auto;
+}
+
+.episode-item.watched .episode-status {
+    background: #22c55e;
+    border-color: #22c55e;
+    box-shadow: 0 0 10px rgba(34, 197, 94, 0.6);
+}
+
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+const appEl = document.getElementById("seriesApp");
+const token = appEl.dataset.token;
+const viewerName = appEl.dataset.username;
+const viewerGate = document.getElementById("viewerGate");
+const viewerInput = document.getElementById("viewerInput");
+const viewerSubmit = document.getElementById("viewerSubmit");
+const viewerHint = document.getElementById("viewerHint");
+const player = document.getElementById("seriesPlayer");
+const qualitySelect = document.getElementById("qualitySelect");
+const subtitleSelect = document.getElementById("subtitleSelect");
+const audioSelect = document.getElementById("audioSelect");
+let hlsInstance = null;
+const nowPlaying = document.getElementById("nowPlaying");
+const nowEpisode = document.getElementById("nowEpisode");
+const episodeItems = Array.from(document.querySelectorAll(".episode-item"));
+let currentIndex = episodeItems.findIndex(el => el.dataset.id === appEl.dataset.activeId);
+if (currentIndex === -1) currentIndex = 0;
+
+function resetTrackSelects() {
+    if (qualitySelect) {
+        qualitySelect.innerHTML = `<option value="-1">Quality: Original</option>`;
+    }
+    if (subtitleSelect) {
+        subtitleSelect.innerHTML = `<option value="-1">Subtitles: Off</option>`;
+    }
+    if (audioSelect) {
+        audioSelect.innerHTML = `<option value="-1">Audio: Default</option>`;
+    }
+}
+
+function setupHlsControls(hls) {
+    resetTrackSelects();
+    if (qualitySelect && hls.levels && hls.levels.length) {
+        qualitySelect.innerHTML = "";
+        const autoOpt = document.createElement("option");
+        autoOpt.value = "-1";
+        autoOpt.textContent = "Quality: Auto";
+        qualitySelect.appendChild(autoOpt);
+        hls.levels.forEach((lvl, idx) => {
+            const opt = document.createElement("option");
+            const label = lvl.height ? `${lvl.height}p` : `${Math.round((lvl.bitrate || 0) / 1000)} kbps`;
+            opt.value = String(idx);
+            opt.textContent = `Quality: ${label}`;
+            qualitySelect.appendChild(opt);
+        });
+        qualitySelect.onchange = () => {
+            const level = parseInt(qualitySelect.value, 10);
+            hls.currentLevel = level;
+        };
+    }
+
+    if (audioSelect && hls.audioTracks && hls.audioTracks.length) {
+        audioSelect.innerHTML = "";
+        hls.audioTracks.forEach((track, idx) => {
+            const opt = document.createElement("option");
+            opt.value = String(idx);
+            opt.textContent = `Audio: ${track.name || track.lang || `Track ${idx + 1}`}`;
+            audioSelect.appendChild(opt);
+        });
+        audioSelect.onchange = () => {
+            hls.audioTrack = parseInt(audioSelect.value, 10);
+        };
+    }
+
+    if (subtitleSelect && hls.subtitleTracks && hls.subtitleTracks.length) {
+        subtitleSelect.innerHTML = "";
+        const off = document.createElement("option");
+        off.value = "-1";
+        off.textContent = "Subtitles: Off";
+        subtitleSelect.appendChild(off);
+        hls.subtitleTracks.forEach((track, idx) => {
+            const opt = document.createElement("option");
+            opt.value = String(idx);
+            opt.textContent = `Subtitles: ${track.name || track.lang || `Track ${idx + 1}`}`;
+            subtitleSelect.appendChild(opt);
+        });
+        subtitleSelect.onchange = () => {
+            hls.subtitleTrack = parseInt(subtitleSelect.value, 10);
+        };
+    }
+}
+
+function openViewerGate() {
+    if (!viewerGate) return;
+    viewerGate.classList.remove("hidden");
+    viewerInput?.focus();
+}
+
+async function resolveViewerName(rawName) {
+    const res = await fetch(`/s/resolve_user?name=${encodeURIComponent(rawName)}`);
+    const data = await res.json();
+    if (data.exists) {
+        viewerHint.textContent = `Matched: ${data.resolved}`;
+    } else {
+        viewerHint.textContent = "New viewer saved as guest.";
+    }
+    return data.resolved || rawName;
+}
+
+if (viewerName) {
+    viewerGate?.classList.add("hidden");
+} else {
+    openViewerGate();
+}
+
+viewerSubmit?.addEventListener("click", async () => {
+    const raw = (viewerInput?.value || "").trim();
+    if (!raw) return;
+    const resolved = await resolveViewerName(raw);
+    window.location.href = `/s/${token}/u=${encodeURIComponent(resolved)}`;
+});
+
+function updateNow(index) {
+    const el = episodeItems[index];
+    if (!el) return;
+    nowPlaying.textContent = el.dataset.name;
+    nowEpisode.textContent = `Episode ${index + 1}`;
+}
+
+function setActive(index, resume = true) {
+    if (index < 0 || index >= episodeItems.length) return;
+    episodeItems.forEach(el => el.classList.remove("is-active"));
+    const el = episodeItems[index];
+    el.classList.add("is-active");
+    currentIndex = index;
+    setPlayerSource(el);
+    updateNow(index);
+    if (resume) fetchResume(el.dataset.id);
+    player.play().catch(() => {});
+}
+
+episodeItems.forEach((el, idx) => {
+    el.addEventListener("click", () => setActive(idx, true));
+});
+
+window.addEventListener("load", () => {
+    loadWatched();
+
+    if (episodeItems[currentIndex]) {
+        updateNow(currentIndex);
+        fetchResume(episodeItems[currentIndex].dataset.id);
+        setPlayerSource(episodeItems[currentIndex]);
+        player.play().catch(() => {});
+    }
+});
+
+player.addEventListener("ended", () => {
+    if (currentIndex + 1 < episodeItems.length) {
+        setActive(currentIndex + 1, true);
+    }
+});
+
+let lastSent = 0;
+player.addEventListener("timeupdate", () => {
+    if (!viewerName) return;
+    if (player.currentTime - lastSent > 10) {
+        lastSent = player.currentTime;
+        sendProgress();
+    }
+});
+player.addEventListener("pause", sendProgress);
+player.addEventListener("ended", sendProgress);
+
+async function sendProgress() {
+    if (!viewerName) return;
+    const active = episodeItems[currentIndex];
+    await fetch("/s/progress", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            token,
+            item_id: active.dataset.id,
+            user_name: viewerName,
+            position: player.currentTime || 0,
+            duration: player.duration || 0
+        })
+    });
+}
+
+async function fetchResume(itemId) {
+    if (!viewerName) return;
+    const res = await fetch(`/s/progress?token=${encodeURIComponent(token)}&item_id=${encodeURIComponent(itemId)}&user=${encodeURIComponent(viewerName)}`);
+    const data = await res.json();
+    if (data.position && data.position > 5) {
+        const shouldResume = confirm("Continue from last time?");
+        if (shouldResume) player.currentTime = data.position;
+    }
+}
+
+
+async function loadWatched() {
+    if (!viewerName) return;
+    const res = await fetch(`/s/progress/all?token=${encodeURIComponent(token)}&user=${encodeURIComponent(viewerName)}`);
+    const data = await res.json();
+    const items = data.items || {};
+    episodeItems.forEach((el) => {
+        const info = items[el.dataset.id];
+        if (info && info.position > 5) {
+            el.classList.add("watched");
+        }
+    });
+}
+
+async function setPlayerSource(el) {
+    if (!el) return;
+    const hlsUrl = el.dataset.hls || "";
+    const hlsFallback = hlsUrl ? hlsUrl.replace("/master.m3u8", "/index.m3u8") : "";
+    if (hlsUrl) {
+        await fetch(`/s/hls/prepare/${el.dataset.id}`, { method: "POST" });
+        let ready = false;
+        let chosenUrl = hlsUrl;
+        for (let i = 0; i < 6; i++) {
+            try {
+                const res = await fetch(chosenUrl, { method: "HEAD" });
+                if (res.ok) { ready = true; break; }
+            } catch (e) {}
+            await new Promise(r => setTimeout(r, 800));
+        }
+        if (!ready && hlsFallback && hlsFallback !== hlsUrl) {
+            chosenUrl = hlsFallback;
+            for (let i = 0; i < 4; i++) {
+                try {
+                    const res = await fetch(chosenUrl, { method: "HEAD" });
+                    if (res.ok) { ready = true; break; }
+                } catch (e) {}
+                await new Promise(r => setTimeout(r, 800));
+            }
+        }
+        if (ready) {
+            if (window.Hls && Hls.isSupported()) {
+                if (hlsInstance) hlsInstance.destroy();
+                hlsInstance = new Hls({
+                    maxBufferLength: 300,
+                    maxMaxBufferLength: 600,
+                    maxBufferSize: 120 * 1000 * 1000,
+                    backBufferLength: 60
+                });
+                hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
+                    setupHlsControls(hlsInstance);
+                });
+                hlsInstance.loadSource(chosenUrl);
+                hlsInstance.attachMedia(player);
+                return;
+            }
+            if (player.canPlayType("application/vnd.apple.mpegurl")) {
+                player.src = chosenUrl;
+                return;
+            }
+        }
+    }
+    if (hlsInstance) {
+        hlsInstance.destroy();
+        hlsInstance = null;
+    }
+    resetTrackSelects();
+    player.src = el.dataset.url;
+}
+
+// Speed control
+document.getElementById("speedSelect").addEventListener("change", (e) => {
+    player.playbackRate = parseFloat(e.target.value);
+});
+
+// Double tap skip
+function makeSkipHandler(el, direction) {
+    let lastTap = 0;
+    el.addEventListener("click", () => {
+        const now = Date.now();
+        if (now - lastTap < 300) {
+            player.currentTime = Math.max(0, player.currentTime + direction * 10);
+        }
+        lastTap = now;
+    });
+}
+makeSkipHandler(document.getElementById("skipLeft"), -1);
+makeSkipHandler(document.getElementById("skipRight"), 1);
+
+// Double tap on video (mobile-style)
+let lastTapTime = 0;
+player.addEventListener("pointerup", (e) => {
+    if (e.pointerType !== "touch") return;
+    const now = Date.now();
+    if (now - lastTapTime < 300) {
+        const rect = player.getBoundingClientRect();
+        const isLeft = e.clientX < rect.left + rect.width / 2;
+        player.currentTime = Math.max(0, player.currentTime + (isLeft ? -10 : 10));
+    }
+    lastTapTime = now;
+});
+
+function toggleFullscreen() {
+    const target = document.querySelector(".player-frame") || player;
+    if (!document.fullscreenElement) {
+        target.requestFullscreen?.();
+    } else {
+        document.exitFullscreen?.();
+    }
+}
+
+// Keyboard shortcuts
+document.addEventListener("keydown", (e) => {
+    if (e.code === "Space") { e.preventDefault(); player.paused ? player.play() : player.pause(); }
+    if (e.code === "ArrowRight") player.currentTime += 10;
+    if (e.code === "ArrowLeft") player.currentTime -= 10;
+    if (e.key && e.key.toLowerCase() === "f") toggleFullscreen();
+});
+
+// Admin reorder
+let reorderMode = false;
+function toggleReorder() {
+    reorderMode = !reorderMode;
+    document.querySelectorAll(".episode-controls").forEach(el => el.classList.toggle("hidden", !reorderMode));
+}
+function moveEpisode(button, direction) {
+    const item = button.closest(".episode-item");
+    const list = document.getElementById("episodeList");
+    if (direction < 0 && item.previousElementSibling) {
+        list.insertBefore(item, item.previousElementSibling);
+    }
+    if (direction > 0 && item.nextElementSibling) {
+        list.insertBefore(item.nextElementSibling, item);
+    }
+}
+async function saveOrder() {
+    const order = Array.from(document.querySelectorAll(".episode-item")).map(el => el.dataset.id);
+    const res = await fetch("/share/reorder", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ token, item_ids: order })
+    });
+    const data = await res.json();
+    if (data.status === "success") {
+        alert("Order saved");
+    } else {
+        alert(data.error || "Failed to save order");
+    }
+}
+</script>
+
+{% endblock %}

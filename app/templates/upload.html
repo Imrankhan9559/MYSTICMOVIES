@@ -1,0 +1,293 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container mx-auto mt-10 max-w-4xl">
+    
+    <div class="flex flex-col md:flex-row justify-between items-center mb-8 gap-4">
+        <div>
+            <h1 class="text-3xl font-bold text-white"><i class="fas fa-satellite-dish text-red-500 mr-2"></i> Upload Center</h1>
+            <p class="text-gray-400 text-sm mt-1">Background Processor. You can safely leave this page.</p>
+        </div>
+        <a href="/dashboard" class="bg-gray-700 hover:bg-gray-600 px-6 py-2 rounded-lg text-white transition flex items-center shadow-lg font-bold">
+            <i class="fas fa-arrow-left mr-2"></i> Back to Files
+        </a>
+    </div>
+
+    <div id="dropZone" class="bg-gray-800 p-10 rounded-xl border-2 border-dashed border-gray-600 transition-all duration-300 mb-8 text-center group relative overflow-hidden">
+        
+        <div id="dragOverlay" class="absolute inset-0 bg-gray-900/90 hidden flex-col items-center justify-center z-50">
+            <i class="fas fa-box-open text-6xl text-blue-500 animate-bounce mb-4"></i>
+            <h3 class="text-2xl font-bold text-white">Drop Files or Folders Here</h3>
+        </div>
+
+        <div class="relative z-10">
+            <div class="w-24 h-24 bg-gray-900 rounded-full flex items-center justify-center mx-auto mb-6 shadow-2xl group-hover:scale-110 transition">
+                <i class="fas fa-cloud-upload-alt text-5xl text-gray-400 group-hover:text-red-500 transition"></i>
+            </div>
+            
+            <h3 class="text-2xl font-bold text-white mb-2">Drag & Drop content here</h3>
+            <p class="text-gray-500 text-sm mb-6">or choose an option below</p>
+
+            <div class="flex justify-center gap-4">
+                <button onclick="document.getElementById('fileInput').click()" class="bg-blue-600 hover:bg-blue-500 text-white px-6 py-2 rounded-lg font-bold shadow-lg transition transform hover:-translate-y-1">
+                    <i class="fas fa-file mr-2"></i> Select Files
+                </button>
+                <button onclick="document.getElementById('folderInput').click()" class="bg-purple-600 hover:bg-purple-500 text-white px-6 py-2 rounded-lg font-bold shadow-lg transition transform hover:-translate-y-1">
+                    <i class="fas fa-folder mr-2"></i> Select Folder
+                </button>
+            </div>
+        </div>
+        
+        <input type="file" id="fileInput" class="hidden" multiple>
+        <input type="file" id="folderInput" class="hidden" webkitdirectory directory multiple>
+    </div>
+
+    <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden shadow-2xl">
+        <div class="p-4 bg-gray-900 border-b border-gray-700 flex justify-between items-center">
+            <h3 class="font-bold text-white flex items-center">
+                <i class="fas fa-tasks mr-2 text-blue-500"></i> Active Tasks
+            </h3>
+            <span class="text-xs text-green-500 flex items-center font-mono bg-green-900/30 px-2 py-1 rounded">
+                <i class="fas fa-circle text-[8px] mr-2 animate-pulse"></i> Live
+            </span>
+        </div>
+        
+        <div id="taskList" class="divide-y divide-gray-700 max-h-[500px] overflow-y-auto">
+            <div class="p-12 text-center text-gray-500 italic flex flex-col items-center" id="emptyState">
+                <i class="fas fa-clipboard-check text-4xl mb-3 opacity-30"></i>
+                <p>No active uploads.</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const dropZone = document.getElementById('dropZone');
+    const dragOverlay = document.getElementById('dragOverlay');
+    const taskList = document.getElementById('taskList');
+    const emptyState = document.getElementById('emptyState');
+    const parentId = "{{ folder_id if folder_id else '' }}";
+
+    // --- 1. DRAG AND DROP EVENTS ---
+    
+    // Prevent default behaviors
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, preventDefaults, false);
+        document.body.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    // Highlight / Unhighlight
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dragOverlay.classList.remove('hidden'), false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => dragOverlay.classList.add('hidden'), false);
+    });
+
+    // Handle Drop
+    dropZone.addEventListener('drop', handleDrop, false);
+
+    async function handleDrop(e) {
+        const items = e.dataTransfer.items;
+        if (!items) return;
+
+        // Hide empty state
+        if(emptyState) emptyState.style.display = 'none';
+
+        // Recursively scan dropped items (handles folders!)
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i].webkitGetAsEntry();
+            if (item) {
+                await scanFiles(item);
+            }
+        }
+    }
+
+    // Recursive Scanner for Dropped Folders
+    async function scanFiles(item, path = "") {
+        if (item.isFile) {
+            // Get file object
+            item.file(async (file) => {
+                // If path exists (it was in a folder), add it to file object for upload
+                if (path) file.manualRelativePath = path + file.name;
+                await uploadSingleFile(file);
+            });
+        } else if (item.isDirectory) {
+            // Read directory entries
+            const dirReader = item.createReader();
+            const readEntries = async () => {
+                dirReader.readEntries(async (entries) => {
+                    if (entries.length === 0) return;
+                    for (const entry of entries) {
+                        await scanFiles(entry, path + item.name + "/");
+                    }
+                    readEntries(); // Continue reading (needed for large dirs in Chrome)
+                });
+            };
+            readEntries();
+        }
+    }
+
+    // --- 2. CLICK INPUT EVENTS ---
+    
+    // Standard Files
+    document.getElementById('fileInput').addEventListener('change', async (e) => {
+        handleInputFiles(e.target.files);
+    });
+
+    // Folder Input
+    document.getElementById('folderInput').addEventListener('change', async (e) => {
+        handleInputFiles(e.target.files);
+    });
+
+    async function handleInputFiles(files) {
+        if (!files.length) return;
+        if(emptyState) emptyState.style.display = 'none';
+
+        for (let i = 0; i < files.length; i++) {
+            await uploadSingleFile(files[i]);
+        }
+    }
+
+    // --- 3. UPLOAD LOGIC ---
+
+    function uploadSingleFile(file) {
+        return new Promise((resolve) => {
+            const tempId = 'temp-' + Date.now() + Math.random();
+            addTempTaskUI(tempId, file.name);
+
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('parent_id', parentId);
+            
+            // Check for folder path from 3 sources:
+            // 1. webkitRelativePath (Input Folder)
+            // 2. manualRelativePath (Drag & Drop Folder)
+            // 3. None (Standard File)
+            let relPath = file.webkitRelativePath || file.manualRelativePath || "";
+            if (relPath) {
+                formData.append('relative_path', relPath);
+            }
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/upload', true);
+
+            xhr.onload = () => {
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    if (data.status === 'queued') {
+                        const el = document.getElementById(tempId);
+                        if(el) el.remove();
+                        fetchStatus(); // Force update
+                    } else {
+                        alert("Upload failed: " + (data.error || "Unknown"));
+                        document.getElementById(tempId).remove();
+                    }
+                } catch(e) { console.error(e); }
+                resolve();
+            };
+
+            xhr.onerror = () => {
+                alert("Network Error");
+                document.getElementById(tempId).remove();
+                resolve();
+            };
+
+            xhr.send(formData);
+        });
+    }
+
+    // --- 4. UI HELPERS ---
+
+    function addTempTaskUI(id, name) {
+        const html = `
+            <div id="${id}" class="p-4 flex items-center justify-between bg-gray-800 opacity-60 border-l-4 border-yellow-500">
+                <div class="flex items-center space-x-4">
+                    <div class="w-10 h-10 bg-gray-700 rounded-lg flex items-center justify-center text-white"><i class="fas fa-file-upload"></i></div>
+                    <div>
+                        <div class="text-sm font-bold text-white truncate w-64">${name}</div>
+                        <div class="text-xs text-yellow-500 font-mono">Initializing...</div>
+                    </div>
+                </div>
+                <div class="text-white"><i class="fas fa-spinner fa-spin"></i></div>
+            </div>
+        `;
+        taskList.insertAdjacentHTML('afterbegin', html);
+        if(emptyState) emptyState.style.display = 'none';
+    }
+
+    async function fetchStatus() {
+        try {
+            const res = await fetch('/upload/status');
+            const jobs = await res.json();
+            renderJobs(jobs);
+        } catch (e) { console.error(e); }
+    }
+
+    function renderJobs(jobs) {
+        const ids = Object.keys(jobs);
+        
+        if (ids.length === 0) {
+            if(!taskList.querySelector('[id^="temp-"]')) {
+                if(emptyState) emptyState.style.display = 'flex';
+            }
+            return;
+        }
+        if(emptyState) emptyState.style.display = 'none';
+
+        ids.forEach(id => {
+            const job = jobs[id];
+            let row = document.getElementById(`job-${id}`);
+            
+            let statusColor = "text-blue-400";
+            let statusIcon = "fa-spinner fa-spin";
+            let statusText = `Processing... ${job.progress}%`;
+            let barColor = "bg-blue-500";
+            let width = job.progress + "%";
+            let borderClass = "border-blue-500";
+
+            if (job.status === 'completed') {
+                statusText = "Upload Complete"; statusColor = "text-green-500"; statusIcon = "fa-check-circle"; barColor = "bg-green-500"; width = "100%"; borderClass = "border-green-500";
+            } else if (job.status === 'failed') {
+                statusText = "Failed"; statusColor = "text-red-500"; statusIcon = "fa-times-circle"; barColor = "bg-red-500"; width = "100%"; borderClass = "border-red-500";
+            }
+
+            const html = `
+                <div class="flex items-center space-x-4">
+                    <div class="w-10 h-10 bg-gray-900 rounded-lg flex items-center justify-center shrink-0 border border-gray-600">
+                        <i class="fas ${job.status === 'completed' ? 'fa-check text-green-500' : 'fa-cloud-upload-alt text-gray-400'}"></i>
+                    </div>
+                    <div class="flex-grow">
+                        <div class="flex justify-between items-center mb-1">
+                            <span class="text-sm font-bold text-gray-200 truncate w-48 md:w-96" title="${job.filename}">${job.filename}</span>
+                            <span class="text-xs font-mono ${statusColor} flex items-center bg-gray-900 px-2 py-0.5 rounded"><i class="fas ${statusIcon} mr-2"></i> ${statusText}</span>
+                        </div>
+                        <div class="w-full bg-gray-900 rounded-full h-1.5 overflow-hidden border border-gray-700">
+                            <div class="h-1.5 rounded-full transition-all duration-500 ${barColor}" style="width: ${width}"></div>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            if (!row) {
+                const div = document.createElement('div');
+                div.id = `job-${id}`;
+                div.className = `p-4 hover:bg-gray-750 transition border-l-4 ${borderClass} bg-gray-800 mb-1`;
+                div.innerHTML = html;
+                taskList.prepend(div);
+            } else {
+                row.className = `p-4 hover:bg-gray-750 transition border-l-4 ${borderClass} bg-gray-800 mb-1`;
+                row.innerHTML = html;
+            }
+        });
+    }
+
+    setInterval(fetchStatus, 1500);
+    fetchStatus();
+</script>
+{% endblock %}

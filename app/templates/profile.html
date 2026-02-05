@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container mx-auto mt-8 max-w-4xl">
+    
+    <div class="bg-gray-800 rounded-xl shadow-lg border border-gray-700 p-8 flex flex-col md:flex-row items-center md:items-start gap-6 mb-8">
+        <div class="w-24 h-24 bg-gradient-to-br from-red-600 to-red-900 rounded-full flex items-center justify-center text-4xl text-white shadow-xl ring-4 ring-gray-700">
+            <i class="fas fa-user-astronaut"></i>
+        </div>
+        <div class="flex-grow text-center md:text-left">
+            <h1 class="text-3xl font-bold text-white mb-2">{{ user.first_name if user.first_name else 'User' }}</h1>
+            <p class="text-gray-400 mb-1"><i class="fas fa-phone-alt mr-2 text-red-500"></i> {{ user.phone_number }}</p>
+            <p class="text-gray-500 text-sm"><i class="fas fa-calendar-alt mr-2"></i> Joined: {{ user.created_at.strftime('%Y-%m-%d') }}</p>
+            
+            <div class="mt-4 flex flex-wrap gap-2 justify-center md:justify-start">
+                <span class="bg-gray-900 text-gray-300 px-4 py-1 rounded-full text-sm border border-gray-700">
+                    <i class="fas fa-hdd mr-2 text-blue-500"></i> Total Files: {{ total_files }}
+                </span>
+                <span class="bg-gray-900 text-gray-300 px-4 py-1 rounded-full text-sm border border-gray-700">
+                    <i class="fas fa-check-circle mr-2 text-green-500"></i> Status: Active
+                </span>
+            </div>
+        </div>
+        <div>
+            <a href="/logout" class="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-lg font-bold shadow-lg transition">
+                Logout
+            </a>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden shadow-lg">
+        <div class="p-6 border-b border-gray-700 flex justify-between items-center bg-gray-900">
+            <h2 class="text-xl font-bold text-white"><i class="fas fa-layer-group mr-2 text-red-500"></i> My Files Repository</h2>
+        </div>
+        
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-gray-400">
+                <thead class="bg-gray-950 text-gray-500 uppercase text-xs">
+                    <tr>
+                        <th class="p-4">Name</th>
+                        <th class="p-4">Size</th>
+                        <th class="p-4">Type</th>
+                        <th class="p-4 text-right">Actions</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-700">
+                    {% for file in files %}
+                    <tr class="hover:bg-gray-700 transition">
+                        <td class="p-4 text-white font-medium flex items-center">
+                            <i class="fas {{ file.icon }} mr-3 text-lg text-gray-500"></i>
+                            <span class="truncate max-w-xs">{{ file.name }}</span>
+                        </td>
+                        <td class="p-4 text-sm">{{ file.formatted_size }}</td>
+                        <td class="p-4 text-xs uppercase">{{ file.mime_type.split('/')[1] if '/' in file.mime_type else 'FILE' }}</td>
+                        <td class="p-4 text-right space-x-2">
+                            <a href="/player/{{ file.id }}" class="text-blue-400 hover:text-white"><i class="fas fa-play"></i></a>
+                            <button onclick="shareFile('{{ file.id }}')" class="text-green-400 hover:text-white"><i class="fas fa-share-alt"></i></button>
+                            <form action="/delete/{{ file.id }}" method="post" class="inline" onsubmit="return confirm('Delete?');">
+                                <button type="submit" class="text-red-500 hover:text-red-300"><i class="fas fa-trash"></i></button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="4" class="p-8 text-center text-gray-500">No files uploaded yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    async function shareFile(itemId) {
+        const res = await fetch(`/share/${itemId}`, { method: 'POST' });
+        const data = await res.json();
+        if(data.link) prompt("Copy Link:", data.link);
+    }
+</script>
+{% endblock %}

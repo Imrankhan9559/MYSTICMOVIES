@@ -1,0 +1,379 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="flex flex-col md:flex-row justify-between items-center mb-8 bg-gray-800 p-4 rounded-xl border border-gray-700 shadow-2xl gap-4">
+    <div class="flex items-center w-full md:w-auto overflow-hidden">
+        {% if current_folder %}
+            <a href="/dashboard?folder_id={{ current_folder.parent_id if current_folder.parent_id else '' }}" class="bg-gray-700 hover:bg-gray-600 w-10 h-10 flex items-center justify-center rounded-full text-white transition mr-4 shadow-lg">
+                <i class="fas fa-arrow-left"></i>
+            </a>
+            <div class="flex flex-col">
+                <span class="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Browsing</span>
+                <div class="text-xl font-bold text-red-500 truncate max-w-[200px] flex items-center">
+                    <i class="fas fa-folder-open mr-2 text-yellow-500"></i> {{ current_folder.name }}
+                </div>
+            </div>
+        {% else %}
+            <div class="flex flex-col ml-2">
+                <span class="text-[10px] text-gray-500 uppercase tracking-widest font-bold">Storage</span>
+                <div class="text-xl font-bold text-red-500 flex items-center">
+                    <i class="fas fa-hdd mr-2"></i> Root
+                </div>
+            </div>
+        {% endif %}
+    </div>
+
+    <div class="flex-1 w-full md:w-auto px-0 md:px-4">
+        <div class="relative w-full md:max-w-md">
+            <input id="searchInput" type="text" value="{{ search_query or '' }}" placeholder="Search your videos..." class="w-full bg-gray-900 border border-gray-700 rounded-full px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500 transition" />
+            <div id="searchSuggestions" class="hidden absolute z-40 mt-2 w-full bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden"></div>
+        </div>
+    </div>
+
+    <div class="flex space-x-3 w-full md:w-auto justify-end items-center">
+        {% if is_admin %}
+        <button id="syncStorageBtn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-white flex items-center shadow-lg font-bold transition text-sm">
+            <i class="fas fa-sync-alt mr-2"></i> Sync Storage
+        </button>
+        {% endif %}
+        <button onclick="toggleSelectMode()" id="selectModeBtn" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-lg text-white flex items-center shadow-lg font-bold transition text-sm">
+            <i class="fas fa-check-square mr-2"></i> Select
+        </button>
+        <form action="/create_folder" method="post" class="flex shadow-lg">
+            <input type="hidden" name="parent_id" value="{{ current_folder.id if current_folder else '' }}">
+            <input type="text" name="folder_name" placeholder="New Folder..." class="bg-gray-900 border border-gray-600 rounded-l-lg px-4 text-white text-sm focus:outline-none focus:border-blue-500 w-full md:w-40 transition-all" required>
+            <button type="submit" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-r-lg text-white text-sm transition"><i class="fas fa-folder-plus"></i></button>
+        </form>
+        <a href="/upload_zone?folder_id={{ current_folder.id if current_folder else '' }}" class="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 px-6 py-2 rounded-lg text-white flex items-center shadow-lg font-bold transition transform hover:scale-105">
+            <i class="fas fa-cloud-upload-alt mr-2"></i> Upload
+        </a>
+    </div>
+</div>
+
+<div id="selectionBar" class="hidden fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-gray-800 px-6 py-3 rounded-full shadow-2xl border border-purple-500 flex items-center gap-4 z-50 animate-bounce-in">
+    <span class="text-white font-bold"><span id="selectCount" class="text-purple-400">0</span> selected</span>
+    
+    <button onclick="shareSelected()" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-1 rounded-full text-sm font-bold shadow-lg transition flex items-center">
+        <i class="fas fa-link mr-1"></i>
+    </button>
+
+    <button onclick="downloadSelectedZip()" class="bg-green-600 hover:bg-green-500 text-white px-4 py-1 rounded-full text-sm font-bold shadow-lg transition flex items-center" title="Download as Zip">
+        <i class="fas fa-file-archive mr-1"></i> Zip
+    </button>
+    
+    <button onclick="deleteSelected()" class="bg-red-600 hover:bg-red-500 text-white px-4 py-1 rounded-full text-sm font-bold shadow-lg transition flex items-center">
+        <i class="fas fa-trash-alt mr-1"></i>
+    </button>
+
+    <button onclick="toggleSelectMode()" class="text-gray-400 hover:text-white transition"><i class="fas fa-times"></i></button>
+</div>
+
+<div class="mb-20">
+    <div class="grid grid-cols-12 gap-3 px-4 py-2 text-[11px] uppercase tracking-widest text-gray-500">
+        <div class="col-span-6">Name</div>
+        <div class="col-span-2">Size</div>
+        <div class="col-span-2">Modified</div>
+        <div class="col-span-2 text-right">Actions</div>
+    </div>
+    <div class="space-y-2">
+        {% for item in items %}
+            <div data-row-id="{{ item.id }}" class="grid grid-cols-12 gap-3 items-center bg-gray-800/70 hover:bg-gray-700/70 border border-gray-700 hover:border-gray-500 rounded-lg px-4 py-3 transition cursor-pointer group" onclick="handleItemClick('{{ item.id }}', {{ 'true' if item.is_folder else 'false' }})">
+                <div class="col-span-6 flex items-center gap-3 min-w-0">
+                    <div class="selection-checkbox hidden">
+                        <input type="checkbox" value="{{ item.id }}" onclick="event.stopPropagation(); toggleItemCheck('{{ item.id }}')" class="w-4 h-4 accent-purple-600 cursor-pointer shadow-sm">
+                    </div>
+                    <div class="text-xl text-gray-400">
+                        {% if item.is_folder %} 
+                            <i class="fas fa-folder text-yellow-500"></i>
+                        {% elif "image" in item.mime_type %} <i class="fas fa-file-image text-purple-400"></i>
+                        {% elif "video" in item.mime_type %} <i class="fas fa-file-video text-red-500"></i>
+                        {% elif "audio" in item.mime_type %} <i class="fas fa-file-audio text-green-400"></i>
+                        {% elif "text" in item.mime_type or "code" in item.mime_type %}<i class="fas fa-file-code text-blue-400"></i>
+                        {% else %} <i class="fas {{ item.icon }}"></i> {% endif %}
+                    </div>
+                    <div class="min-w-0">
+                        <div class="truncate text-sm font-semibold text-gray-100" title="{{ item.name }}">
+                            {% if '/' in item.name %}
+                                {{ item.name.split('/')[-1] }}
+                            {% else %}
+                                {{ item.name }}
+                            {% endif %}
+                        </div>
+                        {% if item.is_folder and item.collaborators and item.collaborators|length > 0 %}
+                            <div class="text-[11px] text-purple-400 mt-1"><i class="fas fa-users mr-1"></i>{{ item.collaborators|length }} members</div>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="col-span-2 text-xs text-gray-400">
+                    {% if item.is_folder %} -- {% else %} {{ item.formatted_size }} {% endif %}
+                </div>
+                <div class="col-span-2 text-xs text-gray-400">
+                    {{ item.created_at.strftime('%Y-%m-%d %H:%M') if item.created_at else '' }}
+                </div>
+                <div class="col-span-2 flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition row-actions">
+                    {% if item.is_folder %}
+                        <button onclick="event.stopPropagation(); window.location.href='/dashboard?folder_id={{ item.id }}'" class="w-8 h-8 rounded-full bg-gray-700 hover:bg-gray-600 text-white flex items-center justify-center" title="Open">
+                            <i class="fas fa-folder-open text-xs"></i>
+                        </button>
+                        <button onclick="event.stopPropagation(); shareFile('{{ item.id }}')" class="w-8 h-8 rounded-full bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center" title="Share">
+                            <i class="fas fa-link text-xs"></i>
+                        </button>
+                    {% else %}
+                        <a href="/player/{{ item.id }}" class="w-8 h-8 rounded-full bg-green-600 hover:bg-green-500 text-white flex items-center justify-center" title="Play">
+                            <i class="fas fa-play text-xs"></i>
+                        </a>
+                        <a href="/stream/data/{{ item.id }}" download="{{ item.name }}" class="w-8 h-8 rounded-full bg-yellow-600 hover:bg-yellow-500 text-white flex items-center justify-center" title="Download">
+                            <i class="fas fa-download text-xs"></i>
+                        </a>
+                        <button onclick="event.stopPropagation(); shareFile('{{ item.id }}')" class="w-8 h-8 rounded-full bg-blue-600 hover:bg-blue-500 text-white flex items-center justify-center" title="Share">
+                            <i class="fas fa-link text-xs"></i>
+                        </button>
+                    {% endif %}
+                    <button onclick="event.stopPropagation(); openRenameModal('{{ item.id }}', '{{ item.name | e }}')" class="w-8 h-8 rounded-full bg-gray-700 hover:bg-gray-600 text-white flex items-center justify-center" title="Rename">
+                        <i class="fas fa-pen text-xs"></i>
+                    </button>
+                    <button onclick="event.stopPropagation(); openMoveModal('{{ item.id }}')" class="w-8 h-8 rounded-full bg-gray-700 hover:bg-gray-600 text-white flex items-center justify-center" title="Move">
+                        <i class="fas fa-arrows-alt text-xs"></i>
+                    </button>
+                    <button onclick="event.stopPropagation(); openCopyModal('{{ item.id }}')" class="w-8 h-8 rounded-full bg-gray-700 hover:bg-gray-600 text-white flex items-center justify-center" title="Copy">
+                        <i class="fas fa-copy text-xs"></i>
+                    </button>
+                    <form action="/delete/{{ item.id }}" method="post" onsubmit="return confirm('Delete this?');">
+                        <button type="submit" onclick="event.stopPropagation();" class="w-8 h-8 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center" title="Delete">
+                            <i class="fas fa-trash text-xs"></i>
+                        </button>
+                    </form>
+                </div>
+            </div>
+        {% else %}
+            <div class="flex flex-col items-center justify-center py-24 text-gray-600"><i class="fas fa-box-open text-6xl opacity-30 mb-4"></i><p class="text-xl font-bold">This folder is empty.</p></div>
+        {% endfor %}
+    </div>
+</div>
+
+<div id="shareModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm"><div class="bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-600 shadow-2xl"><h3 class="text-white text-xl font-bold mb-4 flex items-center"><i class="fas fa-share-alt text-blue-500 mr-2"></i> Share Link</h3><input type="text" id="shareInput" readonly class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-green-400 text-sm font-mono mb-6"><div class="flex justify-end space-x-3"><button onclick="document.getElementById('shareModal').classList.add('hidden')" class="text-gray-400 font-bold text-sm">Close</button><button onclick="copyLink()" class="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold">Copy</button></div></div></div>
+<div id="collabModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm"><div class="bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-600 shadow-2xl"><h3 class="text-white text-xl font-bold mb-1 flex items-center"><i class="fas fa-users-cog text-purple-500 mr-2"></i> Manage Team</h3><p class="text-gray-500 text-xs mb-6">Folder: <span id="collabFolderName" class="text-white font-bold"></span></p><input type="hidden" id="collabFolderId"><div class="mb-6"><div class="text-xs uppercase text-gray-500 font-bold mb-2">Current Members</div><div id="teamList" class="max-h-32 overflow-y-auto bg-gray-900 rounded-lg border border-gray-700 p-2 space-y-2"></div></div><div class="border-t border-gray-700 pt-4"><label class="block text-gray-500 text-xs uppercase font-bold mb-2">Add New Member</label><div class="flex space-x-2"><input type="text" id="collabPhone" placeholder="+91..." class="flex-grow bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none"><button onclick="submitCollab()" class="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg font-bold text-sm">Add</button></div></div><div class="flex justify-end mt-6"><button onclick="document.getElementById('collabModal').classList.add('hidden')" class="text-gray-400 font-bold text-sm">Done</button></div></div></div>
+
+<div id="renameModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm">
+    <div class="bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-600 shadow-2xl">
+        <h3 class="text-white text-xl font-bold mb-4 flex items-center"><i class="fas fa-pen text-red-500 mr-2"></i> Rename Item</h3>
+        <input type="hidden" id="renameItemId">
+        <input type="text" id="renameInput" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white mb-6" placeholder="New name">
+        <div class="flex justify-end space-x-3">
+            <button onclick="closeRenameModal()" class="text-gray-400 font-bold text-sm">Cancel</button>
+            <button onclick="submitRename()" class="bg-red-600 text-white px-6 py-2 rounded-lg font-bold">Save</button>
+        </div>
+    </div>
+</div>
+
+<div id="moveModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm">
+    <div class="bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-600 shadow-2xl">
+        <h3 class="text-white text-xl font-bold mb-4 flex items-center"><i class="fas fa-arrows-alt text-blue-500 mr-2"></i> Move Item</h3>
+        <input type="hidden" id="moveItemId">
+        <select id="moveTarget" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white mb-6">
+            <option value="">Root</option>
+            {% for folder in folders %}
+                <option value="{{ folder.id }}">{{ folder.name }}</option>
+            {% endfor %}
+        </select>
+        <div class="flex justify-end space-x-3">
+            <button onclick="closeMoveModal()" class="text-gray-400 font-bold text-sm">Cancel</button>
+            <button onclick="submitMove()" class="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold">Move</button>
+        </div>
+    </div>
+</div>
+
+<div id="copyModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm">
+    <div class="bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-600 shadow-2xl">
+        <h3 class="text-white text-xl font-bold mb-4 flex items-center"><i class="fas fa-copy text-green-500 mr-2"></i> Copy Item</h3>
+        <input type="hidden" id="copyItemId">
+        <select id="copyTarget" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white mb-6">
+            <option value="">Root</option>
+            {% for folder in folders %}
+                <option value="{{ folder.id }}">{{ folder.name }}</option>
+            {% endfor %}
+        </select>
+        <div class="flex justify-end space-x-3">
+            <button onclick="closeCopyModal()" class="text-gray-400 font-bold text-sm">Cancel</button>
+            <button onclick="submitCopy()" class="bg-green-600 text-white px-6 py-2 rounded-lg font-bold">Copy</button>
+        </div>
+    </div>
+</div>
+
+<script>
+let selectMode = false; let selectedIds = new Set();
+function handleItemClick(id, isFolder) {
+    if (selectMode) {
+        toggleItemCheck(id);
+        return;
+    }
+    if (isFolder) {
+        window.location.href = `/dashboard?folder_id=${id}`;
+    }
+}
+function toggleSelectMode() { 
+    selectMode = !selectMode; 
+    selectedIds.clear(); 
+    document.getElementById('selectCount').innerText = "0"; 
+    document.querySelectorAll('.selection-checkbox').forEach(el => el.classList.toggle('hidden', !selectMode)); 
+    document.querySelectorAll('.row-actions').forEach(el => el.style.visibility = selectMode ? 'hidden' : 'visible'); 
+    document.getElementById('selectionBar').classList.toggle('hidden', !selectMode); 
+    const btn = document.getElementById('selectModeBtn'); 
+    if(selectMode) { 
+        btn.classList.add('bg-gray-600'); 
+        btn.innerText = "Cancel"; 
+    } else { 
+        btn.classList.remove('bg-gray-600'); 
+        btn.innerHTML = '<i class="fas fa-check-square mr-2"></i> Select'; 
+        document.querySelectorAll('input[type="checkbox"]').forEach(c => { 
+            c.checked = false; 
+        }); 
+        document.querySelectorAll('[data-row-id]').forEach(row => row.classList.remove('ring-2', 'ring-purple-500')); 
+    } 
+}
+function toggleItemCheck(id) { 
+    if (!selectMode) return; 
+    const checkbox = document.querySelector(`input[value="${id}"]`); 
+    const row = document.querySelector(`[data-row-id="${id}"]`);
+    if (!checkbox || !row) return;
+    if (selectedIds.has(id)) { 
+        selectedIds.delete(id); 
+        checkbox.checked = false; 
+        row.classList.remove('ring-2', 'ring-purple-500'); 
+    } else { 
+        selectedIds.add(id); 
+        checkbox.checked = true; 
+        row.classList.add('ring-2', 'ring-purple-500'); 
+    } 
+    document.getElementById('selectCount').innerText = selectedIds.size; 
+}
+
+// --- BULK ZIP DOWNLOAD ---
+async function downloadSelectedZip() {
+    if (selectedIds.size === 0) return alert("Select items first");
+    
+    // Trigger download
+    const res = await fetch('/download/zip', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(Array.from(selectedIds))
+    });
+    
+    if (res.status === 200) {
+        // Convert blob to file download
+        const blob = await res.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = "Morgan_Bundle.zip";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        toggleSelectMode(); // Reset
+    } else {
+        alert("Error creating zip. Note: Folders cannot be zipped in this version.");
+    }
+}
+
+async function deleteSelected() { if (selectedIds.size === 0) return alert("Select items first"); if (!confirm("Are you sure?")) return; try { const res = await fetch('/delete/bundle', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Array.from(selectedIds)) }); if((await res.json()).status === 'success') window.location.reload(); else alert("Error"); } catch(e) { alert("Network Error"); } }
+async function shareSelected() { if(selectedIds.size===0) return alert("Select items"); const res = await fetch('/share/bundle', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Array.from(selectedIds)) }); const data = await res.json(); if(data.link) { document.getElementById('shareInput').value = data.link; document.getElementById('shareModal').classList.remove('hidden'); toggleSelectMode(); } else if (data.error) { alert(data.error); } }
+async function shareFile(itemId) { const res = await fetch(`/share/${itemId}`, { method: 'POST' }); const data = await res.json(); if(data.link) { document.getElementById('shareInput').value = data.link; document.getElementById('shareModal').classList.remove('hidden'); } else if (data.error) { alert(data.error); } }
+function copyLink() { document.getElementById("shareInput").select(); document.execCommand("copy"); alert("Copied!"); document.getElementById('shareModal').classList.add('hidden'); }
+async function openCollabModal(id, name) { document.getElementById('collabFolderId').value = id; document.getElementById('collabFolderName').innerText = name; document.getElementById('collabModal').classList.remove('hidden'); await loadTeam(id); }
+async function loadTeam(folderId) { const listDiv = document.getElementById('teamList'); listDiv.innerHTML = '<div class="text-center text-gray-500 text-xs">Loading...</div>'; const res = await fetch(`/folder/team/${folderId}`); const data = await res.json(); if (data.collaborators.length === 0) listDiv.innerHTML = '<div class="text-center text-gray-500 text-xs">No members.</div>'; else { listDiv.innerHTML = ''; data.collaborators.forEach(phone => { listDiv.innerHTML += `<div class="flex justify-between items-center bg-gray-800 p-2 rounded border border-gray-700"><span class="text-gray-300 text-xs font-mono"><i class="fas fa-user mr-2 text-purple-500"></i>${phone}</span><button onclick="removeUser('${phone}')" class="text-red-500 hover:text-red-400 text-xs px-2"><i class="fas fa-times"></i></button></div>`; }); } }
+async function submitCollab() { const id = document.getElementById('collabFolderId').value; const phone = document.getElementById('collabPhone').value; if(!phone) return alert("Enter phone"); const formData = new FormData(); formData.append('folder_id', id); formData.append('phone', phone); const res = await fetch('/folder/add_collaborator', { method: 'POST', body: formData }); if((await res.json()).status === 'success') { document.getElementById('collabPhone').value = ''; await loadTeam(id); } else alert("Error"); }
+async function removeUser(phone) { if(!confirm(`Remove ${phone}?`)) return; const id = document.getElementById('collabFolderId').value; const formData = new FormData(); formData.append('folder_id', id); formData.append('phone', phone); if((await fetch('/folder/remove_collaborator', { method: 'POST', body: formData })).json().status === 'success') await loadTeam(id); }
+
+function openRenameModal(id, name) { document.getElementById('renameItemId').value = id; document.getElementById('renameInput').value = name; document.getElementById('renameModal').classList.remove('hidden'); }
+function closeRenameModal() { document.getElementById('renameModal').classList.add('hidden'); }
+async function submitRename() { const id = document.getElementById('renameItemId').value; const name = document.getElementById('renameInput').value; if(!name) return alert("Enter name"); const formData = new FormData(); formData.append('item_id', id); formData.append('new_name', name); const res = await fetch('/item/rename', { method: 'POST', body: formData }); const data = await res.json(); if(data.status === 'success') { closeRenameModal(); window.location.reload(); } else alert(data.error || "Error"); }
+
+function openMoveModal(id) { document.getElementById('moveItemId').value = id; document.getElementById('moveModal').classList.remove('hidden'); }
+function closeMoveModal() { document.getElementById('moveModal').classList.add('hidden'); }
+async function submitMove() { const id = document.getElementById('moveItemId').value; const target = document.getElementById('moveTarget').value; const formData = new FormData(); formData.append('item_id', id); formData.append('target_parent_id', target); const res = await fetch('/item/move', { method: 'POST', body: formData }); const data = await res.json(); if(data.status === 'success') { closeMoveModal(); window.location.reload(); } else alert(data.error || "Error"); }
+
+function openCopyModal(id) { document.getElementById('copyItemId').value = id; document.getElementById('copyModal').classList.remove('hidden'); }
+function closeCopyModal() { document.getElementById('copyModal').classList.add('hidden'); }
+async function submitCopy() { const id = document.getElementById('copyItemId').value; const target = document.getElementById('copyTarget').value; const formData = new FormData(); formData.append('item_id', id); formData.append('target_parent_id', target); const res = await fetch('/item/copy', { method: 'POST', body: formData }); const data = await res.json(); if(data.status === 'success') { closeCopyModal(); window.location.reload(); } else alert(data.error || "Error"); }
+
+// Search suggestions
+const searchInput = document.getElementById("searchInput");
+const suggestionBox = document.getElementById("searchSuggestions");
+let searchTimer = null;
+
+function renderSuggestions(list) {
+    if (!suggestionBox) return;
+    if (!list.length) {
+        suggestionBox.classList.add("hidden");
+        suggestionBox.innerHTML = "";
+        return;
+    }
+    suggestionBox.innerHTML = list.map(name => (
+        `<div class="px-4 py-2 text-sm text-gray-200 hover:bg-gray-800 cursor-pointer suggestion-item">${name}</div>`
+    )).join("");
+    suggestionBox.classList.remove("hidden");
+    suggestionBox.querySelectorAll(".suggestion-item").forEach((el) => {
+        el.addEventListener("click", () => {
+            const val = el.textContent || "";
+            window.location.href = `/dashboard?q=${encodeURIComponent(val)}`;
+        });
+    });
+}
+
+async function fetchSuggestions(q) {
+    const res = await fetch(`/search/suggest?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    renderSuggestions(data.suggestions || []);
+}
+
+if (searchInput) {
+    searchInput.addEventListener("input", () => {
+        const q = searchInput.value.trim();
+        if (searchTimer) clearTimeout(searchTimer);
+        if (!q) {
+            renderSuggestions([]);
+            return;
+        }
+        searchTimer = setTimeout(() => fetchSuggestions(q), 250);
+    });
+
+    searchInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            const q = searchInput.value.trim();
+            if (q) window.location.href = `/dashboard?q=${encodeURIComponent(q)}`;
+        }
+    });
+}
+
+document.addEventListener("click", (e) => {
+    if (!suggestionBox || !searchInput) return;
+    if (!suggestionBox.contains(e.target) && e.target !== searchInput) {
+        renderSuggestions([]);
+    }
+});
+
+// Admin: full storage sync
+const syncBtn = document.getElementById("syncStorageBtn");
+if (syncBtn) {
+    syncBtn.addEventListener("click", async () => {
+        syncBtn.disabled = true;
+        syncBtn.textContent = "Syncing...";
+        try {
+            const res = await fetch("/storage/sync_all", { method: "POST" });
+            const data = await res.json();
+            if (data.status === "started") {
+                alert("Storage sync started. Reload in a minute to see new files.");
+            } else {
+                alert(data.error || "Failed to start sync.");
+            }
+        } catch (e) {
+            alert("Failed to start sync.");
+        } finally {
+            syncBtn.disabled = false;
+            syncBtn.textContent = "Sync Storage";
+        }
+    });
+}
+</script>
+{% endblock %}
