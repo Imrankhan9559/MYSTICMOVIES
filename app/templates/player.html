@@ -13,7 +13,7 @@
         
         {% if "video" in item.mime_type or item.name.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.avi')) %}
             <video id="authPlayer" controls autoplay preload="auto" data-hls="{{ hls_url or '' }}" class="w-full max-h-[80vh] outline-none">
-                <source src="{{ stream_url }}" type="video/mp4">
+                <source src="{{ stream_url }}" type="{{ item.mime_type or 'video/mp4' }}">
                 Your browser does not support the video tag.
             </video>
             <div class="flex flex-wrap gap-2 mt-4">
@@ -81,6 +81,7 @@ const authQuality = document.getElementById("authQuality");
 const authSubtitle = document.getElementById("authSubtitle");
 const authAudio = document.getElementById("authAudio");
 const authSpeed = document.getElementById("authSpeed");
+let authHls = null;
 
 function resetAuthTracks() {
     if (authQuality) authQuality.innerHTML = `<option value="-1">Quality: Original</option>`;
@@ -137,26 +138,65 @@ function setupAuthHlsControls(hls) {
     }
 }
 
-if (authPlayer) {
-    const hlsUrl = authPlayer.dataset.hls;
-    if (hlsUrl) {
-        fetch("/hls/prepare/{{ item.id }}", { method: "POST" });
-        if (window.Hls && Hls.isSupported()) {
-            const hls = new Hls({
-                maxBufferLength: 300,
-                maxMaxBufferLength: 600,
-                maxBufferSize: 120 * 1000 * 1000,
-                backBufferLength: 60
-            });
-            hls.on(Hls.Events.MANIFEST_PARSED, () => setupAuthHlsControls(hls));
-            hls.loadSource(hlsUrl);
-            hls.attachMedia(authPlayer);
-        } else if (authPlayer.canPlayType("application/vnd.apple.mpegurl")) {
-            authPlayer.src = hlsUrl;
-        }
-    } else {
-        resetAuthTracks();
+function switchToAuthHls(hlsUrl) {
+    const currentTime = authPlayer.currentTime || 0;
+    const wasPlaying = !authPlayer.paused;
+    if (window.Hls && Hls.isSupported()) {
+        if (authHls) authHls.destroy();
+        authHls = new Hls({
+            maxBufferLength: 300,
+            maxMaxBufferLength: 600,
+            maxBufferSize: 120 * 1000 * 1000,
+            backBufferLength: 60
+        });
+        authHls.startPosition = currentTime;
+        authHls.on(Hls.Events.MANIFEST_PARSED, () => {
+            setupAuthHlsControls(authHls);
+            if (currentTime > 0) authPlayer.currentTime = currentTime;
+            if (wasPlaying) authPlayer.play();
+        });
+        authHls.loadSource(hlsUrl);
+        authHls.attachMedia(authPlayer);
+    } else if (authPlayer.canPlayType("application/vnd.apple.mpegurl")) {
+        authPlayer.src = hlsUrl;
+        if (currentTime > 0) authPlayer.currentTime = currentTime;
+        if (wasPlaying) authPlayer.play();
     }
+}
+
+async function warmAuthHls() {
+    const hlsUrlBase = authPlayer.dataset.hls || `/static/hls/{{ item.id }}/index.m3u8`;
+    const hlsFallback = hlsUrlBase.includes("/index.m3u8")
+        ? hlsUrlBase.replace("/index.m3u8", "/master.m3u8")
+        : hlsUrlBase.replace("/master.m3u8", "/index.m3u8");
+    await fetch("/hls/prepare/{{ item.id }}", { method: "POST" });
+
+    let ready = false;
+    let chosen = hlsUrlBase;
+    for (let i = 0; i < 20; i++) {
+        try {
+            const res = await fetch(chosen, { method: "HEAD" });
+            if (res.ok) { ready = true; break; }
+        } catch (e) {}
+        await new Promise(r => setTimeout(r, 2000));
+    }
+    if (!ready && hlsFallback !== hlsUrlBase) {
+        chosen = hlsFallback;
+        for (let i = 0; i < 20; i++) {
+            try {
+                const res = await fetch(chosen, { method: "HEAD" });
+                if (res.ok) { ready = true; break; }
+            } catch (e) {}
+            await new Promise(r => setTimeout(r, 2000));
+        }
+    }
+    if (ready) switchToAuthHls(chosen);
+}
+
+if (authPlayer) {
+    resetAuthTracks();
+    authPlayer.src = "{{ stream_url }}";
+    warmAuthHls();
 
     authSpeed?.addEventListener("change", (e) => {
         authPlayer.playbackRate = parseFloat(e.target.value);
