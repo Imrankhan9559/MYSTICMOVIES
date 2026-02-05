@@ -7,7 +7,7 @@ import logging
 from datetime import datetime
 from typing import List
 from fastapi import APIRouter, Request, HTTPException, Body, Header
-from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, FileResponse
+from fastapi.responses import StreamingResponse, RedirectResponse, HTMLResponse, FileResponse, Response
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from pyrogram import Client
@@ -15,7 +15,7 @@ from beanie.operators import In, Or
 from beanie import PydanticObjectId
 from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress
 from app.core.config import settings
-from app.routes.stream import telegram_stream_generator, _align_offset, _align_range, parallel_stream_generator, _get_parallel_clients, _extract_file_size
+from app.routes.stream import telegram_stream_generator, _align_offset, _align_range, parallel_stream_generator, _get_parallel_clients, _extract_file_size, _pick_align
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id, ensure_peer_access
 from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media
 from app.core.hls import ensure_hls, is_hls_ready, hls_url_for
@@ -551,13 +551,16 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
         return start_local, end_local
 
     start, end = _apply_range(file_size)
+    if file_size and start >= file_size:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+    align = _pick_align(file_size)
 
     async def cleanup():
         try:
             if chat_id == "me":
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                aligned_offset, aligned_limit, skip = _align_range(start, limit or 0)
+                aligned_offset, aligned_limit, skip = _align_range(start, limit or 0, align)
                 async for chunk in telegram_stream_generator(client, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                     if limit is not None:
                         remaining = limit - sent
@@ -581,7 +584,7 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
                         resume_start = start + sent
                         if limit is not None and resume_start <= end:
                             remaining_total = end - resume_start + 1
-                            aligned_offset, aligned_limit, skip = _align_range(resume_start, remaining_total)
+                            aligned_offset, aligned_limit, skip = _align_range(resume_start, remaining_total, align)
                             sent_fallback = 0
                             async for chunk in telegram_stream_generator(storage_primary, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                                 remaining = remaining_total - sent_fallback
@@ -601,7 +604,7 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
                                     pass
                 else:
                     sent = 0
-                    aligned_offset, aligned_limit, skip = _align_range(start, limit or 0)
+                    aligned_offset, aligned_limit, skip = _align_range(start, limit or 0, align)
                     async for chunk in telegram_stream_generator(storage_primary, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                         if limit is not None:
                             remaining = limit - sent

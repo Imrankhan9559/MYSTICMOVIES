@@ -3,7 +3,7 @@ import asyncio
 import logging
 from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, Header, Body
-from fastapi.responses import StreamingResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from pyrogram import Client
 from app.db.models import FileSystemItem, User, PlaybackProgress
@@ -49,6 +49,11 @@ def _can_access(user: User, item: FileSystemItem, is_admin: bool) -> bool:
 def _is_video_item(item: FileSystemItem) -> bool:
     name = (item.name or "").lower()
     return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg"))
+
+def _pick_align(size: int) -> int:
+    if size and size >= 10 * 1024 * 1024:
+        return 1024 * 1024
+    return 4096
 
 def _align_offset(start: int, align: int = 4096) -> tuple[int, int]:
     if start < 0:
@@ -140,7 +145,7 @@ async def parallel_stream_generator(
     if total <= 0:
         return
 
-    align = 4096
+    align = _pick_align(total)
     if chunk_size < align:
         chunk_size = align
     # Ensure chunk_size is aligned
@@ -426,13 +431,16 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
         return start_local, end_local
 
     start, end = _apply_range(file_size)
+    if file_size and start >= file_size:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+    align = _pick_align(file_size)
 
     async def cleanup_generator():
         try:
             if chat_id == "me":
                 sent = 0
                 limit = (end - start + 1) if file_size else None
-                aligned_offset, aligned_limit, skip = _align_range(start, limit or 0)
+                aligned_offset, aligned_limit, skip = _align_range(start, limit or 0, align)
                 async for chunk in telegram_stream_generator(client, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                     if limit is not None:
                         remaining = limit - sent
@@ -456,7 +464,7 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
                         resume_start = start + sent
                         if limit is not None and resume_start <= end:
                             remaining_total = end - resume_start + 1
-                            aligned_offset, aligned_limit, skip = _align_range(resume_start, remaining_total)
+                            aligned_offset, aligned_limit, skip = _align_range(resume_start, remaining_total, align)
                             sent_fallback = 0
                             async for chunk in telegram_stream_generator(storage_primary, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                                 remaining = remaining_total - sent_fallback
@@ -476,7 +484,7 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
                                     pass
                 else:
                     sent = 0
-                    aligned_offset, aligned_limit, skip = _align_range(start, limit or 0)
+                    aligned_offset, aligned_limit, skip = _align_range(start, limit or 0, align)
                     async for chunk in telegram_stream_generator(storage_primary, chat_id, msg_id, aligned_offset, aligned_limit, skip):
                         if limit is not None:
                             remaining = limit - sent
