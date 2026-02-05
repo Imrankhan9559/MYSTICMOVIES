@@ -15,7 +15,7 @@ from beanie.operators import In, Or
 from beanie import PydanticObjectId
 from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress
 from app.core.config import settings
-from app.routes.stream import telegram_stream_generator, _align_offset
+from app.routes.stream import telegram_stream_generator, _align_offset, parallel_stream_generator, _get_parallel_clients
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id
 from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media
 from app.core.hls import ensure_hls, is_hls_ready, hls_url_for
@@ -303,6 +303,7 @@ async def public_view(request: Request, token: str):
             "request": request,
             "episodes": ordered_items,
             "active_item": active_item,
+            "item": active_item,
             "stream_url": f"/s/stream/file/{active_item.id}",
             "hls_url": active_hls,
             "bundle_name": folder.name or (collection.name if collection else "Shared Folder"),
@@ -400,6 +401,7 @@ async def public_view(request: Request, token: str):
             "request": request,
             "episodes": ordered_items,
             "active_item": active_item,
+            "item": active_item,
             "stream_url": f"/s/stream/file/{active_item.id}",
             "hls_url": active_hls,
             "bundle_name": collection.name,
@@ -478,6 +480,8 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
     disposition = "attachment" if download else "inline"
 
     use_ephemeral = False
+    parallel_clients: list[Client] = []
+    storage_primary: Client | None = None
     if chat_id == "me":
         owner = await User.find_one(User.phone_number == item.owner_phone)
         client = Client("pub_stream", api_id=settings.API_ID, api_hash=settings.API_HASH, session_string=owner.session_string, in_memory=True)
@@ -491,6 +495,13 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             client = await pick_storage_client(chat_id)
         except Exception:
             client = None
+        try:
+            parallel_clients = await _get_parallel_clients(chat_id)
+        except Exception:
+            parallel_clients = []
+        if client and client not in parallel_clients:
+            parallel_clients.append(client)
+        storage_primary = client or (parallel_clients[0] if parallel_clients else None)
 
     async def cleanup():
         try:
@@ -510,21 +521,25 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
                             break
                         sent += len(chunk)
                     yield chunk
-            elif client:
-                sent = 0
+            elif storage_primary:
                 limit = (end - start + 1) if file_size else None
-                aligned_offset, skip = _align_offset(start)
-                aligned_limit = (limit + skip) if limit is not None else None
-                async for chunk in telegram_stream_generator(client, chat_id, msg_id, aligned_offset, aligned_limit, skip):
-                    if limit is not None:
-                        remaining = limit - sent
-                        if remaining <= 0:
-                            break
-                        if len(chunk) > remaining:
-                            yield chunk[:remaining]
-                            break
-                        sent += len(chunk)
-                    yield chunk
+                if parallel_clients and len(parallel_clients) > 1 and file_size:
+                    async for chunk in parallel_stream_generator(parallel_clients, chat_id, msg_id, start, end):
+                        yield chunk
+                else:
+                    sent = 0
+                    aligned_offset, skip = _align_offset(start)
+                    aligned_limit = (limit + skip) if limit is not None else None
+                    async for chunk in telegram_stream_generator(storage_primary, chat_id, msg_id, aligned_offset, aligned_limit, skip):
+                        if limit is not None:
+                            remaining = limit - sent
+                            if remaining <= 0:
+                                break
+                            if len(chunk) > remaining:
+                                yield chunk[:remaining]
+                                break
+                            sent += len(chunk)
+                        yield chunk
             else:
                 msg = await tl_get_message(msg_id)
                 limit = (end - start + 1) if file_size else None

@@ -1,4 +1,5 @@
 import math
+import asyncio
 from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, Header, Body
 from fastapi.responses import StreamingResponse, HTMLResponse
@@ -6,7 +7,18 @@ from fastapi.templating import Jinja2Templates
 from pyrogram import Client
 from app.db.models import FileSystemItem, User, PlaybackProgress
 from app.core.config import settings
-from app.core.telegram_bot import tg_client, get_pool_client, ensure_peer_access, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id
+from app.core.telegram_bot import (
+    tg_client,
+    bot_client,
+    bot_pool,
+    user_client,
+    get_pool_client,
+    ensure_peer_access,
+    get_storage_client,
+    get_storage_chat_id,
+    pick_storage_client,
+    normalize_chat_id
+)
 from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download
 from app.core.hls import ensure_hls, is_hls_ready, hls_url_for
 
@@ -36,12 +48,163 @@ def _is_video_item(item: FileSystemItem) -> bool:
     name = (item.name or "").lower()
     return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg"))
 
-def _align_offset(start: int, align: int = 512) -> tuple[int, int]:
+def _align_offset(start: int, align: int = 4096) -> tuple[int, int]:
     if start < 0:
         start = 0
     aligned = start - (start % align)
     skip = start - aligned
     return aligned, skip
+
+
+def _extract_file_id(msg):
+    if not msg:
+        return None
+    if msg.document:
+        return msg.document.file_id
+    if msg.video:
+        return msg.video.file_id
+    if msg.audio:
+        return msg.audio.file_id
+    if msg.photo:
+        return msg.photo.file_id
+    return None
+
+
+def _extract_file_size(msg) -> int | None:
+    if not msg:
+        return None
+    if msg.document:
+        return getattr(msg.document, "file_size", None)
+    if msg.video:
+        return getattr(msg.video, "file_size", None)
+    if msg.audio:
+        return getattr(msg.audio, "file_size", None)
+    if msg.photo and getattr(msg.photo, "sizes", None):
+        sizes = msg.photo.sizes
+        if sizes:
+            return getattr(sizes[-1], "size", None)
+    return None
+
+
+async def _get_parallel_clients(chat_id: int | str) -> list[Client]:
+    candidates: list[Client] = []
+    if bot_pool:
+        candidates.extend(bot_pool)
+    if bot_client:
+        candidates.append(bot_client)
+    if user_client:
+        candidates.append(user_client)
+    if tg_client:
+        candidates.append(tg_client)
+
+    # Deduplicate
+    unique: list[Client] = []
+    seen = set()
+    for client in candidates:
+        key = id(client)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(client)
+
+    usable: list[Client] = []
+    for client in unique:
+        try:
+            if await ensure_peer_access(client, chat_id):
+                usable.append(client)
+        except Exception:
+            continue
+    return usable
+
+
+async def parallel_stream_generator(
+    clients: list[Client],
+    chat_id: int | str,
+    message_id: int,
+    start: int,
+    end: int,
+    chunk_size: int = 1024 * 1024
+):
+    total = end - start + 1
+    if total <= 0:
+        return
+
+    align = 4096
+    if chunk_size < align:
+        chunk_size = align
+    # Ensure chunk_size is aligned
+    if chunk_size % align != 0:
+        chunk_size = (chunk_size // align) * align
+        if chunk_size < align:
+            chunk_size = align
+
+    aligned_start, skip = _align_offset(start, align)
+    total_aligned = total + skip
+    num_chunks = (total_aligned + chunk_size - 1) // chunk_size
+
+    queue: asyncio.Queue[int | None] = asyncio.Queue()
+    for idx in range(num_chunks):
+        queue.put_nowait(idx)
+    for _ in range(len(clients)):
+        queue.put_nowait(None)
+
+    results: dict[int, bytes] = {}
+    cond = asyncio.Condition()
+    error: Exception | None = None
+
+    async def worker(client: Client):
+        nonlocal error
+        try:
+            msg = await client.get_messages(chat_id, message_ids=message_id)
+            file_id = _extract_file_id(msg)
+            if not file_id:
+                raise RuntimeError("Missing file id for parallel stream.")
+            while True:
+                idx = await queue.get()
+                if idx is None:
+                    break
+                offset = aligned_start + idx * chunk_size
+                limit = min(chunk_size, total_aligned - idx * chunk_size)
+                buf = bytearray()
+                async for part in client.stream_media(file_id, offset=offset, limit=limit):
+                    if not part:
+                        break
+                    buf.extend(part)
+                    if len(buf) >= limit:
+                        break
+                async with cond:
+                    results[idx] = bytes(buf)
+                    cond.notify_all()
+        except Exception as e:
+            async with cond:
+                if error is None:
+                    error = e
+                cond.notify_all()
+
+    workers = [asyncio.create_task(worker(c)) for c in clients]
+    sent = 0
+    try:
+        for idx in range(num_chunks):
+            async with cond:
+                await cond.wait_for(lambda: idx in results or error is not None)
+                if error is not None:
+                    raise error
+                data = results.pop(idx)
+            if idx == 0 and skip:
+                if skip >= len(data):
+                    continue
+                data = data[skip:]
+            remaining = total - sent
+            if remaining <= 0:
+                break
+            if len(data) > remaining:
+                data = data[:remaining]
+            sent += len(data)
+            if data:
+                yield data
+    finally:
+        for task in workers:
+            task.cancel()
 
 
 async def telegram_stream_generator(
@@ -194,6 +357,8 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
 
     use_ephemeral = False
     storage_client = None
+    storage_primary: Client | None = None
+    parallel_clients: list[Client] = []
     if chat_id == "me":
         client = Client("streamer", api_id=settings.API_ID, api_hash=settings.API_HASH, session_string=user.session_string, in_memory=True)
         await client.connect()
@@ -206,6 +371,13 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             storage_client = await pick_storage_client(chat_id)
         except Exception:
             storage_client = None
+        try:
+            parallel_clients = await _get_parallel_clients(chat_id)
+        except Exception:
+            parallel_clients = []
+        if storage_client and storage_client not in parallel_clients:
+            parallel_clients.append(storage_client)
+        storage_primary = storage_client or (parallel_clients[0] if parallel_clients else None)
 
     async def cleanup_generator():
         try:
@@ -225,21 +397,25 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
                             break
                         sent += len(chunk)
                     yield chunk
-            elif storage_client:
-                sent = 0
+            elif storage_primary:
                 limit = (end - start + 1) if file_size else None
-                aligned_offset, skip = _align_offset(start)
-                aligned_limit = (limit + skip) if limit is not None else None
-                async for chunk in telegram_stream_generator(storage_client, chat_id, msg_id, aligned_offset, aligned_limit, skip):
-                    if limit is not None:
-                        remaining = limit - sent
-                        if remaining <= 0:
-                            break
-                        if len(chunk) > remaining:
-                            yield chunk[:remaining]
-                            break
-                        sent += len(chunk)
-                    yield chunk
+                if parallel_clients and len(parallel_clients) > 1 and file_size:
+                    async for chunk in parallel_stream_generator(parallel_clients, chat_id, msg_id, start, end):
+                        yield chunk
+                else:
+                    sent = 0
+                    aligned_offset, skip = _align_offset(start)
+                    aligned_limit = (limit + skip) if limit is not None else None
+                    async for chunk in telegram_stream_generator(storage_primary, chat_id, msg_id, aligned_offset, aligned_limit, skip):
+                        if limit is not None:
+                            remaining = limit - sent
+                            if remaining <= 0:
+                                break
+                            if len(chunk) > remaining:
+                                yield chunk[:remaining]
+                                break
+                            sent += len(chunk)
+                        yield chunk
             else:
                 msg = await tl_get_message(msg_id)
                 limit = (end - start + 1) if file_size else None
