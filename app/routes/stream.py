@@ -1,5 +1,6 @@
 import math
 import asyncio
+import logging
 from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, Header, Body
 from fastapi.responses import StreamingResponse, HTMLResponse
@@ -24,6 +25,7 @@ from app.core.hls import ensure_hls, is_hls_ready, hls_url_for
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+logger = logging.getLogger(__name__)
 
 async def get_current_user(request: Request):
     phone = request.cookies.get("user_phone")
@@ -172,6 +174,8 @@ async def parallel_stream_generator(
                     buf.extend(part)
                     if len(buf) >= limit:
                         break
+                if len(buf) < limit:
+                    raise RuntimeError(f"Short read in parallel stream (got {len(buf)} of {limit}).")
                 async with cond:
                     results[idx] = bytes(buf)
                     cond.notify_all()
@@ -339,22 +343,6 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
     start = 0
     end = file_size - 1 if file_size else 0
 
-    if range:
-        try:
-            range_val = range.replace("bytes=", "")
-            parts = range_val.split("-")
-            if parts[0]:
-                start = int(parts[0])
-            if len(parts) > 1 and parts[1]:
-                end = int(parts[1])
-            else:
-                end = file_size - 1 if file_size else 0
-            if file_size and end >= file_size:
-                end = file_size - 1
-        except ValueError:
-            start = 0
-            end = file_size - 1 if file_size else 0
-
     use_ephemeral = False
     storage_client = None
     storage_primary: Client | None = None
@@ -379,9 +367,48 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             parallel_clients.append(storage_client)
         storage_primary = storage_client or (parallel_clients[0] if parallel_clients else None)
 
+    msg_id = item.parts[0].message_id
+    # Probe actual size to avoid OFFSET_INVALID on wrong DB sizes
+    try:
+        probe_client = client if chat_id == "me" else storage_primary
+        if probe_client and await ensure_peer_access(probe_client, chat_id):
+            msg = await probe_client.get_messages(chat_id, message_ids=msg_id)
+            actual_size = _extract_file_size(msg)
+            if actual_size:
+                file_size = actual_size
+                if item.size != actual_size:
+                    try:
+                        item.size = actual_size
+                        await item.save()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    def _apply_range(size: int):
+        start_local = 0
+        end_local = size - 1 if size else 0
+        if range:
+            try:
+                range_val = range.replace("bytes=", "")
+                parts = range_val.split("-")
+                if parts[0]:
+                    start_local = int(parts[0])
+                if len(parts) > 1 and parts[1]:
+                    end_local = int(parts[1])
+                else:
+                    end_local = size - 1 if size else 0
+                if size and end_local >= size:
+                    end_local = size - 1
+            except ValueError:
+                start_local = 0
+                end_local = size - 1 if size else 0
+        return start_local, end_local
+
+    start, end = _apply_range(file_size)
+
     async def cleanup_generator():
         try:
-            msg_id = item.parts[0].message_id
             if chat_id == "me":
                 sent = 0
                 limit = (end - start + 1) if file_size else None
@@ -400,8 +427,35 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             elif storage_primary:
                 limit = (end - start + 1) if file_size else None
                 if parallel_clients and len(parallel_clients) > 1 and file_size:
-                    async for chunk in parallel_stream_generator(parallel_clients, chat_id, msg_id, start, end):
-                        yield chunk
+                    sent = 0
+                    try:
+                        async for chunk in parallel_stream_generator(parallel_clients, chat_id, msg_id, start, end):
+                            sent += len(chunk)
+                            yield chunk
+                    except Exception as e:
+                        logger.warning(f"Parallel stream failed, falling back: {e}")
+                        resume_start = start + sent
+                        if limit is not None and resume_start <= end:
+                            remaining_total = end - resume_start + 1
+                            aligned_offset, skip = _align_offset(resume_start)
+                            aligned_limit = remaining_total + skip
+                            sent_fallback = 0
+                            async for chunk in telegram_stream_generator(storage_primary, chat_id, msg_id, aligned_offset, aligned_limit, skip):
+                                remaining = remaining_total - sent_fallback
+                                if remaining <= 0:
+                                    break
+                                if len(chunk) > remaining:
+                                    yield chunk[:remaining]
+                                    break
+                                sent_fallback += len(chunk)
+                                yield chunk
+                            if sent_fallback < remaining_total:
+                                try:
+                                    msg = await tl_get_message(msg_id)
+                                    async for chunk in tl_iter_download(msg, offset=resume_start + sent_fallback, limit=remaining_total - sent_fallback):
+                                        yield chunk
+                                except Exception:
+                                    pass
                 else:
                     sent = 0
                     aligned_offset, skip = _align_offset(start)
@@ -416,6 +470,13 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
                                 break
                             sent += len(chunk)
                         yield chunk
+                    if limit is not None and sent < limit:
+                        try:
+                            msg = await tl_get_message(msg_id)
+                            async for chunk in tl_iter_download(msg, offset=start + sent, limit=limit - sent):
+                                yield chunk
+                        except Exception:
+                            pass
             else:
                 msg = await tl_get_message(msg_id)
                 limit = (end - start + 1) if file_size else None

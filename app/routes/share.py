@@ -15,8 +15,8 @@ from beanie.operators import In, Or
 from beanie import PydanticObjectId
 from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress
 from app.core.config import settings
-from app.routes.stream import telegram_stream_generator, _align_offset, parallel_stream_generator, _get_parallel_clients
-from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id
+from app.routes.stream import telegram_stream_generator, _align_offset, parallel_stream_generator, _get_parallel_clients, _extract_file_size
+from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id, ensure_peer_access
 from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media
 from app.core.hls import ensure_hls, is_hls_ready, hls_url_for
 from app.utils.file_utils import format_size, get_icon_for_mime
@@ -32,6 +32,23 @@ def _natural_key(value: str):
 def _is_video_item(item: FileSystemItem) -> bool:
     name = (item.name or "").lower()
     return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi"))
+
+def _select_default_item(items: List[FileSystemItem]) -> FileSystemItem | None:
+    if not items:
+        return None
+    videos = [i for i in items if _is_video_item(i)]
+    if not videos:
+        return items[0]
+    patterns = [
+        r"(?:^|\\b)(?:episode|ep)[\\s._-]*0*1\\b",
+        r"(?:^|\\b)e0*1\\b",
+        r"s\\d+e0*1\\b"
+    ]
+    for item in videos:
+        name = (item.name or "").lower()
+        if any(re.search(pat, name) for pat in patterns):
+            return item
+    return videos[0]
 
 def _normalize_phone(phone: str) -> str:
     return phone.replace(" ", "")
@@ -284,7 +301,7 @@ async def public_view(request: Request, token: str):
         if episode_override:
             active_item = next((i for i in ordered_items if str(i.id) == episode_override), None)
         if not active_item:
-            active_item = next((i for i in ordered_items if _is_video_item(i)), ordered_items[0] if ordered_items else None)
+            active_item = _select_default_item(ordered_items)
         if not active_item:
             raise HTTPException(404, "No items found")
 
@@ -382,7 +399,7 @@ async def public_view(request: Request, token: str):
         if episode_override:
             active_item = next((i for i in ordered_items if str(i.id) == episode_override), None)
         if not active_item:
-            active_item = next((i for i in ordered_items if _is_video_item(i)), ordered_items[0] if ordered_items else None)
+            active_item = _select_default_item(ordered_items)
         if not active_item:
             raise HTTPException(404, "No items found")
 
@@ -461,22 +478,6 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
     start = 0
     end = file_size - 1 if file_size else 0
 
-    if range:
-        try:
-            range_val = range.replace("bytes=", "")
-            parts = range_val.split("-")
-            if parts[0]:
-                start = int(parts[0])
-            if len(parts) > 1 and parts[1]:
-                end = int(parts[1])
-            else:
-                end = file_size - 1 if file_size else 0
-            if file_size and end >= file_size:
-                end = file_size - 1
-        except ValueError:
-            start = 0
-            end = file_size - 1 if file_size else 0
-
     disposition = "attachment" if download else "inline"
 
     use_ephemeral = False
@@ -503,9 +504,48 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             parallel_clients.append(client)
         storage_primary = client or (parallel_clients[0] if parallel_clients else None)
 
+    msg_id = item.parts[0].message_id
+    # Probe actual size to avoid OFFSET_INVALID on wrong DB sizes
+    try:
+        probe_client = client if chat_id == "me" else storage_primary
+        if probe_client and await ensure_peer_access(probe_client, chat_id):
+            msg = await probe_client.get_messages(chat_id, message_ids=msg_id)
+            actual_size = _extract_file_size(msg)
+            if actual_size:
+                file_size = actual_size
+                if item.size != actual_size:
+                    try:
+                        item.size = actual_size
+                        await item.save()
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    def _apply_range(size: int):
+        start_local = 0
+        end_local = size - 1 if size else 0
+        if range:
+            try:
+                range_val = range.replace("bytes=", "")
+                parts = range_val.split("-")
+                if parts[0]:
+                    start_local = int(parts[0])
+                if len(parts) > 1 and parts[1]:
+                    end_local = int(parts[1])
+                else:
+                    end_local = size - 1 if size else 0
+                if size and end_local >= size:
+                    end_local = size - 1
+            except ValueError:
+                start_local = 0
+                end_local = size - 1 if size else 0
+        return start_local, end_local
+
+    start, end = _apply_range(file_size)
+
     async def cleanup():
         try:
-            msg_id = item.parts[0].message_id
             if chat_id == "me":
                 sent = 0
                 limit = (end - start + 1) if file_size else None
@@ -524,8 +564,35 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             elif storage_primary:
                 limit = (end - start + 1) if file_size else None
                 if parallel_clients and len(parallel_clients) > 1 and file_size:
-                    async for chunk in parallel_stream_generator(parallel_clients, chat_id, msg_id, start, end):
-                        yield chunk
+                    sent = 0
+                    try:
+                        async for chunk in parallel_stream_generator(parallel_clients, chat_id, msg_id, start, end):
+                            sent += len(chunk)
+                            yield chunk
+                    except Exception as e:
+                        logger.warning(f"Parallel stream failed, falling back: {e}")
+                        resume_start = start + sent
+                        if limit is not None and resume_start <= end:
+                            remaining_total = end - resume_start + 1
+                            aligned_offset, skip = _align_offset(resume_start)
+                            aligned_limit = remaining_total + skip
+                            sent_fallback = 0
+                            async for chunk in telegram_stream_generator(storage_primary, chat_id, msg_id, aligned_offset, aligned_limit, skip):
+                                remaining = remaining_total - sent_fallback
+                                if remaining <= 0:
+                                    break
+                                if len(chunk) > remaining:
+                                    yield chunk[:remaining]
+                                    break
+                                sent_fallback += len(chunk)
+                                yield chunk
+                            if sent_fallback < remaining_total:
+                                try:
+                                    msg = await tl_get_message(msg_id)
+                                    async for chunk in tl_iter_download(msg, offset=resume_start + sent_fallback, limit=remaining_total - sent_fallback):
+                                        yield chunk
+                                except Exception:
+                                    pass
                 else:
                     sent = 0
                     aligned_offset, skip = _align_offset(start)
@@ -540,6 +607,13 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
                                 break
                             sent += len(chunk)
                         yield chunk
+                    if limit is not None and sent < limit:
+                        try:
+                            msg = await tl_get_message(msg_id)
+                            async for chunk in tl_iter_download(msg, offset=start + sent, limit=limit - sent):
+                                yield chunk
+                        except Exception:
+                            pass
             else:
                 msg = await tl_get_message(msg_id)
                 limit = (end - start + 1) if file_size else None
