@@ -18,8 +18,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 3. Copy the rest of the application code
 COPY . .
 
-# 4. Expose the port Koyeb expects (8000)
+# 4. Render sets PORT at runtime; default to 8000 if not provided
+ENV PORT=8000
 EXPOSE 8000
 
 # 5. Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "main.py"]
