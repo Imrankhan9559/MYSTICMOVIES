@@ -7,6 +7,7 @@ from pyrogram import Client
 from app.db.models import FileSystemItem, User, PlaybackProgress
 from app.core.config import settings
 from app.core.telegram_bot import tg_client, get_pool_client, ensure_peer_access, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id
+from app.core.cache import cache_enabled, file_cache_path, is_file_cached, iter_file_range, touch_path, warm_cache_for_item
 from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download
 from app.core.hls import ensure_hls, is_hls_ready, hls_url_for
 
@@ -142,6 +143,51 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
         chat_id = get_storage_chat_id() or "me"
         from_storage = True
     chat_id = normalize_chat_id(chat_id)
+
+    file_size = item.size or 0
+    start = 0
+    end = file_size - 1 if file_size else 0
+
+    if range:
+        try:
+            range_val = range.replace("bytes=", "")
+            parts = range_val.split("-")
+            if parts[0]:
+                start = int(parts[0])
+            if len(parts) > 1 and parts[1]:
+                end = int(parts[1])
+            else:
+                end = file_size - 1 if file_size else 0
+            if file_size and end >= file_size:
+                end = file_size - 1
+        except ValueError:
+            start = 0
+            end = file_size - 1 if file_size else 0
+
+    if cache_enabled():
+        cache_path = file_cache_path(str(item.id))
+        if is_file_cached(str(item.id), file_size):
+            touch_path(cache_path)
+            headers = {
+                'Accept-Ranges': 'bytes',
+                'Content-Type': item.mime_type or "application/octet-stream",
+                'Content-Disposition': f'inline; filename=\"{item.name}\"'
+            }
+            if file_size:
+                headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+                headers['Content-Length'] = str(max((end - start + 1), 0))
+            return StreamingResponse(
+                iter_file_range(cache_path, start, end),
+                status_code=206 if range else 200,
+                headers=headers,
+                media_type=item.mime_type
+            )
+        await warm_cache_for_item(
+            item,
+            chat_id,
+            user.session_string if chat_id == "me" else None
+        )
+
     use_ephemeral = False
     storage_client = None
     if chat_id == "me":
@@ -156,26 +202,6 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             storage_client = await pick_storage_client(chat_id)
         except Exception:
             storage_client = None
-
-    file_size = item.size
-    start = 0
-    end = file_size - 1
-
-    if range:
-        try:
-            range_val = range.replace("bytes=", "")
-            parts = range_val.split("-")
-            if parts[0]:
-                start = int(parts[0])
-            if len(parts) > 1 and parts[1]:
-                end = int(parts[1])
-            else:
-                end = file_size - 1
-            if end >= file_size:
-                end = file_size - 1
-        except ValueError:
-            start = 0
-            end = file_size - 1
 
     async def cleanup_generator():
         try:

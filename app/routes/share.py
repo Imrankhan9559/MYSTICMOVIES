@@ -12,6 +12,7 @@ from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgre
 from app.core.config import settings
 from app.routes.stream import telegram_stream_generator
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id
+from app.core.cache import cache_enabled, file_cache_path, is_file_cached, iter_file_range, touch_path, warm_cache_for_item
 from app.core.telethon_storage import get_message as tl_get_message, iter_download as tl_iter_download
 from app.core.hls import ensure_hls, is_hls_ready, hls_url_for
 from app.utils.file_utils import format_size, get_icon_for_mime
@@ -296,20 +297,6 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
         chat_id = get_storage_chat_id() or "me"
         from_storage = True
     chat_id = normalize_chat_id(chat_id)
-    use_ephemeral = False
-    if chat_id == "me":
-        owner = await User.find_one(User.phone_number == item.owner_phone)
-        client = Client("pub_stream", api_id=settings.API_ID, api_hash=settings.API_HASH, session_string=owner.session_string, in_memory=True)
-        await client.connect()
-        use_ephemeral = True
-    else:
-        client = None
-        if from_storage:
-            chat_id = normalize_chat_id(get_storage_chat_id())
-        try:
-            client = await pick_storage_client(chat_id)
-        except Exception:
-            client = None
 
     file_size = item.size or 0
     start = 0
@@ -324,12 +311,54 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             if len(parts) > 1 and parts[1]:
                 end = int(parts[1])
             else:
-                end = file_size - 1
+                end = file_size - 1 if file_size else 0
             if file_size and end >= file_size:
                 end = file_size - 1
         except ValueError:
             start = 0
             end = file_size - 1 if file_size else 0
+
+    if cache_enabled():
+        cache_path = file_cache_path(str(item.id))
+        if is_file_cached(str(item.id), file_size):
+            touch_path(cache_path)
+            headers = {
+                'Content-Disposition': f'inline; filename="{item.name}"',
+                'Accept-Ranges': 'bytes',
+            }
+            if file_size:
+                headers.update({
+                    'Content-Range': f'bytes {start}-{end}/{file_size}',
+                    'Content-Length': str(max((end - start + 1), 0)),
+                })
+            if item.mime_type:
+                headers['Content-Type'] = item.mime_type
+            return StreamingResponse(
+                iter_file_range(cache_path, start, end),
+                status_code=206 if range else 200,
+                headers=headers,
+                media_type=item.mime_type
+            )
+        owner_session = None
+        if chat_id == "me":
+            owner = await User.find_one(User.phone_number == item.owner_phone)
+            owner_session = owner.session_string if owner else None
+        await warm_cache_for_item(item, chat_id, owner_session)
+
+    use_ephemeral = False
+    if chat_id == "me":
+        owner = await User.find_one(User.phone_number == item.owner_phone)
+        client = Client("pub_stream", api_id=settings.API_ID, api_hash=settings.API_HASH, session_string=owner.session_string, in_memory=True)
+        await client.connect()
+        use_ephemeral = True
+    else:
+        client = None
+        if from_storage:
+            chat_id = normalize_chat_id(get_storage_chat_id())
+        try:
+            client = await pick_storage_client(chat_id)
+        except Exception:
+            client = None
 
     async def cleanup():
         try:
