@@ -30,27 +30,27 @@
         </div>
     </div>
 
-    <div class="flex space-x-3 w-full md:w-auto justify-end items-center">
+    <div class="flex flex-wrap gap-3 w-full md:w-auto justify-start md:justify-end items-center">
         {% if is_admin %}
-        <button id="syncStorageBtn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-white flex items-center shadow-lg font-bold transition text-sm">
+        <button id="syncStorageBtn" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-white flex items-center shadow-lg font-bold transition text-sm w-full sm:w-auto justify-center">
             <i class="fas fa-sync-alt mr-2"></i> Sync Storage
         </button>
         {% endif %}
-        <button onclick="toggleSelectMode()" id="selectModeBtn" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-lg text-white flex items-center shadow-lg font-bold transition text-sm">
+        <button onclick="toggleSelectMode()" id="selectModeBtn" class="bg-purple-600 hover:bg-purple-500 px-4 py-2 rounded-lg text-white flex items-center shadow-lg font-bold transition text-sm w-full sm:w-auto justify-center">
             <i class="fas fa-check-square mr-2"></i> Select
         </button>
-        <form action="/create_folder" method="post" class="flex shadow-lg">
+        <form action="/create_folder" method="post" class="flex shadow-lg w-full sm:w-auto">
             <input type="hidden" name="parent_id" value="{{ current_folder.id if current_folder else '' }}">
-            <input type="text" name="folder_name" placeholder="New Folder..." class="bg-gray-900 border border-gray-600 rounded-l-lg px-4 text-white text-sm focus:outline-none focus:border-blue-500 w-full md:w-40 transition-all" required>
+            <input type="text" name="folder_name" placeholder="New Folder..." class="bg-gray-900 border border-gray-600 rounded-l-lg px-4 text-white text-sm focus:outline-none focus:border-blue-500 w-full sm:w-40 transition-all min-w-0" required>
             <button type="submit" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-r-lg text-white text-sm transition"><i class="fas fa-folder-plus"></i></button>
         </form>
-        <a href="/upload_zone?folder_id={{ current_folder.id if current_folder else '' }}" class="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 px-6 py-2 rounded-lg text-white flex items-center shadow-lg font-bold transition transform hover:scale-105">
+        <a href="/upload_zone?folder_id={{ current_folder.id if current_folder else '' }}" class="bg-gradient-to-r from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 px-6 py-2 rounded-lg text-white flex items-center shadow-lg font-bold transition transform hover:scale-105 w-full sm:w-auto justify-center">
             <i class="fas fa-cloud-upload-alt mr-2"></i> Upload
         </a>
     </div>
 </div>
 
-<div id="selectionBar" class="hidden fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-gray-800 px-6 py-3 rounded-full shadow-2xl border border-purple-500 flex items-center gap-4 z-50 animate-bounce-in">
+<div id="selectionBar" class="hidden fixed bottom-10 left-1/2 transform -translate-x-1/2 bg-gray-800 px-6 py-3 rounded-full shadow-2xl border border-purple-500 flex flex-wrap items-center justify-center gap-4 z-50 animate-bounce-in max-w-[95vw] w-[calc(100%-2rem)] sm:w-auto">
     <span class="text-white font-bold"><span id="selectCount" class="text-purple-400">0</span> selected</span>
     
     <button onclick="shareSelected()" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-1 rounded-full text-sm font-bold shadow-lg transition flex items-center">
@@ -69,7 +69,7 @@
 </div>
 
 <div class="mb-20">
-    <div class="grid grid-cols-12 gap-3 px-4 py-2 text-[11px] uppercase tracking-widest text-gray-500">
+    <div class="hidden sm:grid grid-cols-12 gap-3 px-4 py-2 text-[11px] uppercase tracking-widest text-gray-500">
         <div class="col-span-6">Name</div>
         <div class="col-span-2">Size</div>
         <div class="col-span-2">Modified</div>
@@ -77,8 +77,8 @@
     </div>
     <div class="space-y-2">
         {% for item in items %}
-            <div data-row-id="{{ item.id }}" class="grid grid-cols-12 gap-3 items-center bg-gray-800/70 hover:bg-gray-700/70 border border-gray-700 hover:border-gray-500 rounded-lg px-4 py-3 transition cursor-pointer group" onclick="handleItemClick('{{ item.id }}', {{ 'true' if item.is_folder else 'false' }})">
-                <div class="col-span-6 flex items-center gap-3 min-w-0">
+            <div data-row-id="{{ item.id }}" class="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center bg-gray-800/70 hover:bg-gray-700/70 border border-gray-700 hover:border-gray-500 rounded-lg px-4 py-3 transition cursor-pointer group" onclick="handleItemClick('{{ item.id }}', {{ 'true' if item.is_folder else 'false' }})">
+                <div class="sm:col-span-6 flex items-center gap-3 min-w-0">
                     <div class="selection-checkbox hidden">
                         <input type="checkbox" value="{{ item.id }}" onclick="event.stopPropagation(); toggleItemCheck('{{ item.id }}')" class="w-4 h-4 accent-purple-600 cursor-pointer shadow-sm">
                     </div>
@@ -104,13 +104,15 @@
                         {% endif %}
                     </div>
                 </div>
-                <div class="col-span-2 text-xs text-gray-400">
+                <div class="sm:col-span-2 text-xs text-gray-400 flex items-center gap-2">
+                    <span class="sm:hidden text-[10px] uppercase tracking-widest text-gray-500">Size</span>
                     {% if item.is_folder %} -- {% else %} {{ item.formatted_size }} {% endif %}
                 </div>
-                <div class="col-span-2 text-xs text-gray-400">
+                <div class="sm:col-span-2 text-xs text-gray-400 flex items-center gap-2">
+                    <span class="sm:hidden text-[10px] uppercase tracking-widest text-gray-500">Modified</span>
                     {{ item.created_at.strftime('%Y-%m-%d %H:%M') if item.created_at else '' }}
                 </div>
-                <div class="col-span-2 flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition row-actions">
+                <div class="sm:col-span-2 flex flex-wrap items-center justify-start sm:justify-end gap-2 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition row-actions mt-2 sm:mt-0">
                     {% if item.is_folder %}
                         <button onclick="event.stopPropagation(); window.location.href='/dashboard?folder_id={{ item.id }}'" class="w-8 h-8 rounded-full bg-gray-700 hover:bg-gray-600 text-white flex items-center justify-center" title="Open">
                             <i class="fas fa-folder-open text-xs"></i>

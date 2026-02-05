@@ -14,31 +14,31 @@
     
     <div class="w-full max-w-4xl bg-gray-800 rounded-xl shadow-2xl overflow-hidden border border-gray-700 relative">
         
-        <div class="bg-gray-900 p-4 border-b border-gray-700 flex justify-between items-center">
+        <div class="bg-gray-900 p-4 border-b border-gray-700 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div class="flex items-center text-white">
                 <i class="fas {{ item.icon }} text-red-500 text-2xl mr-3"></i>
                 <div>
-                    <h1 class="font-bold text-lg truncate max-w-md">{{ item.name }}</h1>
+                    <h1 class="font-bold text-lg truncate max-w-full sm:max-w-md">{{ item.name }}</h1>
                     <p class="text-xs text-gray-400">Shared via MorganXMystic Cloud</p>
                 </div>
             </div>
-            <div class="flex gap-2">
-                <a href="{{ stream_url }}" download="{{ item.name }}" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded text-sm font-bold transition shadow-lg">
+            <div class="flex flex-wrap gap-2 w-full sm:w-auto justify-start sm:justify-end">
+                <a href="{{ stream_url }}" download="{{ item.name }}" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded text-sm font-bold transition shadow-lg w-full sm:w-auto text-center">
                     <i class="fas fa-download mr-1"></i> Download
                 </a>
                 {% if bot_username and item.share_token %}
-                <a href="https://t.me/{{ bot_username }}?start=share_{{ item.share_token }}" target="_blank" class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-2 rounded text-sm font-bold transition shadow-lg">
+                <a href="https://t.me/{{ bot_username }}?start=share_{{ item.share_token }}" target="_blank" class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-2 rounded text-sm font-bold transition shadow-lg w-full sm:w-auto text-center">
                     <i class="fab fa-telegram mr-1"></i> Telegram
                 </a>
                 {% endif %}
             </div>
         </div>
 
-        <div class="bg-black min-h-[400px] flex justify-center items-center relative group">
+        <div class="bg-black min-h-[260px] sm:min-h-[400px] flex justify-center items-center relative group">
             
             {% if "video" in item.mime_type or item.name.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.avi')) %}
                 <video id="publicPlayer" controls autoplay preload="auto" data-hls="{{ hls_url or '' }}" class="w-full max-h-[70vh] outline-none">
-                    <source src="{{ stream_url }}" type="{{ item.mime_type or 'video/mp4' }}">
+                    <source src="{{ stream_url }}" type="video/mp4">
                     Your browser does not support the video tag.
                 </video>
             
@@ -69,32 +69,26 @@
 
         <div class="bg-gray-900 p-4 border-t border-gray-700 flex flex-col md:flex-row md:items-center gap-4">
             <div class="flex-1 text-xs text-gray-400">Shared via MorganXMystic</div>
-            <div class="flex gap-3">
-                <select id="publicQuality" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2">
+            <div class="flex flex-wrap gap-2 w-full md:w-auto md:justify-end">
+                <select id="publicQuality" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
                     <option value="-1">Quality: Original</option>
                 </select>
-                <select id="publicSubtitle" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2">
+                <select id="publicSubtitle" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
                     <option value="-1">Subtitles: Off</option>
                 </select>
-                <select id="publicAudio" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2">
+                <select id="publicAudio" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
                     <option value="-1">Audio: Default</option>
                 </select>
-                <select id="publicSpeed" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2">
+                <select id="publicSpeed" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
                     <option value="1">Speed: 1x</option>
                     <option value="1.25">1.25x</option>
                     <option value="1.5">1.5x</option>
                     <option value="2">2x</option>
                 </select>
-                <select class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2">
-                    <option>Quality: Original</option>
-                </select>
-                <select class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2">
-                    <option>Subtitles: Off</option>
-                </select>
             </div>
         </div>
 
-        <div class="bg-gray-800 p-4 border-t border-gray-700 text-sm text-gray-400 flex justify-between">
+        <div class="bg-gray-800 p-4 border-t border-gray-700 text-sm text-gray-400 flex flex-col sm:flex-row sm:justify-between gap-2">
             <span>Size: <span class="text-white">{{ item.formatted_size }}</span></span>
             <span>Type: <span class="text-white uppercase">{{ item.mime_type.split('/')[1] if '/' in item.mime_type else 'FILE' }}</span></span>
         </div>
@@ -201,6 +195,12 @@
         color: #9aa4b2;
     }
 
+    @media (max-width: 480px) {
+        .viewer-card { padding: 18px; }
+        .viewer-title { font-size: 18px; }
+        .viewer-sub { font-size: 12px; }
+    }
+
 </style>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
@@ -249,8 +249,6 @@ const player = document.getElementById("publicPlayer");
 const qualitySelect = document.getElementById("publicQuality");
 const subtitleSelect = document.getElementById("publicSubtitle");
 const audioSelect = document.getElementById("publicAudio");
-
-let hlsInstance = null;
 
 function resetPublicTracks() {
     if (qualitySelect) qualitySelect.innerHTML = `<option value="-1">Quality: Original</option>`;
@@ -307,67 +305,26 @@ function setupPublicHlsControls(hls) {
     }
 }
 
-function switchToHls(hlsUrl) {
-    const currentTime = player.currentTime || 0;
-    const wasPlaying = !player.paused;
-    if (window.Hls && Hls.isSupported()) {
-        if (hlsInstance) hlsInstance.destroy();
-        hlsInstance = new Hls({
-            maxBufferLength: 300,
-            maxMaxBufferLength: 600,
-            maxBufferSize: 120 * 1000 * 1000,
-            backBufferLength: 60
-        });
-        hlsInstance.startPosition = currentTime;
-        hlsInstance.on(Hls.Events.MANIFEST_PARSED, () => {
-            setupPublicHlsControls(hlsInstance);
-            if (currentTime > 0) player.currentTime = currentTime;
-            if (wasPlaying) player.play();
-        });
-        hlsInstance.loadSource(hlsUrl);
-        hlsInstance.attachMedia(player);
-    } else if (player.canPlayType("application/vnd.apple.mpegurl")) {
-        player.src = hlsUrl;
-        if (currentTime > 0) player.currentTime = currentTime;
-        if (wasPlaying) player.play();
-    }
-}
-
-async function warmHls() {
-    const hlsPrimary = player.dataset.hls || `/static/hls/${itemId}/index.m3u8`;
-    const hlsAlt = hlsPrimary.includes("/index.m3u8")
-        ? hlsPrimary.replace("/index.m3u8", "/master.m3u8")
-        : hlsPrimary.replace("/master.m3u8", "/index.m3u8");
-    await fetch(`/s/hls/prepare/${itemId}`, { method: "POST" });
-
-    let ready = false;
-    let chosen = hlsPrimary;
-    for (let i = 0; i < 20; i++) {
-        try {
-            const res = await fetch(chosen, { method: "HEAD" });
-            if (res.ok) { ready = true; break; }
-        } catch (e) {}
-        await new Promise(r => setTimeout(r, 2000));
-    }
-    if (!ready && hlsAlt !== hlsPrimary) {
-        chosen = hlsAlt;
-        for (let i = 0; i < 20; i++) {
-            try {
-                const res = await fetch(chosen, { method: "HEAD" });
-                if (res.ok) { ready = true; break; }
-            } catch (e) {}
-            await new Promise(r => setTimeout(r, 2000));
-        }
-    }
-    if (ready) {
-        switchToHls(chosen);
-    }
-}
-
 if (player) {
-    resetPublicTracks();
-    player.src = "{{ stream_url }}";
-    warmHls();
+    const hlsUrl = player.dataset.hls;
+    if (hlsUrl) {
+        fetch(`/s/hls/prepare/${itemId}`, { method: "POST" });
+        if (window.Hls && Hls.isSupported()) {
+            const hls = new Hls({
+                maxBufferLength: 300,
+                maxMaxBufferLength: 600,
+                maxBufferSize: 120 * 1000 * 1000,
+                backBufferLength: 60
+            });
+            hls.on(Hls.Events.MANIFEST_PARSED, () => setupPublicHlsControls(hls));
+            hls.loadSource(hlsUrl);
+            hls.attachMedia(player);
+        } else if (player.canPlayType("application/vnd.apple.mpegurl")) {
+            player.src = hlsUrl;
+        }
+    } else {
+        resetPublicTracks();
+    }
     document.getElementById("publicSpeed").addEventListener("change", (e) => {
         player.playbackRate = parseFloat(e.target.value);
     });

@@ -2,21 +2,21 @@
 {% block content %}
 <div class="container mx-auto mt-6 flex flex-col items-center">
     
-    <div class="w-full max-w-6xl flex justify-between items-center mb-4 bg-gray-800 p-4 rounded-t-lg border-b border-red-600">
+    <div class="w-full max-w-6xl flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-4 bg-gray-800 p-4 rounded-t-lg border-b border-red-600">
         <h2 class="text-xl font-bold text-white truncate max-w-md">{{ item.name }}</h2>
-        <a href="/dashboard?folder_id={{ item.parent_id if item.parent_id else '' }}" class="text-gray-400 hover:text-white transition">
+        <a href="/dashboard?folder_id={{ item.parent_id if item.parent_id else '' }}" class="text-gray-400 hover:text-white transition self-end sm:self-auto">
             <i class="fas fa-times text-xl"></i> Close
         </a>
     </div>
 
-    <div class="w-full max-w-6xl bg-black rounded-b-lg shadow-2xl overflow-hidden border border-gray-700 flex justify-center items-center min-h-[500px] relative">
+    <div class="w-full max-w-6xl bg-black rounded-b-lg shadow-2xl overflow-hidden border border-gray-700 flex flex-col items-stretch min-h-[280px] sm:min-h-[500px] relative">
         
         {% if "video" in item.mime_type or item.name.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.avi')) %}
             <video id="authPlayer" controls autoplay preload="auto" data-hls="{{ hls_url or '' }}" class="w-full max-h-[80vh] outline-none">
-                <source src="{{ stream_url }}" type="{{ item.mime_type or 'video/mp4' }}">
+                <source src="{{ stream_url }}" type="video/mp4">
                 Your browser does not support the video tag.
             </video>
-            <div class="flex flex-wrap gap-2 mt-4">
+            <div class="flex flex-wrap gap-2 mt-4 px-4 pb-4 w-full justify-center sm:justify-start">
                 <select id="authQuality" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2">
                     <option value="-1">Quality: Original</option>
                 </select>
@@ -40,13 +40,13 @@
         {% elif "audio" in item.mime_type or item.name.lower().endswith(('.mp3', '.wav', '.ogg', '.m4a')) %}
             <div class="p-10 text-center">
                 <i class="fas fa-music text-6xl text-red-500 mb-6 animate-pulse"></i>
-                <audio controls autoplay class="w-96">
+                <audio controls autoplay class="w-full max-w-md">
                     <source src="{{ stream_url }}" type="audio/mpeg">
                 </audio>
             </div>
 
         {% elif "text" in item.mime_type or "json" in item.mime_type or "xml" in item.mime_type or item.name.lower().endswith(('.txt', '.py', '.js', '.html', '.css', '.json', '.md')) %}
-            <div class="w-full h-[600px] bg-gray-900 text-gray-200 p-0 overflow-hidden font-mono text-sm">
+            <div class="w-full h-[60vh] sm:h-[600px] bg-gray-900 text-gray-200 p-0 overflow-hidden font-mono text-sm">
                 <iframe src="{{ stream_url }}" class="w-full h-full border-none bg-white"></iframe>
             </div>
 
@@ -62,8 +62,8 @@
         {% endif %}
     </div>
 
-    <div class="w-full max-w-6xl mt-4 bg-gray-800 p-6 rounded-lg text-gray-400 text-sm flex justify-between items-center">
-        <div>
+    <div class="w-full max-w-6xl mt-4 bg-gray-800 p-6 rounded-lg text-gray-400 text-sm flex flex-col sm:flex-row sm:items-center gap-3">
+        <div class="flex flex-wrap gap-3">
             <span class="mr-4"><i class="fas fa-hdd mr-2"></i> Size: {{ item.formatted_size }}</span>
             <span><i class="fas fa-clock mr-2"></i> Uploaded: {{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</span>
         </div>
@@ -81,7 +81,6 @@ const authQuality = document.getElementById("authQuality");
 const authSubtitle = document.getElementById("authSubtitle");
 const authAudio = document.getElementById("authAudio");
 const authSpeed = document.getElementById("authSpeed");
-let authHls = null;
 
 function resetAuthTracks() {
     if (authQuality) authQuality.innerHTML = `<option value="-1">Quality: Original</option>`;
@@ -138,65 +137,26 @@ function setupAuthHlsControls(hls) {
     }
 }
 
-function switchToAuthHls(hlsUrl) {
-    const currentTime = authPlayer.currentTime || 0;
-    const wasPlaying = !authPlayer.paused;
-    if (window.Hls && Hls.isSupported()) {
-        if (authHls) authHls.destroy();
-        authHls = new Hls({
-            maxBufferLength: 300,
-            maxMaxBufferLength: 600,
-            maxBufferSize: 120 * 1000 * 1000,
-            backBufferLength: 60
-        });
-        authHls.startPosition = currentTime;
-        authHls.on(Hls.Events.MANIFEST_PARSED, () => {
-            setupAuthHlsControls(authHls);
-            if (currentTime > 0) authPlayer.currentTime = currentTime;
-            if (wasPlaying) authPlayer.play();
-        });
-        authHls.loadSource(hlsUrl);
-        authHls.attachMedia(authPlayer);
-    } else if (authPlayer.canPlayType("application/vnd.apple.mpegurl")) {
-        authPlayer.src = hlsUrl;
-        if (currentTime > 0) authPlayer.currentTime = currentTime;
-        if (wasPlaying) authPlayer.play();
-    }
-}
-
-async function warmAuthHls() {
-    const hlsUrlBase = authPlayer.dataset.hls || `/static/hls/{{ item.id }}/index.m3u8`;
-    const hlsFallback = hlsUrlBase.includes("/index.m3u8")
-        ? hlsUrlBase.replace("/index.m3u8", "/master.m3u8")
-        : hlsUrlBase.replace("/master.m3u8", "/index.m3u8");
-    await fetch("/hls/prepare/{{ item.id }}", { method: "POST" });
-
-    let ready = false;
-    let chosen = hlsUrlBase;
-    for (let i = 0; i < 20; i++) {
-        try {
-            const res = await fetch(chosen, { method: "HEAD" });
-            if (res.ok) { ready = true; break; }
-        } catch (e) {}
-        await new Promise(r => setTimeout(r, 2000));
-    }
-    if (!ready && hlsFallback !== hlsUrlBase) {
-        chosen = hlsFallback;
-        for (let i = 0; i < 20; i++) {
-            try {
-                const res = await fetch(chosen, { method: "HEAD" });
-                if (res.ok) { ready = true; break; }
-            } catch (e) {}
-            await new Promise(r => setTimeout(r, 2000));
-        }
-    }
-    if (ready) switchToAuthHls(chosen);
-}
-
 if (authPlayer) {
-    resetAuthTracks();
-    authPlayer.src = "{{ stream_url }}";
-    warmAuthHls();
+    const hlsUrl = authPlayer.dataset.hls;
+    if (hlsUrl) {
+        fetch("/hls/prepare/{{ item.id }}", { method: "POST" });
+        if (window.Hls && Hls.isSupported()) {
+            const hls = new Hls({
+                maxBufferLength: 300,
+                maxMaxBufferLength: 600,
+                maxBufferSize: 120 * 1000 * 1000,
+                backBufferLength: 60
+            });
+            hls.on(Hls.Events.MANIFEST_PARSED, () => setupAuthHlsControls(hls));
+            hls.loadSource(hlsUrl);
+            hls.attachMedia(authPlayer);
+        } else if (authPlayer.canPlayType("application/vnd.apple.mpegurl")) {
+            authPlayer.src = hlsUrl;
+        }
+    } else {
+        resetAuthTracks();
+    }
 
     authSpeed?.addEventListener("change", (e) => {
         authPlayer.playbackRate = parseFloat(e.target.value);

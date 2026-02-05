@@ -8,8 +8,12 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
     <style>
+        :root { color-scheme: dark; }
+        *, *::before, *::after { box-sizing: border-box; }
         .brand-font { font-family: 'Orbitron', sans-serif; }
-        body { font-family: 'Roboto', sans-serif; background-color: #111827; }
+        body { font-family: 'Roboto', sans-serif; background-color: #111827; min-height: 100dvh; }
+        img, video, canvas, svg { max-width: 100%; height: auto; }
+        input, select, textarea, button { max-width: 100%; }
         /* Custom Scrollbar */
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #1f2937; }
@@ -20,15 +24,15 @@
 <body class="text-gray-100 min-h-screen flex flex-col">
 
     <nav class="bg-gray-900 border-b border-red-900 shadow-xl sticky top-0 z-40">
-        <div class="container mx-auto px-4 py-3 flex justify-between items-center">
+        <div class="container mx-auto px-4 py-3 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
             
-            <a href="/dashboard" class="text-2xl font-bold tracking-widest text-white flex items-center hover:opacity-80 transition group">
+            <a href="/dashboard" class="text-2xl font-bold tracking-widest text-white flex items-center hover:opacity-80 transition group self-center sm:self-auto">
                 <span class="mr-1">MORGAN</span>
                 <span class="text-4xl text-red-600 mx-1 transform group-hover:rotate-12 transition brand-font">X</span>
                 <span>MYSTIC</span>
             </a>
             
-            <div class="flex items-center space-x-4">
+            <div class="flex flex-wrap items-center justify-center sm:justify-end gap-3 w-full sm:w-auto">
                 {% if user %}
                     {% if is_admin %}
                     <a href="/admin" class="hidden md:inline-block text-gray-400 hover:text-red-500 font-bold text-sm transition mr-2">
@@ -47,10 +51,10 @@
                         <span class="hidden md:inline text-sm font-bold text-gray-200 group-hover:text-white">Profile</span>
                     </a>
                 {% else %}
-                    <a href="/login" class="bg-red-600 hover:bg-red-500 text-white px-5 py-2 rounded-full font-bold transition shadow-lg hover:shadow-red-500/30">
+                    <a href="/login" class="bg-red-600 hover:bg-red-500 text-white px-5 py-2 rounded-full font-bold transition shadow-lg hover:shadow-red-500/30 w-full sm:w-auto text-center">
                         Login
                     </a>
-                    <a href="/register" class="bg-gray-800 hover:bg-gray-700 text-white px-5 py-2 rounded-full font-bold transition border border-gray-600 shadow-lg">
+                    <a href="/register" class="bg-gray-800 hover:bg-gray-700 text-white px-5 py-2 rounded-full font-bold transition border border-gray-600 shadow-lg w-full sm:w-auto text-center">
                         Create Account
                     </a>
                 {% endif %}
