@@ -865,8 +865,22 @@ async def start_telegram():
             await verify_storage_access_v2(bot_client)
             _register_bot_handlers(bot_client)
         except FloodWait as e:
-            logger.warning(f"Bot client flood-wait {e.value}s on start; skipping bot client this run.")
-            bot_client = None
+            if e.value <= 120:
+                logger.warning(f"Bot client flood-wait {e.value}s; waiting then retrying once.")
+                await asyncio.sleep(e.value)
+                try:
+                    await bot_client.start()
+                    bot_me = await bot_client.get_me()
+                    bot_client._is_bot = getattr(bot_me, "is_bot", False)
+                    logger.info(f"Bot client connected as {bot_me.first_name} (@{bot_me.username}) after wait")
+                    await verify_storage_access_v2(bot_client)
+                    _register_bot_handlers(bot_client)
+                except Exception as retry_err:
+                    logger.warning(f"Bot client retry failed after flood-wait: {retry_err}")
+                    bot_client = None
+            else:
+                logger.warning(f"Bot client flood-wait {e.value}s; skipping bot client this run.")
+                bot_client = None
         except Exception as e:
             logger.warning(f"Bot client start failed: {e}")
             bot_client = None
@@ -890,7 +904,26 @@ async def start_telegram():
             await verify_storage_access_v2(bot)
             _register_bot_handlers(bot)
         except FloodWait as e:
-            logger.warning(f"Pool bot #{idx} flood-wait {e.value}s; skipping this bot.")
+            if e.value <= 120:
+                logger.warning(f"Pool bot #{idx} flood-wait {e.value}s; waiting then retrying once.")
+                await asyncio.sleep(e.value)
+                try:
+                    await bot.start()
+                    bot_me = await bot.get_me()
+                    bot._is_bot = getattr(bot_me, "is_bot", False)
+                    bot_pool.append(bot)
+                    logger.info(f"Started bot pool #{idx} after wait")
+                    try:
+                        await bot.delete_webhook(drop_pending_updates=True)
+                    except Exception as e2:
+                        logger.warning(f"Failed to clear webhook for pool #{idx} after wait: {e2}")
+                        _clear_bot_webhook_http(token)
+                    await verify_storage_access_v2(bot)
+                    _register_bot_handlers(bot)
+                except Exception as retry_err:
+                    logger.warning(f"Pool bot #{idx} retry failed after flood-wait: {retry_err}")
+            else:
+                logger.warning(f"Pool bot #{idx} flood-wait {e.value}s; skipping this bot.")
         except Exception as e:
             logger.error(f"Failed to start bot pool #{idx}: {e}")
 
