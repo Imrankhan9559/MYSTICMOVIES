@@ -830,6 +830,7 @@ async def _bot_api_poll_loop():
 
 
 async def start_telegram():
+    global bot_client
     logger.info("Connecting to Telegram...")
     await tg_client.start()
     me = await tg_client.get_me()
