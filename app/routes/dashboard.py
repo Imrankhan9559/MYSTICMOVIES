@@ -33,8 +33,14 @@ ITEMS_PAGE_SIZE = 200
 upload_jobs: Dict[str, dict] = {}
 
 async def get_current_user(request: Request):
+    """
+    Resolve the current user from the session cookie, but be lenient:
+    - If the cookie is present but the user is pending/blocked, treat as unauthenticated.
+    - If the cookie is present and approved, always return that user without redirecting.
+    """
     phone = request.cookies.get("user_phone")
-    if not phone: return None
+    if not phone:
+        return None
     user = await User.find_one(User.phone_number == phone)
     if not user or getattr(user, "status", "approved") != "approved":
         return None
@@ -1145,11 +1151,17 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
 @router.get("/profile")
 async def profile_page(request: Request):
     user = await get_current_user(request)
+    # If not resolved, still try one last lookup but do not send to register form;
+    # instead show login with a next pointer so logged-in users won't see account-request.
     if not user:
         phone = request.cookies.get("user_phone")
         if phone:
             user = await User.find_one(User.phone_number == phone)
-    if not user: return RedirectResponse("/login")
+    if not user:
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "step": "phone", "next_url": "/profile"}
+        )
     is_admin = _is_admin(user)
     total_files = await FileSystemItem.find(FileSystemItem.owner_phone == user.phone_number, FileSystemItem.is_folder == False).count()
     all_files = await FileSystemItem.find(FileSystemItem.owner_phone == user.phone_number, FileSystemItem.is_folder == False).sort("-created_at").to_list()

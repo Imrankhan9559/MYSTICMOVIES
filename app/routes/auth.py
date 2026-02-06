@@ -105,12 +105,13 @@ async def verify_code(response: Response, phone: str = Form(...), code: str = Fo
 
         # --- SET COOKIE (IFRAME COMPATIBLE) ---
         response = JSONResponse({"status": "success"})
+        # Lax keeps user logged in on normal navigation while still protecting cross-site.
         response.set_cookie(
-            key="user_phone", 
-            value=phone, 
-            httponly=True, 
-            samesite='none', # Crucial for Iframes
-            secure=True      # Required for samesite=none
+            key="user_phone",
+            value=phone,
+            httponly=True,
+            samesite='lax',
+            secure=True
         )
         return response
 
@@ -148,11 +149,11 @@ async def verify_password(response: Response, phone: str = Form(...), password: 
         # --- SET COOKIE (IFRAME COMPATIBLE) ---
         response = JSONResponse({"status": "success"})
         response.set_cookie(
-            key="user_phone", 
-            value=phone, 
-            httponly=True, 
-            samesite='none', # Crucial for Iframes
-            secure=True      # Required for samesite=none
+            key="user_phone",
+            value=phone,
+            httponly=True,
+            samesite='lax',
+            secure=True
         )
         return response
 
