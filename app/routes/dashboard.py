@@ -8,7 +8,7 @@ import re
 import zipfile
 import asyncio
 import logging
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 from fastapi import APIRouter, Request, UploadFile, File, Form, BackgroundTasks, Body
 from fastapi.templating import Jinja2Templates
@@ -52,6 +52,60 @@ def _build_search_regex(text: str) -> Optional[str]:
     if not tokens:
         return None
     return ".*".join(re.escape(token) for token in tokens)
+
+async def _build_folder_path_list(folder: FileSystemItem, user: User, is_admin: bool) -> List[Dict[str, Any]]:
+    chain: List[FileSystemItem] = []
+    current = folder
+    broken = False
+    while current:
+        chain.append(current)
+        if not current.parent_id:
+            break
+        parent = await FileSystemItem.get(current.parent_id)
+        if not parent or (not is_admin and not _can_access(user, parent, is_admin)):
+            broken = True
+            break
+        current = parent
+
+    chain.reverse()
+    path: List[Dict[str, Any]] = [{"id": "", "name": "Root"}]
+    if broken and chain and chain[0].parent_id:
+        path.append({"id": None, "name": "...", "disabled": True})
+    for node in chain:
+        path.append({"id": str(node.id), "name": node.name})
+    return path
+
+async def _build_folder_path_string(folder: FileSystemItem, user: User, is_admin: bool) -> str:
+    parts: List[str] = []
+    current = folder
+    broken = False
+    while current and current.parent_id:
+        parent = await FileSystemItem.get(current.parent_id)
+        if not parent or (not is_admin and not _can_access(user, parent, is_admin)):
+            broken = True
+            break
+        parts.append(parent.name or "")
+        current = parent
+    parts.reverse()
+    prefix = "Root"
+    if broken:
+        if parts:
+            return f"{prefix} / ... / " + " / ".join(parts)
+        return f"{prefix} / ..."
+    if parts:
+        return f"{prefix} / " + " / ".join(parts)
+    return prefix
+
+async def _has_selected_ancestor(item: FileSystemItem, selected_ids: set[str]) -> bool:
+    current = item.parent_id
+    while current:
+        if current in selected_ids:
+            return True
+        node = await FileSystemItem.get(current)
+        if not node:
+            return False
+        current = node.parent_id
+    return False
 
 async def _collect_folder_files(folder_id: str) -> List[FileSystemItem]:
     items: List[FileSystemItem] = []
@@ -475,6 +529,73 @@ async def search_suggest(request: Request, q: str = "", scope: str = "all", fold
             break
     return JSONResponse({"suggestions": suggestions, "items": payload_items})
 
+@router.get("/folders/list")
+async def list_folders(request: Request, parent_id: str = "", q: str = ""):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse({"folders": []}, 401)
+    is_admin = _is_admin(user)
+
+    parent_id = parent_id if parent_id and parent_id != "None" else None
+    q = (q or "").strip()
+
+    if q:
+        search_regex = _build_search_regex(q)
+        if not search_regex:
+            return JSONResponse({"mode": "search", "q": q, "folders": []})
+        query: Dict[str, Any] = {
+            "is_folder": True,
+            "name": {"$regex": search_regex, "$options": "i"}
+        }
+        if not is_admin:
+            query["$or"] = [
+                {"owner_phone": user.phone_number},
+                {"collaborators": user.phone_number}
+            ]
+        items = await FileSystemItem.find(query).sort("name").limit(80).to_list()
+        payload = []
+        for item in items:
+            path = await _build_folder_path_string(item, user, is_admin)
+            payload.append({
+                "id": str(item.id),
+                "name": item.name,
+                "parent_id": item.parent_id,
+                "path": path
+            })
+        return JSONResponse({"mode": "search", "q": q, "folders": payload})
+
+    # Browse mode
+    current = None
+    if parent_id:
+        current = await FileSystemItem.get(parent_id)
+        if not current or not current.is_folder:
+            return JSONResponse({"mode": "browse", "folders": [], "current": None}, 404)
+        if not _can_access(user, current, is_admin):
+            return JSONResponse({"mode": "browse", "folders": [], "current": None}, 403)
+
+    query: Dict[str, Any] = {"is_folder": True, "parent_id": parent_id}
+    if not is_admin:
+        query["$or"] = [
+            {"owner_phone": user.phone_number},
+            {"collaborators": user.phone_number}
+        ]
+    children = await FileSystemItem.find(query).sort("name").to_list()
+
+    if current:
+        path = await _build_folder_path_list(current, user, is_admin)
+        current_payload = {"id": str(current.id), "name": current.name, "parent_id": current.parent_id}
+    else:
+        path = [{"id": "", "name": "Root"}]
+        current_payload = {"id": "", "name": "Root", "parent_id": None}
+
+    payload = [{"id": str(item.id), "name": item.name, "parent_id": item.parent_id} for item in children]
+    return JSONResponse({
+        "mode": "browse",
+        "current": current_payload,
+        "path": path,
+        "folders": payload
+    })
+
 # --- UPLOAD ROUTES ---
 @router.get("/upload_zone")
 async def upload_page(request: Request, folder_id: Optional[str] = None):
@@ -638,6 +759,26 @@ async def create_folder(request: Request, folder_name: str = Form(...), parent_i
     await FileSystemItem(name=folder_name, is_folder=True, parent_id=final_parent_id, owner_phone=user.phone_number).insert()
     return RedirectResponse(url=f"/dashboard?folder_id={final_parent_id}" if final_parent_id else "/dashboard", status_code=303)
 
+@router.post("/folder/create_json")
+async def create_folder_json(request: Request, payload: Dict = Body(...)):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "Unauthorized"}, 401)
+    folder_name = (payload.get("name") or "").strip()
+    parent_id = payload.get("parent_id") or ""
+    parent_id = parent_id if parent_id and parent_id != "None" else None
+    if not folder_name:
+        return JSONResponse({"error": "Invalid name"}, 400)
+    if parent_id:
+        parent = await FileSystemItem.get(parent_id)
+        if not parent or not parent.is_folder:
+            return JSONResponse({"error": "Parent not found"}, 404)
+        if not _can_access(user, parent, _is_admin(user)):
+            return JSONResponse({"error": "Unauthorized"}, 403)
+    folder = FileSystemItem(name=folder_name, is_folder=True, parent_id=parent_id, owner_phone=user.phone_number)
+    await folder.insert()
+    return JSONResponse({"status": "success", "folder": {"id": str(folder.id), "name": folder.name, "parent_id": folder.parent_id}})
+
 # --- FILE OPERATIONS ---
 @router.post("/item/rename")
 async def rename_item(request: Request, item_id: str = Form(...), new_name: str = Form(...), rename_mode: str = Form("fast")):
@@ -798,6 +939,127 @@ async def copy_item(request: Request, item_id: str = Form(...), target_parent_id
             await new_file.insert()
 
     await _copy_recursive(item, target_parent_id)
+    return JSONResponse({"status": "success"})
+
+@router.post("/item/move/bundle")
+async def move_bundle(request: Request, payload: Dict = Body(...)):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "Unauthorized"}, 401)
+    is_admin = _is_admin(user)
+    item_ids = payload.get("item_ids") or []
+    target_parent_id = payload.get("target_parent_id") or ""
+    target_parent_id = target_parent_id if target_parent_id and target_parent_id != "None" else None
+
+    if not item_ids:
+        return JSONResponse({"error": "No items selected"}, 400)
+
+    target = None
+    if target_parent_id:
+        target = await FileSystemItem.get(target_parent_id)
+        if not target or not target.is_folder:
+            return JSONResponse({"error": "Target folder not found"}, 404)
+        if not _can_access(user, target, is_admin):
+            return JSONResponse({"error": "Unauthorized"}, 403)
+
+    items = await FileSystemItem.find(In(FileSystemItem.id, item_ids)).to_list()
+    if not items:
+        return JSONResponse({"error": "No items found"}, 404)
+
+    selected_ids = {str(i.id) for i in items}
+    effective_items: List[FileSystemItem] = []
+    for item in items:
+        if not _can_access(user, item, is_admin):
+            return JSONResponse({"error": "Unauthorized"}, 403)
+        if await _has_selected_ancestor(item, selected_ids):
+            continue
+        effective_items.append(item)
+
+    for item in effective_items:
+        if item.is_folder and target_parent_id:
+            if str(item.id) == target_parent_id:
+                return JSONResponse({"error": "Cannot move folder into itself"}, 400)
+            if await _is_descendant(str(item.id), target_parent_id):
+                return JSONResponse({"error": "Cannot move folder into its child"}, 400)
+
+    for item in effective_items:
+        if item.parent_id == target_parent_id:
+            continue
+        item.parent_id = target_parent_id
+        await item.save()
+
+    return JSONResponse({"status": "success"})
+
+@router.post("/item/copy/bundle")
+async def copy_bundle(request: Request, payload: Dict = Body(...)):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse({"error": "Unauthorized"}, 401)
+    is_admin = _is_admin(user)
+    item_ids = payload.get("item_ids") or []
+    target_parent_id = payload.get("target_parent_id") or ""
+    target_parent_id = target_parent_id if target_parent_id and target_parent_id != "None" else None
+
+    if not item_ids:
+        return JSONResponse({"error": "No items selected"}, 400)
+
+    target = None
+    if target_parent_id:
+        target = await FileSystemItem.get(target_parent_id)
+        if not target or not target.is_folder:
+            return JSONResponse({"error": "Target folder not found"}, 404)
+        if not _can_access(user, target, is_admin):
+            return JSONResponse({"error": "Unauthorized"}, 403)
+
+    items = await FileSystemItem.find(In(FileSystemItem.id, item_ids)).to_list()
+    if not items:
+        return JSONResponse({"error": "No items found"}, 404)
+
+    selected_ids = {str(i.id) for i in items}
+    effective_items: List[FileSystemItem] = []
+    for item in items:
+        if not _can_access(user, item, is_admin):
+            return JSONResponse({"error": "Unauthorized"}, 403)
+        if await _has_selected_ancestor(item, selected_ids):
+            continue
+        effective_items.append(item)
+
+    async def _copy_recursive(source_item: FileSystemItem, new_parent_id: Optional[str], root_id: str):
+        if source_item.is_folder:
+            new_folder = FileSystemItem(
+                name=f"{source_item.name} Copy" if str(source_item.id) == root_id else source_item.name,
+                is_folder=True,
+                parent_id=new_parent_id,
+                owner_phone=user.phone_number,
+                source="copy"
+            )
+            await new_folder.insert()
+            children = await FileSystemItem.find(FileSystemItem.parent_id == str(source_item.id)).to_list()
+            for child in children:
+                await _copy_recursive(child, str(new_folder.id), root_id)
+        else:
+            new_file = FileSystemItem(
+                name=f"{source_item.name} Copy" if str(source_item.id) == root_id else source_item.name,
+                is_folder=False,
+                parent_id=new_parent_id,
+                owner_phone=user.phone_number,
+                size=source_item.size,
+                mime_type=source_item.mime_type,
+                source="copy",
+                parts=_clone_parts(source_item.parts)
+            )
+            await new_file.insert()
+
+    for item in effective_items:
+        if item.is_folder and target_parent_id:
+            if str(item.id) == target_parent_id:
+                return JSONResponse({"error": "Cannot copy folder into itself"}, 400)
+            if await _is_descendant(str(item.id), target_parent_id):
+                return JSONResponse({"error": "Cannot copy folder into its child"}, 400)
+
+    for item in effective_items:
+        await _copy_recursive(item, target_parent_id, str(item.id))
+
     return JSONResponse({"status": "success"})
 
 # --- COLLAB ROUTES ---

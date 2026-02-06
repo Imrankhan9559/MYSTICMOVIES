@@ -66,6 +66,14 @@
         <i class="fas fa-link mr-1"></i>
     </button>
 
+    <button onclick="moveSelected()" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-1 rounded-full text-sm font-bold shadow-lg transition flex items-center">
+        <i class="fas fa-arrows-alt mr-1"></i> Move
+    </button>
+
+    <button onclick="copySelected()" class="bg-green-600 hover:bg-green-500 text-white px-4 py-1 rounded-full text-sm font-bold shadow-lg transition flex items-center">
+        <i class="fas fa-copy mr-1"></i> Copy
+    </button>
+
     <button onclick="downloadSelectedZip()" class="bg-green-600 hover:bg-green-500 text-white px-4 py-1 rounded-full text-sm font-bold shadow-lg transition flex items-center" title="Download as Zip">
         <i class="fas fa-file-archive mr-1"></i> Zip
     </button>
@@ -221,36 +229,32 @@
     </div>
 </div>
 
-<div id="moveModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm">
-    <div class="bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-600 shadow-2xl">
-        <h3 class="text-white text-xl font-bold mb-4 flex items-center"><i class="fas fa-arrows-alt text-blue-500 mr-2"></i> Move Item</h3>
-        <input type="hidden" id="moveItemId">
-        <select id="moveTarget" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white mb-6">
-            <option value="">Root</option>
-            {% for folder in folders %}
-                <option value="{{ folder.id }}">{{ folder.name }}</option>
-            {% endfor %}
-        </select>
-        <div class="flex justify-end space-x-3">
-            <button onclick="closeMoveModal()" class="text-gray-400 font-bold text-sm">Cancel</button>
-            <button onclick="submitMove()" class="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold">Move</button>
-        </div>
-    </div>
-</div>
+<div id="folderExplorerModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm">
+    <div class="bg-gray-800 p-8 rounded-2xl w-full max-w-2xl border border-gray-600 shadow-2xl">
+        <h3 id="folderExplorerTitle" class="text-white text-xl font-bold mb-4 flex items-center">
+            <i class="fas fa-folder-open text-yellow-500 mr-2"></i> Choose Folder
+        </h3>
 
-<div id="copyModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm">
-    <div class="bg-gray-800 p-8 rounded-2xl w-full max-w-md border border-gray-600 shadow-2xl">
-        <h3 class="text-white text-xl font-bold mb-4 flex items-center"><i class="fas fa-copy text-green-500 mr-2"></i> Copy Item</h3>
-        <input type="hidden" id="copyItemId">
-        <select id="copyTarget" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white mb-6">
-            <option value="">Root</option>
-            {% for folder in folders %}
-                <option value="{{ folder.id }}">{{ folder.name }}</option>
-            {% endfor %}
-        </select>
-        <div class="flex justify-end space-x-3">
-            <button onclick="closeCopyModal()" class="text-gray-400 font-bold text-sm">Cancel</button>
-            <button onclick="submitCopy()" class="bg-green-600 text-white px-6 py-2 rounded-lg font-bold">Copy</button>
+        <div class="flex items-center gap-2 text-xs text-gray-400 mb-3">
+            <button id="folderUpBtn" class="px-2 py-1 bg-gray-700 hover:bg-gray-600 rounded text-white">Up</button>
+            <div id="folderBreadcrumb" class="flex flex-wrap gap-1"></div>
+        </div>
+
+        <div class="flex gap-2 mb-3">
+            <input id="folderSearchInput" type="text" placeholder="Search folders..." class="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+            <button id="folderSearchClear" class="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-sm">Clear</button>
+        </div>
+
+        <div id="folderExplorerList" class="bg-gray-900 border border-gray-700 rounded-lg max-h-72 overflow-y-auto divide-y divide-gray-800"></div>
+
+        <div class="flex gap-2 mt-4">
+            <input id="newFolderName" type="text" placeholder="New folder name..." class="flex-1 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500" />
+            <button id="createFolderBtn" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-white text-sm">Create</button>
+        </div>
+
+        <div class="flex justify-end space-x-3 mt-6">
+            <button onclick="closeFolderExplorer()" class="text-gray-400 font-bold text-sm">Cancel</button>
+            <button id="folderExplorerConfirmBtn" class="bg-blue-600 text-white px-6 py-2 rounded-lg font-bold">Move Here</button>
         </div>
     </div>
 </div>
@@ -371,13 +375,272 @@ async function submitRename() {
     if(data.status === 'success') { closeRenameModal(); window.location.reload(); } else alert(data.error || "Error"); 
 }
 
-function openMoveModal(id) { document.getElementById('moveItemId').value = id; document.getElementById('moveModal').classList.remove('hidden'); }
-function closeMoveModal() { document.getElementById('moveModal').classList.add('hidden'); }
-async function submitMove() { const id = document.getElementById('moveItemId').value; const target = document.getElementById('moveTarget').value; const formData = new FormData(); formData.append('item_id', id); formData.append('target_parent_id', target); const res = await fetch('/item/move', { method: 'POST', body: formData }); const data = await res.json(); if(data.status === 'success') { closeMoveModal(); window.location.reload(); } else alert(data.error || "Error"); }
+const folderExplorerModal = document.getElementById('folderExplorerModal');
+const folderExplorerTitle = document.getElementById('folderExplorerTitle');
+const folderExplorerConfirmBtn = document.getElementById('folderExplorerConfirmBtn');
+const folderExplorerList = document.getElementById('folderExplorerList');
+const folderBreadcrumb = document.getElementById('folderBreadcrumb');
+const folderUpBtn = document.getElementById('folderUpBtn');
+const folderSearchInput = document.getElementById('folderSearchInput');
+const folderSearchClear = document.getElementById('folderSearchClear');
+const createFolderBtn = document.getElementById('createFolderBtn');
+const newFolderName = document.getElementById('newFolderName');
 
-function openCopyModal(id) { document.getElementById('copyItemId').value = id; document.getElementById('copyModal').classList.remove('hidden'); }
-function closeCopyModal() { document.getElementById('copyModal').classList.add('hidden'); }
-async function submitCopy() { const id = document.getElementById('copyItemId').value; const target = document.getElementById('copyTarget').value; const formData = new FormData(); formData.append('item_id', id); formData.append('target_parent_id', target); const res = await fetch('/item/copy', { method: 'POST', body: formData }); const data = await res.json(); if(data.status === 'success') { closeCopyModal(); window.location.reload(); } else alert(data.error || "Error"); }
+let explorerState = {
+    action: "move",
+    itemIds: [],
+    currentId: "",
+    currentParentId: "",
+    targetId: "",
+    searchQuery: "",
+    mode: "browse"
+};
+
+function openFolderExplorer(action, itemIds) {
+    const startFolder = currentFolderId ? currentFolderId.value : "";
+    explorerState = {
+        action,
+        itemIds,
+        currentId: startFolder || "",
+        currentParentId: "",
+        targetId: startFolder || "",
+        searchQuery: "",
+        mode: "browse"
+    };
+    if (folderExplorerTitle) {
+        folderExplorerTitle.innerHTML = action === "move"
+            ? '<i class="fas fa-arrows-alt text-blue-500 mr-2"></i> Move Items'
+            : '<i class="fas fa-copy text-green-500 mr-2"></i> Copy Items';
+    }
+    if (folderExplorerConfirmBtn) {
+        folderExplorerConfirmBtn.textContent = action === "move" ? "Move Here" : "Copy Here";
+        folderExplorerConfirmBtn.className = action === "move"
+            ? "bg-blue-600 text-white px-6 py-2 rounded-lg font-bold"
+            : "bg-green-600 text-white px-6 py-2 rounded-lg font-bold";
+    }
+    if (folderSearchInput) folderSearchInput.value = "";
+    if (newFolderName) newFolderName.value = "";
+    loadFolderExplorer(explorerState.currentId, "");
+    if (folderExplorerModal) folderExplorerModal.classList.remove('hidden');
+}
+
+function closeFolderExplorer() {
+    if (folderExplorerModal) folderExplorerModal.classList.add('hidden');
+}
+
+function moveSelected() {
+    if (selectedIds.size === 0) return alert("Select items first");
+    openFolderExplorer("move", Array.from(selectedIds));
+}
+
+function copySelected() {
+    if (selectedIds.size === 0) return alert("Select items first");
+    openFolderExplorer("copy", Array.from(selectedIds));
+}
+
+function openMoveModal(id) {
+    openFolderExplorer("move", [id]);
+}
+
+function openCopyModal(id) {
+    openFolderExplorer("copy", [id]);
+}
+
+function renderBreadcrumb(path) {
+    if (!folderBreadcrumb) return;
+    folderBreadcrumb.innerHTML = "";
+    (path || []).forEach((crumb, idx) => {
+        const btn = document.createElement("button");
+        btn.textContent = crumb.name || "Root";
+        btn.className = "text-xs px-2 py-1 rounded " + (crumb.disabled ? "text-gray-500" : "text-gray-200 hover:text-white bg-gray-700/50");
+        if (!crumb.disabled) {
+            btn.addEventListener("click", () => {
+                const targetId = crumb.id || "";
+                loadFolderExplorer(targetId, "");
+            });
+        }
+        folderBreadcrumb.appendChild(btn);
+        if (idx < path.length - 1) {
+            const sep = document.createElement("span");
+            sep.textContent = "›";
+            sep.className = "text-gray-600";
+            folderBreadcrumb.appendChild(sep);
+        }
+    });
+}
+
+function setTargetFolder(id) {
+    explorerState.targetId = id || "";
+    renderFolderList(explorerState.lastPayload || []);
+}
+
+function renderFolderList(folders) {
+    if (!folderExplorerList) return;
+    folderExplorerList.innerHTML = "";
+
+    if (explorerState.mode === "browse") {
+        const rootRow = document.createElement("div");
+        rootRow.className = "flex items-center justify-between px-3 py-2 text-sm text-gray-200 hover:bg-gray-800 cursor-pointer";
+        if (explorerState.targetId === "") rootRow.classList.add("ring-2", "ring-blue-500");
+        rootRow.innerHTML = `
+            <div class="flex items-center gap-2">
+                <i class="fas fa-hdd text-gray-400"></i>
+                <span>Root</span>
+            </div>
+            <div class="flex items-center gap-2">
+                <button class="open-btn px-2 py-1 text-xs bg-gray-700 rounded">Open</button>
+            </div>
+        `;
+        rootRow.addEventListener("click", () => setTargetFolder(""));
+        rootRow.querySelector(".open-btn").addEventListener("click", (e) => {
+            e.stopPropagation();
+            explorerState.targetId = "";
+            loadFolderExplorer("", "");
+        });
+        folderExplorerList.appendChild(rootRow);
+    }
+
+    if (!folders.length) {
+        const empty = document.createElement("div");
+        empty.className = "px-3 py-4 text-sm text-gray-500";
+        empty.textContent = explorerState.mode === "search" ? "No folders found." : "No sub-folders here.";
+        folderExplorerList.appendChild(empty);
+        return;
+    }
+
+    folders.forEach(folder => {
+        const row = document.createElement("div");
+        row.className = "flex items-center justify-between px-3 py-2 text-sm text-gray-200 hover:bg-gray-800 cursor-pointer";
+        if (explorerState.targetId === folder.id) row.classList.add("ring-2", "ring-blue-500");
+        const path = folder.path ? `<div class="text-[10px] text-gray-500 mt-1">${folder.path}</div>` : "";
+        row.innerHTML = `
+            <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                    <i class="fas fa-folder text-yellow-500"></i>
+                    <span class="truncate">${folder.name}</span>
+                </div>
+                ${path}
+            </div>
+            <div class="flex items-center gap-2">
+                <button class="open-btn px-2 py-1 text-xs bg-gray-700 rounded">Open</button>
+                <button class="rename-btn px-2 py-1 text-xs bg-gray-700 rounded">Rename</button>
+            </div>
+        `;
+        row.addEventListener("click", () => setTargetFolder(folder.id));
+        row.querySelector(".open-btn").addEventListener("click", (e) => {
+            e.stopPropagation();
+            explorerState.targetId = folder.id;
+            loadFolderExplorer(folder.id, "");
+        });
+        row.querySelector(".rename-btn").addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const newName = prompt("Rename folder", folder.name);
+            if (!newName) return;
+            const formData = new FormData();
+            formData.append("item_id", folder.id);
+            formData.append("new_name", newName);
+            const res = await fetch("/item/rename", { method: "POST", body: formData });
+            const data = await res.json();
+            if (data.status === "success") {
+                loadFolderExplorer(explorerState.currentId, explorerState.searchQuery);
+            } else {
+                alert(data.error || "Error");
+            }
+        });
+        folderExplorerList.appendChild(row);
+    });
+}
+
+async function loadFolderExplorer(parentId, q) {
+    const params = new URLSearchParams();
+    if (parentId) params.set("parent_id", parentId);
+    if (q) params.set("q", q);
+    const res = await fetch(`/folders/list?${params.toString()}`);
+    const data = await res.json();
+    explorerState.mode = data.mode || "browse";
+    explorerState.searchQuery = q || "";
+    if (data.current) {
+        explorerState.currentId = data.current.id || "";
+        explorerState.currentParentId = data.current.parent_id || "";
+    }
+    explorerState.lastPayload = data.folders || [];
+    if (explorerState.mode === "browse") {
+        renderBreadcrumb(data.path || []);
+    } else {
+        renderBreadcrumb([{ id: "", name: "Search Results", disabled: true }]);
+    }
+    renderFolderList(data.folders || []);
+}
+
+if (folderUpBtn) {
+    folderUpBtn.addEventListener("click", () => {
+        if (explorerState.mode === "search") return;
+        const parentId = explorerState.currentParentId || "";
+        explorerState.targetId = parentId;
+        loadFolderExplorer(parentId, "");
+    });
+}
+
+if (folderSearchInput) {
+    let searchTimerExplorer = null;
+    folderSearchInput.addEventListener("input", () => {
+        const q = folderSearchInput.value.trim();
+        if (searchTimerExplorer) clearTimeout(searchTimerExplorer);
+        if (!q) {
+            loadFolderExplorer(explorerState.currentId, "");
+            return;
+        }
+        searchTimerExplorer = setTimeout(() => loadFolderExplorer(explorerState.currentId, q), 250);
+    });
+}
+
+if (folderSearchClear) {
+    folderSearchClear.addEventListener("click", () => {
+        if (folderSearchInput) folderSearchInput.value = "";
+        loadFolderExplorer(explorerState.currentId, "");
+    });
+}
+
+if (createFolderBtn) {
+    createFolderBtn.addEventListener("click", async () => {
+        if (explorerState.mode === "search") return alert("Clear search to create a folder.");
+        const name = (newFolderName && newFolderName.value ? newFolderName.value : "").trim();
+        if (!name) return alert("Enter folder name");
+        const res = await fetch("/folder/create_json", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name, parent_id: explorerState.currentId })
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+            newFolderName.value = "";
+            loadFolderExplorer(explorerState.currentId, "");
+        } else {
+            alert(data.error || "Error");
+        }
+    });
+}
+
+if (folderExplorerConfirmBtn) {
+    folderExplorerConfirmBtn.addEventListener("click", async () => {
+        if (!explorerState.itemIds || explorerState.itemIds.length === 0) {
+            return alert("No items selected");
+        }
+        const endpoint = explorerState.action === "move" ? "/item/move/bundle" : "/item/copy/bundle";
+        const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ item_ids: explorerState.itemIds, target_parent_id: explorerState.targetId })
+        });
+        const data = await res.json();
+        if (data.status === "success") {
+            closeFolderExplorer();
+            window.location.reload();
+        } else {
+            alert(data.error || "Error");
+        }
+    });
+}
 
 // Search suggestions
 const searchInput = document.getElementById("searchInput");
