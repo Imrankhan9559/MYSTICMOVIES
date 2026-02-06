@@ -16,7 +16,7 @@ from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from pyrogram import Client
 from beanie import PydanticObjectId
 from beanie.operators import Or, In
-from app.db.models import FileSystemItem, FilePart, User, SharedCollection
+from app.db.models import FileSystemItem, FilePart, User, SharedCollection, TokenSetting
 from app.core.config import settings
 from app.core.telegram_bot import tg_client, user_client, get_pool_client, get_storage_chat_id, ensure_peer_access, get_storage_client, pick_storage_client, normalize_chat_id
 from app.core.telethon_storage import send_file as tl_send_file, get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media, delete_message as tl_delete_message
@@ -45,6 +45,13 @@ def _normalize_phone(phone: str) -> str:
 
 def _natural_key(value: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", value or "")]
+
+async def _get_link_token() -> str:
+    token = await TokenSetting.find_one(TokenSetting.key == "link_token")
+    if not token:
+        token = TokenSetting(key="link_token", value=str(uuid.uuid4()))
+        await token.insert()
+    return token.value
 
 def _tokenize_search(text: str) -> List[str]:
     return [t for t in re.split(r"[^a-zA-Z0-9]+", (text or "").lower()) if t]
@@ -754,10 +761,11 @@ async def share_item(request: Request, item_id: str):
                 name=item.name or "Shared Folder"
             )
             await bundle.insert()
+        link_token = await _get_link_token()
         links = {
-            "view": f"{base_url}/s/{token}",
-            "download": f"{base_url}/d/{token}",
-            "telegram": f"{base_url}/t/{token}",
+            "view": f"{base_url}/s/{token}?t={link_token}&U=",
+            "download": f"{base_url}/d/{token}?t={link_token}&U=",
+            "telegram": f"{base_url}/t/{token}?t={link_token}&U=",
         }
         return JSONResponse({"code": token, "links": links, "link": links["view"]})
 
@@ -765,10 +773,11 @@ async def share_item(request: Request, item_id: str):
         item.share_token = str(uuid.uuid4())
         await item.save()
     token = item.share_token
+    link_token = await _get_link_token()
     links = {
-        "view": f"{base_url}/s/{token}",
-        "download": f"{base_url}/d/{token}",
-        "telegram": f"{base_url}/t/{token}",
+        "view": f"{base_url}/s/{token}?t={link_token}&U=",
+        "download": f"{base_url}/d/{token}?t={link_token}&U=",
+        "telegram": f"{base_url}/t/{token}?t={link_token}&U=",
     }
     return JSONResponse({"code": token, "links": links, "link": links["view"]})
 
@@ -1125,10 +1134,11 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
     bundle = SharedCollection(token=token, item_ids=item_ids, owner_phone=user.phone_number, name=f"Shared by {user.first_name or 'User'}")
     await bundle.insert()
     base_url = str(request.base_url).rstrip("/")
+    link_token = await _get_link_token()
     links = {
-        "view": f"{base_url}/s/{token}",
-        "download": f"{base_url}/d/{token}",
-        "telegram": f"{base_url}/t/{token}",
+        "view": f"{base_url}/s/{token}?t={link_token}&U=",
+        "download": f"{base_url}/d/{token}?t={link_token}&U=",
+        "telegram": f"{base_url}/t/{token}?t={link_token}&U=",
     }
     return {"code": token, "links": links, "link": links["view"]}
 

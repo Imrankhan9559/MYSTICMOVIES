@@ -54,6 +54,14 @@ class SharedCollection(Document):
     class Settings:
         name = "shared_collections"
 
+class TokenSetting(Document):
+    key: str = Field(unique=True)
+    value: str
+    created_at: datetime = datetime.now()
+    updated_at: datetime = datetime.now()
+    class Settings:
+        name = "token_settings"
+
 class PlaybackProgress(Document):
     user_key: str
     user_type: str  # public | user
@@ -68,4 +76,4 @@ class PlaybackProgress(Document):
 
 async def init_db():
     client = AsyncIOMotorClient(settings.MONGO_URI)
-    await init_beanie(database=client.morgan_db, document_models=[User, FileSystemItem, SharedCollection, PlaybackProgress])
+    await init_beanie(database=client.morgan_db, document_models=[User, FileSystemItem, SharedCollection, TokenSetting, PlaybackProgress])

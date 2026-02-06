@@ -106,12 +106,14 @@
                     </p>
                 </div>
                 
+                {% if not hide_auth %}
                 <a href="/login" class="group relative px-8 py-3 bg-red-600 rounded-full text-white font-bold overflow-hidden shadow-lg transition-all hover:bg-red-500 hover:shadow-red-500/50">
                     <span class="relative z-10 flex items-center">
                         Create Free Account <i class="fas fa-arrow-right ml-2 group-hover:translate-x-1 transition"></i>
                     </span>
                     <div class="absolute top-0 -left-full w-full h-full bg-gradient-to-r from-transparent via-white/20 to-transparent skew-x-12 group-hover:animate-shine"></div>
                 </a>
+                {% endif %}
             </div>
         </div>
     </div>

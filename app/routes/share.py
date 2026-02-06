@@ -13,7 +13,7 @@ from starlette.background import BackgroundTask
 from pyrogram import Client
 from beanie.operators import In, Or
 from beanie import PydanticObjectId
-from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress
+from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress, TokenSetting
 from app.core.config import settings
 from app.routes.stream import telegram_stream_generator, _align_offset, _align_range, parallel_stream_generator, _get_parallel_clients, _extract_file_size, _pick_align
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id, ensure_peer_access
@@ -64,6 +64,19 @@ def _extract_file_size(msg) -> int | None:
     if getattr(msg, "file", None):
         return getattr(msg.file, "size", None)
     return None
+
+async def _get_link_token() -> str:
+    token = await TokenSetting.find_one(TokenSetting.key == "link_token")
+    if not token:
+        token = TokenSetting(key="link_token", value=str(uuid.uuid4()))
+        await token.insert()
+    return token.value
+
+async def _validate_link_token(request: Request):
+    expected = await _get_link_token()
+    provided = (request.query_params.get("t") or "").strip()
+    if provided != expected:
+        raise HTTPException(403, "Invalid link token")
 
 def _select_default_item(items: List[FileSystemItem]) -> FileSystemItem | None:
     if not items:
@@ -258,6 +271,7 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
     if not item_ids:
         return {"error": "No items selected"}
     token = str(uuid.uuid4())
+    link_token = await _get_link_token()
     items = await FileSystemItem.find(In(FileSystemItem.id, item_ids)).to_list()
     expanded_items: List[FileSystemItem] = []
     for item in items:
@@ -283,14 +297,15 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
     await bundle.insert()
     base_url = str(request.base_url).rstrip("/")
     links = {
-        "view": f"{base_url}/s/{token}",
-        "download": f"{base_url}/d/{token}",
-        "telegram": f"{base_url}/t/{token}",
+        "view": f"{base_url}/s/{token}?t={link_token}",
+        "download": f"{base_url}/d/{token}?t={link_token}",
+        "telegram": f"{base_url}/t/{token}?t={link_token}",
     }
     return {"code": token, "links": links, "link": links["view"]}
 
 @router.get("/s/{token}")
 async def public_view(request: Request, token: str):
+    await _validate_link_token(request)
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     viewer_name = (request.query_params.get("u") or "").strip()
@@ -492,10 +507,12 @@ async def public_view(request: Request, token: str):
 
 @router.get("/s/{token}/u={username}")
 async def public_view_with_user(token: str, username: str):
-    return RedirectResponse(url=f"/s/{token}?u={username}")
+    link_token = await _get_link_token()
+    return RedirectResponse(url=f"/s/{token}?u={username}&t={link_token}")
 
 @router.get("/s/stream/file/{item_id}")
 async def public_stream_by_id(item_id: str, request: Request, range: str = Header(None), download: bool = False):
+    await _validate_link_token(request)
     item = await FileSystemItem.get(item_id)
     if not item: raise HTTPException(404)
     if item.parts and item.parts[0].chat_id:
@@ -701,6 +718,7 @@ async def resolve_user(name: str):
 
 @router.get("/s/stream/{token}")
 async def public_stream_token(request: Request, token: str, range: str = Header(None)):
+    await _validate_link_token(request)
     item = await FileSystemItem.find_one(FileSystemItem.share_token == token)
     if not item: raise HTTPException(404)
     return await public_stream_by_id(str(item.id), request, range)
@@ -708,11 +726,13 @@ async def public_stream_token(request: Request, token: str, range: str = Header(
 
 @router.get("/d/file/{item_id}")
 async def public_download_by_id(item_id: str, request: Request, range: str = Header(None)):
+    await _validate_link_token(request)
     return await public_stream_by_id(item_id, request, range, download=True)
 
 
 @router.get("/d/{token}")
 async def public_download_token(request: Request, token: str, range: str = Header(None)):
+    await _validate_link_token(request)
     kind, items = await _resolve_shared_items(token)
     if not kind or not items:
         raise HTTPException(404)
@@ -752,13 +772,14 @@ async def public_download_token(request: Request, token: str, range: str = Heade
 
 @router.get("/t/{token}")
 async def telegram_redirect(token: str):
+    link_token = await _get_link_token()
     kind, items = await _resolve_shared_items(token)
     if not kind:
         raise HTTPException(404)
     bot_username = (getattr(settings, "BOT_USERNAME", "") or "").lstrip("@")
     if not bot_username:
         return HTMLResponse("Bot username is not configured.", status_code=400)
-    tg_url = f"https://t.me/{bot_username}?start=share_{token}"
+    tg_url = f"https://t.me/{bot_username}?start=share_{token}_t_{link_token}"
     html = f"""
 <!DOCTYPE html>
 <html lang="en">
