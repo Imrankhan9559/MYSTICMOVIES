@@ -1,9 +1,10 @@
 from datetime import datetime
+import uuid
 from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting
-from app.routes.dashboard import get_current_user
+from app.routes.dashboard import get_current_user, _cast_ids
 from app.core.config import settings
 
 router = APIRouter()
@@ -34,7 +35,7 @@ async def admin_panel(request: Request):
     item_ids = list({p.item_id for p in recent_progress if getattr(p, "item_id", None)})
     items_map = {}
     if item_ids:
-        items = await FileSystemItem.find(In(FileSystemItem.id, item_ids)).to_list()
+        items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(item_ids))).to_list()
         items_map = {str(i.id): i.name for i in items}
     token_doc = await TokenSetting.find_one(TokenSetting.key == "link_token")
     link_token = token_doc.value if token_doc else ""

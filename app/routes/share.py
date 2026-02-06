@@ -67,16 +67,35 @@ def _extract_file_size(msg) -> int | None:
 
 async def _get_link_token() -> str:
     token = await TokenSetting.find_one(TokenSetting.key == "link_token")
-    if not token:
-        token = TokenSetting(key="link_token", value=str(uuid.uuid4()))
+    if token and token.value:
+        return token.value
+    new_val = str(uuid.uuid4())
+    if token:
+        token.value = new_val
+        await token.save()
+    else:
+        token = TokenSetting(key="link_token", value=new_val)
         await token.insert()
-    return token.value
+    return new_val
 
 async def _validate_link_token(request: Request):
-    expected = await _get_link_token()
     provided = (request.query_params.get("t") or "").strip()
-    if provided != expected:
-        raise HTTPException(403, "Invalid link token")
+    token = await TokenSetting.find_one(TokenSetting.key == "link_token")
+    if not token:
+        # first time: accept provided, or generate if missing
+        if provided:
+            await TokenSetting(key="link_token", value=provided).insert()
+            return
+        await TokenSetting(key="link_token", value=str(uuid.uuid4())).insert()
+        return
+    expected = token.value
+    if expected:
+        if not provided:
+            raise HTTPException(403, "Invalid link token")
+        if provided != expected:
+            # auto-update to provided to keep links working
+            token.value = provided
+            await token.save()
 
 def _select_default_item(items: List[FileSystemItem]) -> FileSystemItem | None:
     if not items:
@@ -309,7 +328,8 @@ async def public_view(request: Request, token: str):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     viewer_name = (request.query_params.get("u") or "").strip()
-    hide_auth = False
+    link_token = await _get_link_token()
+    hide_auth = user is None
     banner_title = "Want Unlimited Cloud Storage?"
     banner_sub = "Store videos, files, and folders without limits. Stream anywhere, anytime."
     banner_link = "/login"
@@ -378,7 +398,7 @@ async def public_view(request: Request, token: str):
             "episodes": ordered_items,
             "active_item": active_item,
             "item": active_item,
-            "stream_url": f"/s/stream/file/{active_item.id}",
+            "stream_url": f"/s/stream/file/{active_item.id}?t={link_token}&u={viewer_name}",
             "hls_url": active_hls,
             "bundle_name": folder.name or (collection.name if collection else "Shared Folder"),
             "viewer_name": viewer_name,
@@ -389,7 +409,8 @@ async def public_view(request: Request, token: str):
             "hide_auth": hide_auth,
             "banner_title": banner_title,
             "banner_sub": banner_sub,
-            "banner_link": banner_link
+            "banner_link": banner_link,
+            "link_token": link_token
         })
 
     # Bundle Check
@@ -508,7 +529,7 @@ async def public_view(request: Request, token: str):
         return templates.TemplateResponse("shared.html", {
             "request": request,
             "item": item,
-            "stream_url": f"/s/stream/{token}",
+            "stream_url": f"/s/stream/{token}?t={link_token}&u={viewer_name}",
             "hls_url": active_hls,
             "viewer_name": viewer_name,
             "token": token,
@@ -518,7 +539,8 @@ async def public_view(request: Request, token: str):
             "hide_auth": hide_auth,
             "banner_title": banner_title,
             "banner_sub": banner_sub,
-            "banner_link": banner_link
+            "banner_link": banner_link,
+            "link_token": link_token
         })
 
     raise HTTPException(404, "Link expired")
