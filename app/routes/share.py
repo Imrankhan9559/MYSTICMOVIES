@@ -33,6 +33,23 @@ def _is_video_item(item: FileSystemItem) -> bool:
     name = (item.name or "").lower()
     return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi"))
 
+def _extract_file_size(msg) -> int | None:
+    if not msg:
+        return None
+    if getattr(msg, "document", None):
+        return getattr(msg.document, "size", None) or getattr(msg.document, "file_size", None)
+    if getattr(msg, "video", None):
+        return getattr(msg.video, "size", None) or getattr(msg.video, "file_size", None)
+    if getattr(msg, "audio", None):
+        return getattr(msg.audio, "size", None) or getattr(msg.audio, "file_size", None)
+    if getattr(msg, "photo", None) and getattr(msg.photo, "sizes", None):
+        sizes = msg.photo.sizes
+        if sizes:
+            return getattr(sizes[-1], "size", None)
+    if getattr(msg, "file", None):
+        return getattr(msg.file, "size", None)
+    return None
+
 def _select_default_item(items: List[FileSystemItem]) -> FileSystemItem | None:
     if not items:
         return None
@@ -515,18 +532,20 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
     msg_id = item.parts[0].message_id
     # Probe actual size to avoid OFFSET_INVALID on wrong DB sizes
     try:
-        probe_client = client if chat_id == "me" else storage_primary
-        if probe_client and await ensure_peer_access(probe_client, chat_id):
-            msg = await probe_client.get_messages(chat_id, message_ids=msg_id)
-            actual_size = _extract_file_size(msg)
-            if actual_size:
-                file_size = actual_size
-                if item.size != actual_size:
-                    try:
-                        item.size = actual_size
-                        await item.save()
-                    except Exception:
-                        pass
+        # Prefer telethon (works even if pyrogram session hits rate limits)
+        msg = await tl_get_message(msg_id)
+        actual_size = _extract_file_size(msg)
+        if not actual_size and client and await ensure_peer_access(client, chat_id):
+            msg_pyro = await client.get_messages(chat_id, message_ids=msg_id)
+            actual_size = _extract_file_size(msg_pyro)
+        if actual_size:
+            file_size = actual_size
+            if item.size != actual_size:
+                try:
+                    item.size = actual_size
+                    await item.save()
+                except Exception:
+                    pass
     except Exception:
         pass
 
