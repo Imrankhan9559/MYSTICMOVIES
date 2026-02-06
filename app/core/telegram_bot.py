@@ -7,7 +7,6 @@ import json
 import asyncio
 from itertools import cycle
 from pyrogram import Client, filters
-from pyrogram.errors import FloodWait
 from pyrogram.handlers import MessageHandler
 from app.core.config import settings
 from app.db.models import FileSystemItem, FilePart, User, SharedCollection
@@ -864,9 +863,6 @@ async def start_telegram():
                 _clear_bot_webhook_http(settings.BOT_TOKEN)
             await verify_storage_access_v2(bot_client)
             _register_bot_handlers(bot_client)
-        except FloodWait as e:
-            logger.warning(f"Bot client flood-wait {e.value}s; skipping bot client this run.")
-            bot_client = None
         except Exception as e:
             logger.warning(f"Bot client start failed: {e}")
             bot_client = None
@@ -889,16 +885,13 @@ async def start_telegram():
                 _clear_bot_webhook_http(token)
             await verify_storage_access_v2(bot)
             _register_bot_handlers(bot)
-        except FloodWait as e:
-            logger.warning(f"Pool bot #{idx} flood-wait {e.value}s; skipping this bot.")
         except Exception as e:
             logger.error(f"Failed to start bot pool #{idx}: {e}")
 
-    # Start Bot API polling if enabled by env
-    want_polling = os.getenv("BOT_API_POLLING", "").lower() in ("1", "true", "yes")
-    if want_polling and _bot_api_task is None:
+    # Start Bot API polling fallback (always on)
+    if _bot_api_task is None:
         _bot_api_task = asyncio.create_task(_bot_api_poll_loop())
-        logger.info("Bot API polling started (env=%s)", want_polling)
+        logger.info("Bot API polling started")
 
 async def stop_telegram():
     logger.info("Stopping Telegram Client...")
