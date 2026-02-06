@@ -2,6 +2,7 @@ import os
 import asyncio
 import uvicorn
 from fastapi import FastAPI, Response
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
@@ -44,6 +45,9 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 # Fix for annoying 404 Favicon errors in browser console
 @app.get('/favicon.ico', include_in_schema=False)
 async def favicon():
+    icon_path = os.path.join("app", "templates", "fav-icon.png")
+    if os.path.exists(icon_path):
+        return FileResponse(icon_path)
     return Response(status_code=204)
 
 # Include all Routes
