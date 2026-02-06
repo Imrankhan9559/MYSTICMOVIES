@@ -7,6 +7,7 @@ import json
 import asyncio
 from itertools import cycle
 from pyrogram import Client, filters
+from pyrogram.errors import FloodWait
 from pyrogram.handlers import MessageHandler
 from app.core.config import settings
 from app.db.models import FileSystemItem, FilePart, User, SharedCollection
@@ -849,18 +850,25 @@ async def start_telegram():
     await verify_storage_access_v2(tg_client)
 
     if bot_client and bot_client is not tg_client:
-        await bot_client.start()
-        bot_me = await bot_client.get_me()
-        bot_client._is_bot = getattr(bot_me, "is_bot", False)
-        logger.info(f"Bot client connected as {bot_me.first_name} (@{bot_me.username})")
         try:
-            await bot_client.delete_webhook(drop_pending_updates=True)
-            logger.info("Cleared bot webhook for long polling (bot_client).")
+            await bot_client.start()
+            bot_me = await bot_client.get_me()
+            bot_client._is_bot = getattr(bot_me, "is_bot", False)
+            logger.info(f"Bot client connected as {bot_me.first_name} (@{bot_me.username})")
+            try:
+                await bot_client.delete_webhook(drop_pending_updates=True)
+                logger.info("Cleared bot webhook for long polling (bot_client).")
+            except Exception as e:
+                logger.warning(f"Failed to clear bot webhook (bot_client): {e}")
+                _clear_bot_webhook_http(settings.BOT_TOKEN)
+            await verify_storage_access_v2(bot_client)
+            _register_bot_handlers(bot_client)
+        except FloodWait as e:
+            logger.warning(f"Bot client flood-wait {e.value}s on start; skipping bot client this run.")
+            bot_client = None
         except Exception as e:
-            logger.warning(f"Failed to clear bot webhook (bot_client): {e}")
-            _clear_bot_webhook_http(settings.BOT_TOKEN)
-        await verify_storage_access_v2(bot_client)
-        _register_bot_handlers(bot_client)
+            logger.warning(f"Bot client start failed: {e}")
+            bot_client = None
 
     # Start bot pool (if any)
     tokens = _get_pool_tokens()
@@ -880,6 +888,8 @@ async def start_telegram():
                 _clear_bot_webhook_http(token)
             await verify_storage_access_v2(bot)
             _register_bot_handlers(bot)
+        except FloodWait as e:
+            logger.warning(f"Pool bot #{idx} flood-wait {e.value}s; skipping this bot.")
         except Exception as e:
             logger.error(f"Failed to start bot pool #{idx}: {e}")
 
