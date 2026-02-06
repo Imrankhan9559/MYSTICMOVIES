@@ -570,8 +570,11 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
         return start_local, end_local
 
     start, end = _apply_range(file_size)
-    if file_size and start >= file_size:
-        return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+    if file_size:
+        if start >= file_size:
+            return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+        if end >= file_size:
+            end = file_size - 1
     align = _pick_align(file_size)
 
     async def cleanup():
