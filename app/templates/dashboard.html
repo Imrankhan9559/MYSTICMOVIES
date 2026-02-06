@@ -168,6 +168,16 @@
             <div class="flex flex-col items-center justify-center py-24 text-gray-600"><i class="fas fa-box-open text-6xl opacity-30 mb-4"></i><p class="text-xl font-bold">This folder is empty.</p></div>
         {% endfor %}
     </div>
+    {% if has_more %}
+        <div class="flex justify-center mt-6">
+            <a
+                class="bg-gray-700 hover:bg-gray-600 px-6 py-2 rounded-full text-white text-sm shadow-lg"
+                href="/dashboard?{% if current_folder %}folder_id={{ current_folder.id }}&{% endif %}{% if search_query %}q={{ search_query }}&{% endif %}{% if search_scope %}scope={{ search_scope }}&{% endif %}offset={{ offset + limit }}&limit={{ limit }}"
+            >
+                Load more
+            </a>
+        </div>
+    {% endif %}
 </div>
 
 <div id="shareModal" class="hidden fixed inset-0 bg-black bg-opacity-90 flex justify-center items-center z-50 backdrop-blur-sm">

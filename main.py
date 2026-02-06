@@ -46,5 +46,8 @@ app.include_router(admin.router)
 app.include_router(share.router)
 
 if __name__ == "__main__":
-    # Reload=True allows the server to restart when you edit code
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Render sets PORT; default to 8000 for local dev.
+    port = int(os.getenv("PORT", "8000"))
+    # Enable auto-reload only when explicitly requested.
+    reload = os.getenv("RELOAD", "").lower() in ("1", "true", "yes")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=reload)

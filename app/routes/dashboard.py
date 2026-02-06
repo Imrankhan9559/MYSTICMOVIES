@@ -14,6 +14,7 @@ from fastapi import APIRouter, Request, UploadFile, File, Form, BackgroundTasks,
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from pyrogram import Client
+from beanie import PydanticObjectId
 from beanie.operators import Or, In
 from app.db.models import FileSystemItem, FilePart, User, SharedCollection
 from app.core.config import settings
@@ -26,6 +27,7 @@ router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 mimetypes.init()
 logger = logging.getLogger(__name__)
+ITEMS_PAGE_SIZE = 200
 
 # --- IN-MEMORY JOB TRACKER ---
 upload_jobs: Dict[str, dict] = {}
@@ -52,6 +54,21 @@ def _build_search_regex(text: str) -> Optional[str]:
     if not tokens:
         return None
     return ".*".join(re.escape(token) for token in tokens)
+
+def _safe_int(value: str, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+def _cast_ids(raw_ids: List[str]) -> List[PydanticObjectId]:
+    casted: List[PydanticObjectId] = []
+    for value in raw_ids or []:
+        try:
+            casted.append(PydanticObjectId(str(value)))
+        except Exception:
+            pass
+    return casted
 
 async def _build_folder_path_list(folder: FileSystemItem, user: User, is_admin: bool) -> List[Dict[str, Any]]:
     chain: List[FileSystemItem] = []
@@ -395,6 +412,10 @@ async def dashboard(request: Request, folder_id: Optional[str] = None):
     if folder_id == "None" or folder_id == "": folder_id = None
     raw_scope = (request.query_params.get("scope") or "").strip().lower()
     search_scope = raw_scope if raw_scope in ("all", "folder") else ("folder" if folder_id else "all")
+    offset = _safe_int(request.query_params.get("offset") or "0", 0)
+    limit = _safe_int(request.query_params.get("limit") or str(ITEMS_PAGE_SIZE), ITEMS_PAGE_SIZE)
+    if limit < 20: limit = 20
+    if limit > 500: limit = 500
 
     storage_folder = None
     if is_admin:
@@ -425,7 +446,7 @@ async def dashboard(request: Request, folder_id: Optional[str] = None):
                 else:
                     query["parent_id"] = None
 
-            items = await FileSystemItem.find(query).to_list()
+            items = await FileSystemItem.find(query).skip(offset).limit(limit + 1).to_list()
     elif folder_id:
         current_folder = await FileSystemItem.get(folder_id)
         if not current_folder:
@@ -435,22 +456,28 @@ async def dashboard(request: Request, folder_id: Optional[str] = None):
 
         if storage_folder and str(storage_folder.id) == str(folder_id):
             try:
-                await _sync_storage_folder(storage_folder, limit=200)
+                existing_count = await FileSystemItem.find(FileSystemItem.parent_id == folder_id).count()
+                if existing_count == 0:
+                    await _sync_storage_folder(storage_folder, limit=200)
             except Exception as e:
                 logger.warning(f"Storage folder sync failed: {e}")
 
-        items = await FileSystemItem.find(FileSystemItem.parent_id == folder_id).to_list()
+        items = await FileSystemItem.find(FileSystemItem.parent_id == folder_id).skip(offset).limit(limit + 1).to_list()
     else:
         if is_admin:
-            items = await FileSystemItem.find(FileSystemItem.parent_id == None).to_list()
+            items = await FileSystemItem.find(FileSystemItem.parent_id == None).skip(offset).limit(limit + 1).to_list()
         else:
             items = await FileSystemItem.find(
                 Or(FileSystemItem.owner_phone == user.phone_number, FileSystemItem.collaborators == user.phone_number),
                 FileSystemItem.parent_id == None
-            ).to_list()
+            ).skip(offset).limit(limit + 1).to_list()
 
         current_folder = None
     visible_items = []
+    has_more = False
+    if len(items) > limit:
+        has_more = True
+        items = items[:limit]
     
     for item in items:
         if _can_access(user, item, is_admin) or folder_id:
@@ -459,19 +486,13 @@ async def dashboard(request: Request, folder_id: Optional[str] = None):
             if not item.share_token: item.share_token = ""
             visible_items.append(item)
 
-    if is_admin:
-        folders = await FileSystemItem.find(FileSystemItem.is_folder == True).to_list()
-    else:
-        folders = await FileSystemItem.find(
-            Or(FileSystemItem.owner_phone == user.phone_number, FileSystemItem.collaborators == user.phone_number),
-            FileSystemItem.is_folder == True
-        ).to_list()
-
     return templates.TemplateResponse("dashboard.html", {
         "request": request, "items": visible_items, "current_folder": current_folder, "user": user, "is_admin": is_admin,
-        "folders": folders,
         "search_query": search_query,
-        "search_scope": search_scope
+        "search_scope": search_scope,
+        "offset": offset,
+        "limit": limit,
+        "has_more": has_more
     })
 
 @router.get("/search/suggest")
@@ -962,7 +983,7 @@ async def move_bundle(request: Request, payload: Dict = Body(...)):
         if not _can_access(user, target, is_admin):
             return JSONResponse({"error": "Unauthorized"}, 403)
 
-    items = await FileSystemItem.find(In(FileSystemItem.id, item_ids)).to_list()
+    items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(item_ids))).to_list()
     if not items:
         return JSONResponse({"error": "No items found"}, 404)
 
@@ -1011,7 +1032,7 @@ async def copy_bundle(request: Request, payload: Dict = Body(...)):
         if not _can_access(user, target, is_admin):
             return JSONResponse({"error": "Unauthorized"}, 403)
 
-    items = await FileSystemItem.find(In(FileSystemItem.id, item_ids)).to_list()
+    items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(item_ids))).to_list()
     if not items:
         return JSONResponse({"error": "No items found"}, 404)
 
