@@ -309,6 +309,16 @@ async def public_view(request: Request, token: str):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     viewer_name = (request.query_params.get("u") or "").strip()
+    hide_auth = False
+    banner_title = "Want Unlimited Cloud Storage?"
+    banner_sub = "Store videos, files, and folders without limits. Stream anywhere, anytime."
+    banner_link = "/login"
+    # Token-specific overrides
+    if token == "7b2c8c87-1891-4f11-9c31-1a1e61821028":
+        hide_auth = True
+        banner_title = "Watch and download movies & web-series for free"
+        banner_sub = "Visit mysticmovies.rf.gd to explore."
+        banner_link = "https://mysticmovies.rf.gd"
     episode_override = request.query_params.get("e")
 
     # Folder Share (stable link)
@@ -375,7 +385,11 @@ async def public_view(request: Request, token: str):
             "token": token,
             "is_admin": is_admin,
             "user": user,
-            "bot_username": getattr(settings, "BOT_USERNAME", "")
+            "bot_username": getattr(settings, "BOT_USERNAME", ""),
+            "hide_auth": hide_auth,
+            "banner_title": banner_title,
+            "banner_sub": banner_sub,
+            "banner_link": banner_link
         })
 
     # Bundle Check
@@ -500,7 +514,11 @@ async def public_view(request: Request, token: str):
             "token": token,
             "bot_username": getattr(settings, "BOT_USERNAME", ""),
             "user": user,
-            "is_admin": is_admin
+            "is_admin": is_admin,
+            "hide_auth": hide_auth,
+            "banner_title": banner_title,
+            "banner_sub": banner_sub,
+            "banner_link": banner_link
         })
 
     raise HTTPException(404, "Link expired")

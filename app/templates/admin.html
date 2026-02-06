@@ -12,6 +12,21 @@
         </div>
     </div>
 
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+                <div class="text-xs uppercase text-gray-500 font-bold">Link Token</div>
+                <div class="text-white font-mono break-all">{{ link_token or 'not-set' }}</div>
+            </div>
+            <div class="flex space-x-2">
+                <button type="button" onclick="navigator.clipboard.writeText('{{ link_token }}')" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-white text-xs font-bold">Copy</button>
+                <form action="/admin/token/regenerate" method="post">
+                    <button type="submit" class="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-white text-xs font-bold" onclick="return confirm('Regenerate token? All share links need updated t= value.')">Regenerate</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
         <div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg relative overflow-hidden group">
             <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition">
@@ -167,7 +182,7 @@
                     <tr class="hover:bg-gray-700 transition">
                         <td class="p-4 text-white font-medium">{{ p.user_key }}</td>
                         <td class="p-4 text-xs uppercase">{{ p.user_type }}</td>
-                        <td class="p-4 text-sm font-mono text-gray-500">{{ p.item_id }}</td>
+                        <td class="p-4 text-sm text-gray-200">{{ items_map.get(p.item_id, p.item_id) }}</td>
                         <td class="p-4 text-sm">
                             {% if p.duration > 0 %}
                                 {{ ((p.position / p.duration) * 100) | round(1) }}%

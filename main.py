@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI):
     await stop_telegram()
     await stop_telethon_client()
 
-app = FastAPI(title="MORGANXMYSTIC Storage", lifespan=lifespan)
+app = FastAPI(title="MORGANXMYSTIC", lifespan=lifespan)
 
 # --- FIX: Auto-Create Static Directory ---
 # This prevents the "RuntimeError: Directory 'app/static' does not exist" on Koyeb

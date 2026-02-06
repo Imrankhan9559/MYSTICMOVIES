@@ -2,7 +2,7 @@ from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
-from app.db.models import User, FileSystemItem, PlaybackProgress
+from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting
 from app.routes.dashboard import get_current_user
 from app.core.config import settings
 
@@ -30,12 +30,36 @@ async def admin_panel(request: Request):
     pending_users = await User.find(User.status == "pending").sort("-requested_at").to_list()
 
     recent_progress = await PlaybackProgress.find_all().sort("-updated_at").limit(50).to_list()
+    # Map item_id -> name for display
+    item_ids = list({p.item_id for p in recent_progress if getattr(p, "item_id", None)})
+    items_map = {}
+    if item_ids:
+        items = await FileSystemItem.find(In(FileSystemItem.id, item_ids)).to_list()
+        items_map = {str(i.id): i.name for i in items}
+    token_doc = await TokenSetting.find_one(TokenSetting.key == "link_token")
+    link_token = token_doc.value if token_doc else ""
 
     return templates.TemplateResponse("admin.html", {
         "request": request, "total_users": total_users, "total_files": total_files, 
         "users": all_users, "user_email": user.phone_number, "pending_users": pending_users,
-        "recent_progress": recent_progress, "is_admin": True, "user": user
+        "recent_progress": recent_progress, "is_admin": True, "user": user, "link_token": link_token, "items_map": items_map
     })
+
+@router.post("/admin/token/regenerate")
+async def regenerate_link_token(request: Request):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    token_doc = await TokenSetting.find_one(TokenSetting.key == "link_token")
+    new_val = str(uuid.uuid4())
+    if token_doc:
+        token_doc.value = new_val
+        token_doc.updated_at = datetime.now()
+        await token_doc.save()
+    else:
+        token_doc = TokenSetting(key="link_token", value=new_val)
+        await token_doc.insert()
+    return RedirectResponse("/admin", status_code=303)
 
 @router.post("/admin/delete_user")
 async def delete_user(request: Request, user_phone: str = Form(...)):
