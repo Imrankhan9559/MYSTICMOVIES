@@ -25,9 +25,18 @@
 
     <div class="flex-1 w-full md:w-auto px-0 md:px-4">
         <div class="relative w-full md:max-w-md">
-            <input id="searchInput" type="text" value="{{ search_query or '' }}" placeholder="Search your videos..." class="w-full bg-gray-900 border border-gray-700 rounded-full px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500 transition" />
-            <div id="searchSuggestions" class="hidden absolute z-40 mt-2 w-full bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden"></div>
+            <div class="flex gap-2">
+                <div class="relative flex-1">
+                    <input id="searchInput" type="text" value="{{ search_query or '' }}" placeholder="Search files or folders..." class="w-full bg-gray-900 border border-gray-700 rounded-full px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500 transition" />
+                    <div id="searchSuggestions" class="hidden absolute z-40 mt-2 w-full bg-gray-900 border border-gray-700 rounded-xl shadow-2xl overflow-hidden"></div>
+                </div>
+                <select id="searchScope" class="bg-gray-900 border border-gray-700 rounded-full px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-blue-500">
+                    <option value="folder" {% if search_scope == "folder" %}selected{% endif %}>This Folder</option>
+                    <option value="all" {% if search_scope == "all" %}selected{% endif %}>All Storage</option>
+                </select>
+            </div>
         </div>
+        <input type="hidden" id="currentFolderId" value="{{ current_folder.id if current_folder else '' }}">
     </div>
 
     <div class="flex flex-wrap gap-3 w-full md:w-auto justify-start md:justify-end items-center">
@@ -200,6 +209,11 @@
         <h3 class="text-white text-xl font-bold mb-4 flex items-center"><i class="fas fa-pen text-red-500 mr-2"></i> Rename Item</h3>
         <input type="hidden" id="renameItemId">
         <input type="text" id="renameInput" class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-white mb-6" placeholder="New name">
+        <label class="flex items-center text-xs text-gray-400 mb-2">
+            <input type="checkbox" id="renameFast" class="mr-2 accent-red-500" checked>
+            Fast rename (update name in app only)
+        </label>
+        <div class="text-[11px] text-gray-500 mb-6">Uncheck to rename in Telegram storage (slow for large/old files).</div>
         <div class="flex justify-end space-x-3">
             <button onclick="closeRenameModal()" class="text-gray-400 font-bold text-sm">Cancel</button>
             <button onclick="submitRename()" class="bg-red-600 text-white px-6 py-2 rounded-lg font-bold">Save</button>
@@ -335,9 +349,27 @@ async function loadTeam(folderId) { const listDiv = document.getElementById('tea
 async function submitCollab() { const id = document.getElementById('collabFolderId').value; const phone = document.getElementById('collabPhone').value; if(!phone) return alert("Enter phone"); const formData = new FormData(); formData.append('folder_id', id); formData.append('phone', phone); const res = await fetch('/folder/add_collaborator', { method: 'POST', body: formData }); if((await res.json()).status === 'success') { document.getElementById('collabPhone').value = ''; await loadTeam(id); } else alert("Error"); }
 async function removeUser(phone) { if(!confirm(`Remove ${phone}?`)) return; const id = document.getElementById('collabFolderId').value; const formData = new FormData(); formData.append('folder_id', id); formData.append('phone', phone); if((await fetch('/folder/remove_collaborator', { method: 'POST', body: formData })).json().status === 'success') await loadTeam(id); }
 
-function openRenameModal(id, name) { document.getElementById('renameItemId').value = id; document.getElementById('renameInput').value = name; document.getElementById('renameModal').classList.remove('hidden'); }
+function openRenameModal(id, name) { 
+    document.getElementById('renameItemId').value = id; 
+    document.getElementById('renameInput').value = name; 
+    const fastToggle = document.getElementById('renameFast');
+    if (fastToggle) fastToggle.checked = true;
+    document.getElementById('renameModal').classList.remove('hidden'); 
+}
 function closeRenameModal() { document.getElementById('renameModal').classList.add('hidden'); }
-async function submitRename() { const id = document.getElementById('renameItemId').value; const name = document.getElementById('renameInput').value; if(!name) return alert("Enter name"); const formData = new FormData(); formData.append('item_id', id); formData.append('new_name', name); const res = await fetch('/item/rename', { method: 'POST', body: formData }); const data = await res.json(); if(data.status === 'success') { closeRenameModal(); window.location.reload(); } else alert(data.error || "Error"); }
+async function submitRename() { 
+    const id = document.getElementById('renameItemId').value; 
+    const name = document.getElementById('renameInput').value; 
+    if(!name) return alert("Enter name"); 
+    const formData = new FormData(); 
+    formData.append('item_id', id); 
+    formData.append('new_name', name); 
+    const fastToggle = document.getElementById('renameFast');
+    formData.append('rename_mode', fastToggle && fastToggle.checked ? 'fast' : 'storage');
+    const res = await fetch('/item/rename', { method: 'POST', body: formData }); 
+    const data = await res.json(); 
+    if(data.status === 'success') { closeRenameModal(); window.location.reload(); } else alert(data.error || "Error"); 
+}
 
 function openMoveModal(id) { document.getElementById('moveItemId').value = id; document.getElementById('moveModal').classList.remove('hidden'); }
 function closeMoveModal() { document.getElementById('moveModal').classList.add('hidden'); }
@@ -350,31 +382,89 @@ async function submitCopy() { const id = document.getElementById('copyItemId').v
 // Search suggestions
 const searchInput = document.getElementById("searchInput");
 const suggestionBox = document.getElementById("searchSuggestions");
+const searchScope = document.getElementById("searchScope");
+const currentFolderId = document.getElementById("currentFolderId");
 let searchTimer = null;
 
-function renderSuggestions(list) {
+function buildSearchUrl(q) {
+    const params = new URLSearchParams();
+    params.set("q", q);
+    const scope = searchScope ? searchScope.value : "all";
+    params.set("scope", scope);
+    const folderId = currentFolderId ? currentFolderId.value : "";
+    if (scope === "folder" && folderId) {
+        params.set("folder_id", folderId);
+    }
+    return `/dashboard?${params.toString()}`;
+}
+
+function clearSuggestions() {
     if (!suggestionBox) return;
-    if (!list.length) {
-        suggestionBox.classList.add("hidden");
-        suggestionBox.innerHTML = "";
+    suggestionBox.classList.add("hidden");
+    suggestionBox.innerHTML = "";
+}
+
+function renderSuggestions(payload, q) {
+    if (!suggestionBox) return;
+    const rawItems = payload?.items || [];
+    const items = rawItems.length
+        ? rawItems
+        : (payload?.suggestions || []).map(name => ({ name, is_folder: false }));
+
+    if (!items.length && !q) {
+        clearSuggestions();
         return;
     }
-    suggestionBox.innerHTML = list.map(name => (
-        `<div class="px-4 py-2 text-sm text-gray-200 hover:bg-gray-800 cursor-pointer suggestion-item">${name}</div>`
-    )).join("");
-    suggestionBox.classList.remove("hidden");
-    suggestionBox.querySelectorAll(".suggestion-item").forEach((el) => {
-        el.addEventListener("click", () => {
-            const val = el.textContent || "";
-            window.location.href = `/dashboard?q=${encodeURIComponent(val)}`;
+
+    suggestionBox.innerHTML = "";
+
+    if (q) {
+        const row = document.createElement("div");
+        row.className = "px-4 py-2 text-sm text-gray-200 hover:bg-gray-800 cursor-pointer flex items-center gap-2";
+        const icon = document.createElement("i");
+        icon.className = "fas fa-search text-gray-400";
+        const text = document.createElement("span");
+        text.textContent = `Search for "${q}"`;
+        row.appendChild(icon);
+        row.appendChild(text);
+        row.addEventListener("click", () => {
+            window.location.href = buildSearchUrl(q);
         });
+        suggestionBox.appendChild(row);
+    }
+
+    items.forEach(item => {
+        const name = item?.name || "";
+        if (!name) return;
+        const row = document.createElement("div");
+        row.className = "px-4 py-2 text-sm text-gray-200 hover:bg-gray-800 cursor-pointer flex items-center gap-2";
+        const icon = document.createElement("i");
+        icon.className = item.is_folder ? "fas fa-folder text-yellow-500" : "fas fa-file text-gray-400";
+        const text = document.createElement("span");
+        text.textContent = name;
+        row.appendChild(icon);
+        row.appendChild(text);
+        row.addEventListener("click", () => {
+            window.location.href = buildSearchUrl(name);
+        });
+        suggestionBox.appendChild(row);
     });
+
+    suggestionBox.classList.remove("hidden");
 }
 
 async function fetchSuggestions(q) {
-    const res = await fetch(`/search/suggest?q=${encodeURIComponent(q)}`);
+    const params = new URLSearchParams();
+    params.set("q", q);
+    const scope = searchScope ? searchScope.value : "all";
+    params.set("scope", scope);
+    const folderId = currentFolderId ? currentFolderId.value : "";
+    if (scope === "folder" && folderId) {
+        params.set("folder_id", folderId);
+    }
+    const res = await fetch(`/search/suggest?${params.toString()}`);
     const data = await res.json();
-    renderSuggestions(data.suggestions || []);
+    renderSuggestions(data || {}, q);
 }
 
 if (searchInput) {
@@ -382,7 +472,7 @@ if (searchInput) {
         const q = searchInput.value.trim();
         if (searchTimer) clearTimeout(searchTimer);
         if (!q) {
-            renderSuggestions([]);
+            clearSuggestions();
             return;
         }
         searchTimer = setTimeout(() => fetchSuggestions(q), 250);
@@ -392,15 +482,22 @@ if (searchInput) {
         if (e.key === "Enter") {
             e.preventDefault();
             const q = searchInput.value.trim();
-            if (q) window.location.href = `/dashboard?q=${encodeURIComponent(q)}`;
+            if (q) window.location.href = buildSearchUrl(q);
         }
+    });
+}
+
+if (searchScope && searchInput) {
+    searchScope.addEventListener("change", () => {
+        const q = searchInput.value.trim();
+        if (q) fetchSuggestions(q);
     });
 }
 
 document.addEventListener("click", (e) => {
     if (!suggestionBox || !searchInput) return;
     if (!suggestionBox.contains(e.target) && e.target !== searchInput) {
-        renderSuggestions([]);
+        clearSuggestions();
     }
 });
 

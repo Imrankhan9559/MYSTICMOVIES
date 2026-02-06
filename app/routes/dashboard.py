@@ -44,6 +44,15 @@ def _normalize_phone(phone: str) -> str:
 def _natural_key(value: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", value or "")]
 
+def _tokenize_search(text: str) -> List[str]:
+    return [t for t in re.split(r"[^a-zA-Z0-9]+", (text or "").lower()) if t]
+
+def _build_search_regex(text: str) -> Optional[str]:
+    tokens = _tokenize_search(text)
+    if not tokens:
+        return None
+    return ".*".join(re.escape(token) for token in tokens)
+
 async def _collect_folder_files(folder_id: str) -> List[FileSystemItem]:
     items: List[FileSystemItem] = []
     children = await FileSystemItem.find(FileSystemItem.parent_id == str(folder_id)).to_list()
@@ -330,6 +339,8 @@ async def dashboard(request: Request, folder_id: Optional[str] = None):
     is_admin = _is_admin(user)
     search_query = (request.query_params.get("q") or "").strip()
     if folder_id == "None" or folder_id == "": folder_id = None
+    raw_scope = (request.query_params.get("scope") or "").strip().lower()
+    search_scope = raw_scope if raw_scope in ("all", "folder") else ("folder" if folder_id else "all")
 
     storage_folder = None
     if is_admin:
@@ -338,15 +349,29 @@ async def dashboard(request: Request, folder_id: Optional[str] = None):
             storage_folder = await _ensure_storage_folder(admin_phone)
 
     if search_query:
-        if is_admin:
-            items = await FileSystemItem.find().to_list()
+        search_regex = _build_search_regex(search_query)
+        if not search_regex:
+            items = []
+            current_folder = None
         else:
-            items = await FileSystemItem.find(
-                Or(FileSystemItem.owner_phone == user.phone_number, FileSystemItem.collaborators == user.phone_number)
-            ).to_list()
-        query_lower = search_query.lower()
-        items = [i for i in items if query_lower in (i.name or "").lower()]
-        current_folder = None
+            query: Dict = {"name": {"$regex": search_regex, "$options": "i"}}
+            if not is_admin:
+                query["$or"] = [
+                    {"owner_phone": user.phone_number},
+                    {"collaborators": user.phone_number}
+                ]
+
+            current_folder = None
+            if search_scope == "folder":
+                if folder_id:
+                    current_folder = await FileSystemItem.get(folder_id)
+                    if not current_folder or not _can_access(user, current_folder, is_admin):
+                        return RedirectResponse("/dashboard")
+                    query["parent_id"] = folder_id
+                else:
+                    query["parent_id"] = None
+
+            items = await FileSystemItem.find(query).to_list()
     elif folder_id:
         current_folder = await FileSystemItem.get(folder_id)
         if not current_folder:
@@ -391,11 +416,12 @@ async def dashboard(request: Request, folder_id: Optional[str] = None):
     return templates.TemplateResponse("dashboard.html", {
         "request": request, "items": visible_items, "current_folder": current_folder, "user": user, "is_admin": is_admin,
         "folders": folders,
-        "search_query": search_query
+        "search_query": search_query,
+        "search_scope": search_scope
     })
 
 @router.get("/search/suggest")
-async def search_suggest(request: Request, q: str = ""):
+async def search_suggest(request: Request, q: str = "", scope: str = "all", folder_id: str = ""):
     user = await get_current_user(request)
     if not user:
         return JSONResponse({"suggestions": []}, 401)
@@ -403,27 +429,51 @@ async def search_suggest(request: Request, q: str = ""):
     if not q:
         return JSONResponse({"suggestions": []})
 
-    is_admin = _is_admin(user)
-    if is_admin:
-        items = await FileSystemItem.find().to_list()
-    else:
-        items = await FileSystemItem.find(
-            Or(FileSystemItem.owner_phone == user.phone_number, FileSystemItem.collaborators == user.phone_number)
-        ).to_list()
+    scope = (scope or "").strip().lower()
+    if scope not in ("all", "folder"):
+        scope = "all"
+    if folder_id == "None" or folder_id == "":
+        folder_id = None
 
-    query_lower = q.lower()
-    matches = [i.name for i in items if query_lower in (i.name or "").lower()]
+    search_regex = _build_search_regex(q)
+    if not search_regex:
+        return JSONResponse({"suggestions": []})
+
+    is_admin = _is_admin(user)
+    query: Dict = {"name": {"$regex": search_regex, "$options": "i"}}
+    if not is_admin:
+        query["$or"] = [
+            {"owner_phone": user.phone_number},
+            {"collaborators": user.phone_number}
+        ]
+    if scope == "folder":
+        if folder_id:
+            folder = await FileSystemItem.get(folder_id)
+            if not folder or not _can_access(user, folder, is_admin):
+                return JSONResponse({"suggestions": []}, 403)
+            query["parent_id"] = folder_id
+        else:
+            query["parent_id"] = None
+
+    items = await FileSystemItem.find(query).sort("name").limit(12).to_list()
+
     # Deduplicate while preserving order
     seen = set()
     suggestions = []
-    for name in matches:
-        if name in seen:
+    payload_items = []
+    for item in items:
+        name = item.name or ""
+        if not name:
+            continue
+        dedupe_key = name.lower()
+        if dedupe_key in seen:
             continue
         suggestions.append(name)
-        seen.add(name)
-        if len(suggestions) >= 8:
+        seen.add(dedupe_key)
+        payload_items.append({"id": str(item.id), "name": name, "is_folder": item.is_folder})
+        if len(suggestions) >= 10:
             break
-    return JSONResponse({"suggestions": suggestions})
+    return JSONResponse({"suggestions": suggestions, "items": payload_items})
 
 # --- UPLOAD ROUTES ---
 @router.get("/upload_zone")
@@ -590,7 +640,7 @@ async def create_folder(request: Request, folder_name: str = Form(...), parent_i
 
 # --- FILE OPERATIONS ---
 @router.post("/item/rename")
-async def rename_item(request: Request, item_id: str = Form(...), new_name: str = Form(...)):
+async def rename_item(request: Request, item_id: str = Form(...), new_name: str = Form(...), rename_mode: str = Form("fast")):
     user = await get_current_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, 401)
     is_admin = _is_admin(user)
@@ -601,6 +651,8 @@ async def rename_item(request: Request, item_id: str = Form(...), new_name: str 
     new_name = new_name.strip()
     if not new_name:
         return JSONResponse({"error": "Invalid name"}, 400)
+    if new_name == item.name:
+        return JSONResponse({"status": "success", "name": new_name})
 
     if item.is_folder:
         item.name = new_name
@@ -609,6 +661,12 @@ async def rename_item(request: Request, item_id: str = Form(...), new_name: str 
 
     if not item.parts:
         return JSONResponse({"error": "Missing file parts"}, 400)
+
+    rename_mode = (rename_mode or "fast").lower()
+    if rename_mode == "fast":
+        item.name = new_name
+        await item.save()
+        return JSONResponse({"status": "success", "name": new_name, "mode": "fast"})
 
     if item.parts and item.parts[0].chat_id:
         chat_id = item.parts[0].chat_id
