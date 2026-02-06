@@ -54,7 +54,6 @@ else:
 # Optional bot pool for parallel streaming/download
 bot_pool: list[Client] = []
 _bot_cycle = None
-_bot_api_fallback = False
 
 def _get_pool_tokens() -> list[str]:
     raw = getattr(settings, "BOT_POOL_TOKENS", "") or ""
@@ -831,7 +830,7 @@ async def _bot_api_poll_loop():
 
 
 async def start_telegram():
-    global bot_client, _bot_api_fallback, _bot_api_task
+    global bot_client, _bot_api_task
     logger.info("Connecting to Telegram...")
     await tg_client.start()
     me = await tg_client.get_me()
@@ -866,13 +865,11 @@ async def start_telegram():
             await verify_storage_access_v2(bot_client)
             _register_bot_handlers(bot_client)
         except FloodWait as e:
-            logger.warning(f"Bot client flood-wait {e.value}s; skipping bot client this run (will use Bot API polling fallback).")
+            logger.warning(f"Bot client flood-wait {e.value}s; skipping bot client this run.")
             bot_client = None
-            _bot_api_fallback = True
         except Exception as e:
             logger.warning(f"Bot client start failed: {e}")
             bot_client = None
-            _bot_api_fallback = True
 
     # Start bot pool (if any)
     tokens = _get_pool_tokens()
@@ -893,16 +890,15 @@ async def start_telegram():
             await verify_storage_access_v2(bot)
             _register_bot_handlers(bot)
         except FloodWait as e:
-            logger.warning(f"Pool bot #{idx} flood-wait {e.value}s; skipping this bot (fallback polling will cover).")
-            _bot_api_fallback = True
+            logger.warning(f"Pool bot #{idx} flood-wait {e.value}s; skipping this bot.")
         except Exception as e:
             logger.error(f"Failed to start bot pool #{idx}: {e}")
 
-    # Start Bot API polling if enabled by env or forced fallback
+    # Start Bot API polling if enabled by env
     want_polling = os.getenv("BOT_API_POLLING", "").lower() in ("1", "true", "yes")
-    if (_bot_api_fallback or want_polling) and _bot_api_task is None:
+    if want_polling and _bot_api_task is None:
         _bot_api_task = asyncio.create_task(_bot_api_poll_loop())
-        logger.info("Bot API polling started (fallback=%s env=%s)", _bot_api_fallback, want_polling)
+        logger.info("Bot API polling started (env=%s)", want_polling)
 
 async def stop_telegram():
     logger.info("Stopping Telegram Client...")
