@@ -886,10 +886,21 @@ async def start_telegram():
     # Start Bot API polling fallback (more reliable for updates)
     global _bot_api_task
     if _bot_api_task is None:
-        _bot_api_task = asyncio.create_task(_bot_api_poll_loop())
+        enable_polling = os.getenv("BOT_API_POLLING", "").lower() in ("1", "true", "yes")
+        if enable_polling:
+            _bot_api_task = asyncio.create_task(_bot_api_poll_loop())
 
 async def stop_telegram():
     logger.info("Stopping Telegram Client...")
+    global _bot_api_task
+    if _bot_api_task:
+        _bot_api_task.cancel()
+        try:
+            await _bot_api_task
+        except Exception:
+            pass
+        _bot_api_task = None
+
     for bot in bot_pool:
         try:
             await bot.stop()
@@ -900,4 +911,7 @@ async def stop_telegram():
             await bot_client.stop()
         except Exception:
             pass
-    await tg_client.stop()
+    try:
+        await tg_client.stop()
+    except Exception as e:
+        logger.warning(f"tg_client stop failed: {e}")
