@@ -1145,6 +1145,10 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
 @router.get("/profile")
 async def profile_page(request: Request):
     user = await get_current_user(request)
+    if not user:
+        phone = request.cookies.get("user_phone")
+        if phone:
+            user = await User.find_one(User.phone_number == phone)
     if not user: return RedirectResponse("/login")
     is_admin = _is_admin(user)
     total_files = await FileSystemItem.find(FileSystemItem.owner_phone == user.phone_number, FileSystemItem.is_folder == False).count()

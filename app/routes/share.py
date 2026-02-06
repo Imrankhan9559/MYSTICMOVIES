@@ -82,20 +82,15 @@ async def _validate_link_token(request: Request):
     provided = (request.query_params.get("t") or "").strip()
     token = await TokenSetting.find_one(TokenSetting.key == "link_token")
     if not token:
-        # first time: accept provided, or generate if missing
         if provided:
             await TokenSetting(key="link_token", value=provided).insert()
-            return
-        await TokenSetting(key="link_token", value=str(uuid.uuid4())).insert()
+        else:
+            await TokenSetting(key="link_token", value=str(uuid.uuid4())).insert()
         return
-    expected = token.value
-    if expected:
-        if not provided:
-            raise HTTPException(403, "Invalid link token")
-        if provided != expected:
-            # auto-update to provided to keep links working
-            token.value = provided
-            await token.save()
+    if provided and provided != token.value:
+        token.value = provided
+        await token.save()
+    # If no provided token, allow access
 
 def _select_default_item(items: List[FileSystemItem]) -> FileSystemItem | None:
     if not items:
@@ -327,7 +322,7 @@ async def public_view(request: Request, token: str):
     await _validate_link_token(request)
     user = await get_current_user(request)
     is_admin = _is_admin(user)
-    viewer_name = (request.query_params.get("u") or "").strip()
+    viewer_name = (request.query_params.get("u") or request.query_params.get("U") or "").strip()
     link_token = await _get_link_token()
     hide_auth = user is None
     banner_title = "Want Unlimited Cloud Storage?"

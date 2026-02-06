@@ -3,6 +3,7 @@ import uuid
 from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from beanie.operators import In
 from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting
 from app.routes.dashboard import get_current_user, _cast_ids
 from app.core.config import settings
