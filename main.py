@@ -1,4 +1,5 @@
 import os
+import asyncio
 import uvicorn
 from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
@@ -9,6 +10,13 @@ from app.core.telegram_bot import start_telegram, stop_telegram
 from app.core.telethon_storage import get_client as get_telethon_client, stop_client as stop_telethon_client
 from app.db.models import init_db
 from app.routes import auth, dashboard, stream, admin, share
+
+# Prefer uvloop for faster asyncio if available
+try:
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+except Exception:
+    pass
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

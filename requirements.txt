@@ -20,3 +20,4 @@ flask
 flask-session
 psutil
 ffmpeg
+uvloop
