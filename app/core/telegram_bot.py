@@ -54,6 +54,7 @@ else:
 # Optional bot pool for parallel streaming/download
 bot_pool: list[Client] = []
 _bot_cycle = None
+_bot_api_fallback = False
 
 def _get_pool_tokens() -> list[str]:
     raw = getattr(settings, "BOT_POOL_TOKENS", "") or ""
@@ -830,7 +831,7 @@ async def _bot_api_poll_loop():
 
 
 async def start_telegram():
-    global bot_client
+    global bot_client, _bot_api_fallback
     logger.info("Connecting to Telegram...")
     await tg_client.start()
     me = await tg_client.get_me()
@@ -865,25 +866,13 @@ async def start_telegram():
             await verify_storage_access_v2(bot_client)
             _register_bot_handlers(bot_client)
         except FloodWait as e:
-            if e.value <= 120:
-                logger.warning(f"Bot client flood-wait {e.value}s; waiting then retrying once.")
-                await asyncio.sleep(e.value)
-                try:
-                    await bot_client.start()
-                    bot_me = await bot_client.get_me()
-                    bot_client._is_bot = getattr(bot_me, "is_bot", False)
-                    logger.info(f"Bot client connected as {bot_me.first_name} (@{bot_me.username}) after wait")
-                    await verify_storage_access_v2(bot_client)
-                    _register_bot_handlers(bot_client)
-                except Exception as retry_err:
-                    logger.warning(f"Bot client retry failed after flood-wait: {retry_err}")
-                    bot_client = None
-            else:
-                logger.warning(f"Bot client flood-wait {e.value}s; skipping bot client this run.")
-                bot_client = None
+            logger.warning(f"Bot client flood-wait {e.value}s; skipping bot client this run (will use Bot API polling fallback).")
+            bot_client = None
+            _bot_api_fallback = True
         except Exception as e:
             logger.warning(f"Bot client start failed: {e}")
             bot_client = None
+            _bot_api_fallback = True
 
     # Start bot pool (if any)
     tokens = _get_pool_tokens()
@@ -904,28 +893,16 @@ async def start_telegram():
             await verify_storage_access_v2(bot)
             _register_bot_handlers(bot)
         except FloodWait as e:
-            if e.value <= 120:
-                logger.warning(f"Pool bot #{idx} flood-wait {e.value}s; waiting then retrying once.")
-                await asyncio.sleep(e.value)
-                try:
-                    await bot.start()
-                    bot_me = await bot.get_me()
-                    bot._is_bot = getattr(bot_me, "is_bot", False)
-                    bot_pool.append(bot)
-                    logger.info(f"Started bot pool #{idx} after wait")
-                    try:
-                        await bot.delete_webhook(drop_pending_updates=True)
-                    except Exception as e2:
-                        logger.warning(f"Failed to clear webhook for pool #{idx} after wait: {e2}")
-                        _clear_bot_webhook_http(token)
-                    await verify_storage_access_v2(bot)
-                    _register_bot_handlers(bot)
-                except Exception as retry_err:
-                    logger.warning(f"Pool bot #{idx} retry failed after flood-wait: {retry_err}")
-            else:
-                logger.warning(f"Pool bot #{idx} flood-wait {e.value}s; skipping this bot.")
+            logger.warning(f"Pool bot #{idx} flood-wait {e.value}s; skipping this bot (fallback polling will cover).")
+            _bot_api_fallback = True
         except Exception as e:
             logger.error(f"Failed to start bot pool #{idx}: {e}")
+
+    # Start Bot API polling if enabled by env or forced fallback
+    want_polling = os.getenv("BOT_API_POLLING", "").lower() in ("1", "true", "yes")
+    if (_bot_api_fallback or want_polling) and _bot_api_task is None:
+        _bot_api_task = asyncio.create_task(_bot_api_poll_loop())
+        logger.info("Bot API polling started (fallback=%s env=%s)", _bot_api_fallback, want_polling)
 
     # Start Bot API polling fallback (more reliable for updates)
     global _bot_api_task
