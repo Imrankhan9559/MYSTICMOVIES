@@ -92,6 +92,17 @@ async def _validate_link_token(request: Request):
         await token.save()
     # If no provided token, allow access
 
+async def _require_token_and_username(request: Request, login_url: str):
+    """Strict gate: valid link token AND non-empty username; otherwise redirect."""
+    provided = (request.query_params.get("t") or "").strip()
+    token_doc = await TokenSetting.find_one(TokenSetting.key == "link_token")
+    if not token_doc or token_doc.value != provided:
+        return RedirectResponse(login_url)
+    viewer_name = (request.query_params.get("u") or request.query_params.get("U") or "").strip()
+    if not viewer_name:
+        return RedirectResponse(login_url)
+    return viewer_name
+
 def _select_default_item(items: List[FileSystemItem]) -> FileSystemItem | None:
     if not items:
         return None
@@ -319,10 +330,12 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
 
 @router.get("/s/{token}")
 async def public_view(request: Request, token: str):
-    await _validate_link_token(request)
+    # Strict gate: require valid link token and viewer name
+    viewer_name = await _require_token_and_username(request, "https://mysticmovies.rf.gd/login")
+    if isinstance(viewer_name, RedirectResponse):
+        return viewer_name
     user = await get_current_user(request)
     is_admin = _is_admin(user)
-    viewer_name = (request.query_params.get("u") or request.query_params.get("U") or "").strip()
     link_token = await _get_link_token()
     hide_auth = user is None
     banner_title = "Want Unlimited Cloud Storage?"
@@ -767,7 +780,9 @@ async def public_download_by_id(item_id: str, request: Request, range: str = Hea
 
 @router.get("/d/{token}")
 async def public_download_token(request: Request, token: str, range: str = Header(None)):
-    await _validate_link_token(request)
+    viewer_name = await _require_token_and_username(request, "https://mysticmovies.rf.gd/login")
+    if isinstance(viewer_name, RedirectResponse):
+        return viewer_name
     kind, items = await _resolve_shared_items(token)
     if not kind or not items:
         raise HTTPException(404)
@@ -806,15 +821,17 @@ async def public_download_token(request: Request, token: str, range: str = Heade
 
 
 @router.get("/t/{token}")
-async def telegram_redirect(token: str):
-    link_token = await _get_link_token()
+async def telegram_redirect(token: str, request: Request):
+    viewer_name = await _require_token_and_username(request, "https://mysticmovies.rf.gd/login")
+    if isinstance(viewer_name, RedirectResponse):
+        return viewer_name
     kind, items = await _resolve_shared_items(token)
     if not kind:
         raise HTTPException(404)
     bot_username = (getattr(settings, "BOT_USERNAME", "") or "").lstrip("@")
     if not bot_username:
         return HTMLResponse("Bot username is not configured.", status_code=400)
-    tg_url = f"https://t.me/{bot_username}?start=share_{token}_t_{link_token}"
+    tg_url = f"https://t.me/{bot_username}?start=share_{token}"
     html = f"""
 <!DOCTYPE html>
 <html lang="en">

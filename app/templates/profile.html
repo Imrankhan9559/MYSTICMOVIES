@@ -1,192 +1,47 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Create Account - MORGANXMYSTIC</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Roboto:wght@300;400;700&display=swap');
-        body { font-family: 'Roboto', sans-serif; background-color: #111827; }
-        .brand-font { font-family: 'Orbitron', sans-serif; }
-    </style>
-</head>
-<body class="flex items-center justify-center min-h-screen text-gray-200 px-4 py-8">
-
-    <div class="w-full max-w-md p-6 sm:p-8 bg-gray-800 rounded-2xl shadow-2xl border border-gray-700">
-        <div class="text-center mb-6">
-            <h1 class="text-3xl font-bold tracking-widest text-white flex justify-center items-center">
-                <span>MORGAN</span>
-                <span class="text-4xl text-red-600 mx-1 brand-font">X</span>
-                <span>MYSTIC</span>
-            </h1>
-            <p class="text-gray-500 text-xs mt-2 uppercase tracking-widest">Account Request</p>
+{% extends "base.html" %}
+{% block content %}
+<div class="min-h-screen bg-gray-900 text-white">
+    <div class="max-w-5xl mx-auto px-4 py-10 space-y-8">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div>
+                <p class="text-sm text-gray-400 uppercase tracking-widest">Profile</p>
+                <h1 class="text-3xl font-bold">{{ user.first_name or "User" }}</h1>
+                <p class="text-gray-400 text-sm">Phone: {{ user.phone_number }}</p>
+                {% if is_admin %}
+                <span class="inline-block mt-2 px-3 py-1 text-xs font-semibold bg-red-700/70 rounded-full border border-red-500">Admin</span>
+                {% endif %}
+            </div>
+            <div class="flex items-center gap-3">
+                <div class="bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-center">
+                    <div class="text-2xl font-bold">{{ total_files }}</div>
+                    <div class="text-xs text-gray-400">Files</div>
+                </div>
+            </div>
         </div>
 
-        <div id="step-info">
-            <p class="text-sm text-gray-400 mb-4 text-center">Request access with your name and Telegram number</p>
-            <form id="form-info" onsubmit="handleInfoSubmit(event)">
-                <div class="relative mb-4">
-                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <i class="fas fa-user text-gray-500"></i>
+        <div class="bg-gray-800 border border-gray-700 rounded-xl shadow-lg overflow-hidden">
+            <div class="px-4 py-3 border-b border-gray-700 flex items-center justify-between">
+                <div class="font-semibold">Your Files</div>
+                <div class="text-xs text-gray-400">Most recent first</div>
+            </div>
+            {% if files %}
+            <div class="divide-y divide-gray-700">
+                {% for f in files %}
+                <div class="px-4 py-3 flex items-center gap-4">
+                    <div class="w-10 h-10 rounded-lg bg-gray-900 border border-gray-800 flex items-center justify-center text-red-400">
+                        <i class="fas {{ f.icon }}"></i>
                     </div>
-                    <input type="text" name="name" id="nameInput" placeholder="Your Name" class="w-full bg-gray-900 border border-gray-600 rounded-lg py-3 pl-10 text-white focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition" required>
-                </div>
-                <div class="relative mb-6">
-                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <i class="fas fa-phone text-gray-500"></i>
+                    <div class="flex-1 min-w-0">
+                        <div class="truncate font-semibold">{{ f.name }}</div>
+                        <div class="text-xs text-gray-400">{{ f.formatted_size }} • {{ f.mime_type }}</div>
                     </div>
-                    <input type="text" name="phone" id="phoneInput" placeholder="+919999988888" class="w-full bg-gray-900 border border-gray-600 rounded-lg py-3 pl-10 text-white focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 transition" required>
                 </div>
-                <button type="submit" id="btn-info" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 rounded-lg transition transform hover:scale-[1.02] shadow-lg">
-                    Send Code <i class="fas fa-paper-plane ml-2"></i>
-                </button>
-            </form>
-        </div>
-
-        <div id="step-code" class="hidden">
-            <p class="text-sm text-gray-400 mb-4 text-center">Enter the code sent to your Telegram App</p>
-            <form id="form-code" onsubmit="handleCodeSubmit(event)">
-                <div class="relative mb-6">
-                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <i class="fas fa-shield-alt text-gray-500"></i>
-                    </div>
-                    <input type="text" name="code" id="codeInput" placeholder="12345" class="w-full bg-gray-900 border border-gray-600 rounded-lg py-3 pl-10 text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition text-center tracking-widest font-mono text-xl" required>
-                </div>
-                <button type="submit" id="btn-code" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition transform hover:scale-[1.02] shadow-lg">
-                    Verify Code <i class="fas fa-check-circle ml-2"></i>
-                </button>
-            </form>
-        </div>
-
-        <div id="step-password" class="hidden">
-            <p class="text-sm text-gray-400 mb-4 text-center">Enter your Two-Step Verification Password</p>
-            <form id="form-password" onsubmit="handlePasswordSubmit(event)">
-                <div class="relative mb-6">
-                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                        <i class="fas fa-lock text-gray-500"></i>
-                    </div>
-                    <input type="password" name="password" id="passwordInput" placeholder="Password" class="w-full bg-gray-900 border border-gray-600 rounded-lg py-3 pl-10 text-white focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition" required>
-                </div>
-                <button type="submit" id="btn-password" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 rounded-lg transition transform hover:scale-[1.02] shadow-lg">
-                    Verify 2FA <i class="fas fa-unlock ml-2"></i>
-                </button>
-            </form>
-        </div>
-
-        <div id="statusMessage" class="mt-4 text-center text-sm font-bold min-h-[20px]"></div>
-
-        <div class="mt-6 text-center text-xs text-gray-500">
-            Already approved? <a href="/login" class="text-red-400 hover:text-red-300 font-bold">Login</a>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="px-4 py-6 text-gray-400 text-sm">No files uploaded yet.</div>
+            {% endif %}
         </div>
     </div>
-
-    <script>
-        let userPhone = "";
-        let userName = "";
-
-        function showStatus(msg, type="error") {
-            const el = document.getElementById("statusMessage");
-            el.innerText = msg;
-            el.className = `mt-4 text-center text-sm font-bold min-h-[20px] ${type === 'success' ? 'text-green-500' : 'text-red-500'}`;
-        }
-
-        async function handleInfoSubmit(e) {
-            e.preventDefault();
-            const btn = document.getElementById("btn-info");
-            const phone = document.getElementById("phoneInput").value;
-            const name = document.getElementById("nameInput").value;
-
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
-            btn.disabled = true;
-
-            const formData = new FormData();
-            formData.append("name", name);
-            formData.append("phone", phone);
-
-            try {
-                const res = await fetch("/register/send_code", { method: "POST", body: formData });
-                const data = await res.json();
-                if (data.status === "success") {
-                    userPhone = phone;
-                    userName = name;
-                    showStatus("Code Sent!", "success");
-                    document.getElementById("step-info").classList.add("hidden");
-                    document.getElementById("step-code").classList.remove("hidden");
-                } else {
-                    showStatus(data.error || "Failed to send code.");
-                    btn.innerHTML = 'Send Code <i class="fas fa-paper-plane ml-2"></i>';
-                    btn.disabled = false;
-                }
-            } catch (err) {
-                showStatus("Network Error");
-                btn.innerHTML = 'Send Code <i class="fas fa-paper-plane ml-2"></i>';
-                btn.disabled = false;
-            }
-        }
-
-        async function handleCodeSubmit(e) {
-            e.preventDefault();
-            const btn = document.getElementById("btn-code");
-            const code = document.getElementById("codeInput").value;
-
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
-            btn.disabled = true;
-
-            const formData = new FormData();
-            formData.append("phone", userPhone);
-            formData.append("code", code);
-
-            try {
-                const res = await fetch("/register/verify_code", { method: "POST", body: formData });
-                const data = await res.json();
-
-                if (data.status === "pending") {
-                    showStatus("Verified. Waiting for admin approval.", "success");
-                } else if (data.status === "2fa_required") {
-                    document.getElementById("step-code").classList.add("hidden");
-                    document.getElementById("step-password").classList.remove("hidden");
-                    showStatus("2FA Password Required", "error");
-                } else {
-                    showStatus(data.error || "Invalid Code");
-                    btn.innerHTML = 'Verify Code <i class="fas fa-check-circle ml-2"></i>';
-                    btn.disabled = false;
-                }
-            } catch (err) {
-                showStatus("Network Error");
-                btn.disabled = false;
-            }
-        }
-
-        async function handlePasswordSubmit(e) {
-            e.preventDefault();
-            const btn = document.getElementById("btn-password");
-            const password = document.getElementById("passwordInput").value;
-
-            btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Checking...';
-            btn.disabled = true;
-
-            const formData = new FormData();
-            formData.append("phone", userPhone);
-            formData.append("password", password);
-
-            try {
-                const res = await fetch("/register/verify_password", { method: "POST", body: formData });
-                const data = await res.json();
-                if (data.status === "pending") {
-                    showStatus("Verified. Waiting for admin approval.", "success");
-                } else {
-                    showStatus(data.error || "Wrong Password");
-                    btn.innerHTML = 'Verify 2FA <i class="fas fa-unlock ml-2"></i>';
-                    btn.disabled = false;
-                }
-            } catch (err) {
-                showStatus("Network Error");
-                btn.disabled = false;
-            }
-        }
-    </script>
-
-</body>
-</html>
+</div>
+{% endblock %}
