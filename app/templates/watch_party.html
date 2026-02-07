@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div id="partyApp" class="min-h-screen bg-gray-900 text-white p-4" data-token="{{ token }}" data-username="{{ viewer_name }}" data-item-id="{{ item.id }}" data-link-token="{{ link_token }}">
+  <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
+    <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+      <div class="bg-gray-900 p-4 border-b border-gray-700 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <i class="fas {{ item.icon }} text-red-500 text-2xl"></i>
+          <div>
+            <div class="font-bold text-lg truncate max-w-[60vw]">{{ item.name }}</div>
+            <div class="text-xs text-gray-400">Watch with friends</div>
+          </div>
+        </div>
+        <div class="text-xs text-gray-400">Party</div>
+      </div>
+
+      <div class="bg-black flex justify-center items-center relative">
+        {% if "video" in item.mime_type or item.name.lower().endswith(('.mp4', '.mkv', '.webm', '.mov', '.avi')) %}
+          <video id="partyPlayer" controls autoplay preload="auto" data-hls="{{ hls_url or '' }}" class="w-full max-h-[70vh] outline-none">
+            <source src="{{ stream_url }}" type="video/mp4">
+            Your browser does not support the video tag.
+          </video>
+        {% elif "audio" in item.mime_type or item.name.lower().endswith(('.mp3', '.wav', '.ogg', '.m4a')) %}
+          <div class="text-center p-10 w-full">
+            <audio id="partyPlayer" controls autoplay class="w-full max-w-lg">
+              <source src="{{ stream_url }}" type="audio/mpeg">
+            </audio>
+          </div>
+        {% else %}
+          <div class="text-center p-10">
+            <i class="fas fa-file-archive text-6xl text-gray-600 mb-4"></i>
+            <p class="text-gray-400 text-lg">Preview not available</p>
+            <p class="text-sm text-gray-500 mb-6">{{ item.formatted_size }}</p>
+            <a href="{{ stream_url }}" class="bg-red-600 hover:bg-red-500 text-white px-8 py-3 rounded-full font-bold text-lg transition">Download File</a>
+          </div>
+        {% endif %}
+      </div>
+
+      {% if episodes %}
+      <div class="border-t border-gray-700 bg-gray-900">
+        <div class="px-4 py-3 text-xs uppercase tracking-wider text-gray-400 border-b border-gray-800">Episodes</div>
+        <div class="p-3 space-y-2 max-h-72 overflow-y-auto">
+          {% for ep in episodes %}
+            {% set viewer_q = ("&u=" ~ viewer_name) if viewer_name else "" %}
+            {% set token_q = ("&t=" ~ link_token) %}
+            <a href="/w/{{ token }}?e={{ ep.id }}{{ viewer_q }}{{ token_q }}" class="flex items-center gap-3 p-2 rounded-lg transition border {% if ep.id|string == item.id|string %}bg-gray-800 border-red-500{% else %}bg-gray-900 border-gray-800 hover:border-gray-600{% endif %}">
+              <div class="w-9 h-9 rounded bg-gray-800 flex items-center justify-center">
+                <i class="fas {{ ep.icon }} text-red-500"></i>
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="text-sm text-white truncate">{{ ep.name }}</div>
+                <div class="text-[11px] text-gray-500">{{ ep.formatted_size }}</div>
+              </div>
+              {% if ep.id|string == item.id|string %}
+                <span class="text-[10px] text-red-400 font-semibold">PLAYING</span>
+              {% endif %}
+            </a>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="bg-gray-800 rounded-xl border border-gray-700 p-4 flex flex-col gap-4">
+      <div class="flex items-center justify-between">
+        <div class="font-semibold">Party Status</div>
+        <span id="partyRole" class="text-xs bg-gray-900 border border-gray-700 px-2 py-1 rounded">Viewer</span>
+      </div>
+      <div class="text-sm text-gray-300">
+        Host: <span id="partyHost" class="font-semibold">...</span>
+      </div>
+      <div id="partyLag" class="text-xs text-gray-400">Syncing...</div>
+      <button id="resyncBtn" class="hidden bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded text-sm font-bold">Re-sync</button>
+      <div id="episodePrompt" class="hidden text-xs text-yellow-400"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+const partyApp = document.getElementById("partyApp");
+const token = partyApp.dataset.token;
+const viewerName = partyApp.dataset.username;
+const itemId = partyApp.dataset.itemId;
+const linkToken = partyApp.dataset.linkToken;
+
+const player = document.getElementById("partyPlayer");
+const resyncBtn = document.getElementById("resyncBtn");
+const partyLag = document.getElementById("partyLag");
+const partyHost = document.getElementById("partyHost");
+const partyRole = document.getElementById("partyRole");
+const episodePrompt = document.getElementById("episodePrompt");
+
+let isHost = false;
+let hostState = null;
+
+async function joinParty() {
+  const res = await fetch("/w/party/join", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ token, user_name: viewerName })
+  });
+  const data = await res.json();
+  if (data.role) {
+    isHost = data.role === "host";
+    partyRole.textContent = isHost ? "Host" : "Viewer";
+    partyHost.textContent = data.host_name || viewerName;
+  }
+}
+
+async function fetchHostState() {
+  const res = await fetch(`/w/party/state?token=${encodeURIComponent(token)}`);
+  const data = await res.json();
+  if (data.host_name) {
+    hostState = data;
+    partyHost.textContent = data.host_name;
+    updateLagUI();
+    maybePromptEpisode();
+  }
+}
+
+function updateLagUI() {
+  if (!player || !hostState) return;
+  const lag = (hostState.position || 0) - (player.currentTime || 0);
+  if (!isHost && lag > 15) {
+    resyncBtn.classList.remove("hidden");
+    partyLag.textContent = `You are behind by ${Math.round(lag)}s`;
+  } else {
+    resyncBtn.classList.add("hidden");
+    partyLag.textContent = "In sync";
+  }
+}
+
+function maybePromptEpisode() {
+  if (!hostState || isHost) return;
+  if (hostState.item_id && hostState.item_id !== itemId) {
+    const url = `/w/${token}?e=${encodeURIComponent(hostState.item_id)}&u=${encodeURIComponent(viewerName)}&t=${encodeURIComponent(linkToken)}`;
+    episodePrompt.classList.remove("hidden");
+    episodePrompt.innerHTML = `Host switched episode. <a class="underline" href="${url}">Join host episode</a>`;
+  } else {
+    episodePrompt.classList.add("hidden");
+  }
+}
+
+async function pushHostState() {
+  if (!isHost || !player) return;
+  await fetch("/w/party/state", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      token,
+      user_name: viewerName,
+      position: player.currentTime || 0,
+      item_id: itemId,
+      is_playing: !player.paused
+    })
+  });
+}
+
+if (resyncBtn) {
+  resyncBtn.addEventListener("click", () => {
+    if (hostState && player) {
+      player.currentTime = hostState.position || 0;
+      player.play?.();
+      updateLagUI();
+    }
+  });
+}
+
+if (player) {
+  const hlsUrl = player.dataset.hls;
+  if (hlsUrl) {
+    fetch(`/s/hls/prepare/${itemId}`, { method: "POST" });
+    if (window.Hls && Hls.isSupported()) {
+      const hls = new Hls({
+        maxBufferLength: 60,
+        maxMaxBufferLength: 120,
+        maxBufferSize: 30 * 1000 * 1000,
+        backBufferLength: 10,
+        maxBufferHole: 0.5,
+        lowLatencyMode: true
+      });
+      hls.loadSource(hlsUrl);
+      hls.attachMedia(player);
+    } else if (player.canPlayType("application/vnd.apple.mpegurl")) {
+      player.src = hlsUrl;
+    }
+  }
+}
+
+joinParty().then(() => {
+  fetchHostState();
+  setInterval(fetchHostState, 5000);
+  setInterval(pushHostState, 4000);
+});
+</script>
+
+{% endblock %}

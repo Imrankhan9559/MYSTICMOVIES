@@ -74,6 +74,19 @@ class PlaybackProgress(Document):
     class Settings:
         name = "playback_progress"
 
+
+class WatchParty(Document):
+    token: str
+    host_name: str
+    host_last_seen: datetime = datetime.now()
+    item_id: Optional[str] = None
+    position: float = 0.0
+    is_playing: bool = True
+    updated_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "watch_parties"
+
 async def init_db():
     client = AsyncIOMotorClient(settings.MONGO_URI)
-    await init_beanie(database=client.morgan_db, document_models=[User, FileSystemItem, SharedCollection, TokenSetting, PlaybackProgress])
+    await init_beanie(database=client.morgan_db, document_models=[User, FileSystemItem, SharedCollection, TokenSetting, PlaybackProgress, WatchParty])

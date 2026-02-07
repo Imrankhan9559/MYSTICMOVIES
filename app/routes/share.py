@@ -13,7 +13,7 @@ from starlette.background import BackgroundTask
 from pyrogram import Client
 from beanie.operators import In, Or
 from beanie import PydanticObjectId
-from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress, TokenSetting
+from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress, TokenSetting, WatchParty
 from app.core.config import settings
 from app.routes.stream import telegram_stream_generator, _align_offset, _align_range, parallel_stream_generator, _get_parallel_clients, _extract_file_size, _pick_align
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id, ensure_peer_access
@@ -105,6 +105,24 @@ async def _require_token_and_username(request: Request, login_url: str):
     if not viewer_name:
         return RedirectResponse(login_url)
     return viewer_name
+
+PARTY_HOST_TIMEOUT_SECONDS = 60
+
+async def _get_or_create_party(token: str, user_name: str) -> WatchParty:
+    now = datetime.now()
+    party = await WatchParty.find_one(WatchParty.token == token)
+    if not party:
+        party = WatchParty(token=token, host_name=user_name, host_last_seen=now, updated_at=now)
+        await party.insert()
+        return party
+    host_age = (now - party.host_last_seen).total_seconds() if party.host_last_seen else PARTY_HOST_TIMEOUT_SECONDS + 1
+    if host_age > PARTY_HOST_TIMEOUT_SECONDS:
+        party.host_name = user_name
+    if party.host_name == user_name:
+        party.host_last_seen = now
+    party.updated_at = now
+    await party.save()
+    return party
 
 def _select_default_item(items: List[FileSystemItem]) -> FileSystemItem | None:
     if not items:
@@ -328,6 +346,7 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
         "view": f"{base_url}/s/{token}?t={link_token}",
         "download": f"{base_url}/d/{token}?t={link_token}",
         "telegram": f"{base_url}/t/{token}?t={link_token}",
+        "watch": f"{base_url}/w/{token}?t={link_token}&U=",
     }
     return {"code": token, "links": links, "link": links["view"]}
 
@@ -555,6 +574,123 @@ async def public_view(request: Request, token: str):
         })
 
     raise HTTPException(404, "Link expired")
+
+
+@router.get("/w/{token}")
+async def watch_party_view(request: Request, token: str):
+    # Strict gate: require valid link token and viewer name
+    viewer_name = await _require_token_and_username(request, "https://mysticmovies.rf.gd/login")
+    if isinstance(viewer_name, RedirectResponse):
+        return viewer_name
+
+    user = await get_current_user(request)
+    is_admin = _is_admin(user)
+    link_token = await _get_link_token()
+    episode_override = request.query_params.get("e")
+
+    # Folder share
+    folder = await FileSystemItem.find_one(FileSystemItem.share_token == token, FileSystemItem.is_folder == True)
+    if folder:
+        files = await _collect_folder_files(str(folder.id))
+        if not files:
+            raise HTTPException(404, "No items found")
+        collection = await SharedCollection.find_one(SharedCollection.token == token)
+        ordered_items = _order_items(files, collection.item_ids if collection else None)
+        if not ordered_items:
+            raise HTTPException(404, "No items found")
+
+        if collection:
+            collection.item_ids = [str(i.id) for i in ordered_items]
+            collection.name = folder.name or collection.name
+            await collection.save()
+        else:
+            collection = SharedCollection(
+                token=token,
+                item_ids=[str(i.id) for i in ordered_items],
+                owner_phone=folder.owner_phone,
+                name=folder.name or "Shared Folder"
+            )
+            await collection.insert()
+
+        for item in ordered_items:
+            if not item.share_token:
+                item.share_token = str(uuid.uuid4())
+                await item.save()
+            item.formatted_size = format_size(item.size)
+            item.icon = get_icon_for_mime(item.mime_type)
+            item.is_video = _is_video_item(item)
+
+        active_item = None
+        if episode_override:
+            active_item = next((i for i in ordered_items if str(i.id) == episode_override), None)
+        if not active_item:
+            active_item = _select_default_item(ordered_items)
+        if not active_item:
+            raise HTTPException(404, "No items found")
+
+        active_hls = ""
+        if active_item and active_item.is_video:
+            storage_chat_id = normalize_chat_id(get_storage_chat_id() or "me")
+            if storage_chat_id != "me":
+                try:
+                    await ensure_hls(active_item, storage_chat_id)
+                    if is_hls_ready(str(active_item.id)):
+                        active_hls = hls_url_for(str(active_item.id))
+                except Exception as e:
+                    logger.warning(f"HLS prep failed for watch party item: {e}")
+
+        return templates.TemplateResponse("watch_party.html", {
+            "request": request,
+            "episodes": ordered_items,
+            "active_item": active_item,
+            "item": active_item,
+            "stream_url": f"/s/stream/file/{active_item.id}?t={link_token}&u={viewer_name}",
+            "hls_url": active_hls,
+            "bundle_name": folder.name or (collection.name if collection else "Shared Folder"),
+            "viewer_name": viewer_name,
+            "token": token,
+            "is_admin": is_admin,
+            "user": user,
+            "link_token": link_token
+        })
+
+    # Bundle or single file
+    collection = await SharedCollection.find_one(SharedCollection.token == token)
+    if collection:
+        items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(collection.item_ids))).to_list()
+        if not items:
+            raise HTTPException(404, "Link expired")
+        ordered_items = _order_items(items, collection.item_ids)
+        item = _select_default_item(ordered_items) or ordered_items[0]
+    else:
+        item = await FileSystemItem.find_one(FileSystemItem.share_token == token)
+        if not item:
+            raise HTTPException(404, "Link expired")
+
+    item.formatted_size = format_size(item.size)
+    item.icon = get_icon_for_mime(item.mime_type)
+    item.is_video = _is_video_item(item)
+
+    active_hls = ""
+    if item and item.is_video:
+        storage_chat_id = normalize_chat_id(get_storage_chat_id() or "me")
+        if storage_chat_id != "me":
+            try:
+                await ensure_hls(item, storage_chat_id)
+                if is_hls_ready(str(item.id)):
+                    active_hls = hls_url_for(str(item.id))
+            except Exception as e:
+                logger.warning(f"HLS prep failed for watch party item: {e}")
+
+    return templates.TemplateResponse("watch_party.html", {
+        "request": request,
+        "item": item,
+        "stream_url": f"/s/stream/{token}?t={link_token}&u={viewer_name}",
+        "hls_url": active_hls,
+        "viewer_name": viewer_name,
+        "token": token,
+        "link_token": link_token
+    })
 
 @router.get("/s/{token}/u={username}")
 async def public_view_with_user(token: str, username: str):
@@ -841,15 +977,73 @@ async def telegram_redirect(token: str, request: Request):
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="refresh" content="0; url={tg_url}" />
-  <title>Redirecting…</title>
+  <title>Redirecting...</title>
 </head>
 <body>
-  <p>Redirecting to Telegram…</p>
+  <p>Redirecting to Telegram...</p>
   <script>window.location.href = "{tg_url}";</script>
 </body>
 </html>
 """
     return HTMLResponse(html)
+
+
+@router.post("/w/party/join")
+async def watch_party_join(payload: dict = Body(...)):
+    token = (payload.get("token") or "").strip()
+    user_name = (payload.get("user_name") or "").strip()
+    if not token or not user_name:
+        return {"error": "Missing token or user"}
+    party = await _get_or_create_party(token, user_name)
+    role = "host" if party.host_name == user_name else "viewer"
+    return {"role": role, "host_name": party.host_name}
+
+
+@router.get("/w/party/state")
+async def watch_party_state(token: str):
+    token = (token or "").strip()
+    if not token:
+        return {"error": "Missing token"}
+    party = await WatchParty.find_one(WatchParty.token == token)
+    if not party:
+        return {"error": "Not found"}
+    return {
+        "host_name": party.host_name,
+        "position": party.position,
+        "item_id": party.item_id,
+        "is_playing": party.is_playing,
+        "updated_at": party.updated_at.isoformat() if party.updated_at else ""
+    }
+
+
+@router.post("/w/party/state")
+async def watch_party_update(payload: dict = Body(...)):
+    token = (payload.get("token") or "").strip()
+    user_name = (payload.get("user_name") or "").strip()
+    if not token or not user_name:
+        return {"error": "Missing token or user"}
+    position = float(payload.get("position") or 0)
+    item_id = payload.get("item_id")
+    is_playing = bool(payload.get("is_playing", True))
+
+    now = datetime.now()
+    party = await WatchParty.find_one(WatchParty.token == token)
+    if not party:
+        party = WatchParty(token=token, host_name=user_name, host_last_seen=now, updated_at=now)
+        await party.insert()
+    else:
+        host_age = (now - party.host_last_seen).total_seconds() if party.host_last_seen else PARTY_HOST_TIMEOUT_SECONDS + 1
+        if party.host_name != user_name and host_age <= PARTY_HOST_TIMEOUT_SECONDS:
+            return {"status": "ignored", "reason": "not_host", "host_name": party.host_name}
+        party.host_name = user_name
+
+    party.position = position
+    party.item_id = item_id
+    party.is_playing = is_playing
+    party.host_last_seen = now
+    party.updated_at = now
+    await party.save()
+    return {"status": "ok", "host_name": party.host_name}
 
 @router.post("/s/hls/prepare/{item_id}")
 async def prepare_public_hls(item_id: str):

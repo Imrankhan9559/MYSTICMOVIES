@@ -214,6 +214,13 @@
           <button onclick="copyField('shareTelegramLink')" class="bg-blue-600 text-white px-3 rounded-lg font-bold text-sm">Copy</button>
         </div>
       </div>
+      <div>
+        <label class="text-xs uppercase text-gray-400 font-bold">Watch Party Link</label>
+        <div class="flex space-x-2 mt-2">
+          <input type="text" id="shareWatchLink" readonly class="w-full bg-gray-900 border border-gray-700 rounded-lg p-3 text-sm font-mono text-gray-200">
+          <button onclick="copyField('shareWatchLink')" class="bg-blue-600 text-white px-3 rounded-lg font-bold text-sm">Copy</button>
+        </div>
+      </div>
     </div>
     <div class="flex justify-end space-x-3 mt-6">
       <button onclick="document.getElementById('shareModal').classList.add('hidden')" class="text-gray-400 font-bold text-sm">Close</button>
@@ -353,6 +360,7 @@ function openShareModal(data) {
     document.getElementById('shareViewLink').value = links.view || data.link || '';
     document.getElementById('shareDownloadLink').value = links.download || (code ? `${base}/d/${code}` : '');
     document.getElementById('shareTelegramLink').value = links.telegram || (code ? `${base}/t/${code}` : '');
+    document.getElementById('shareWatchLink').value = links.watch || (code ? `${base}/w/${code}` : '');
     document.getElementById('shareModal').classList.remove('hidden');
 }
 function copyField(id) { const el = document.getElementById(id); el.select(); document.execCommand("copy"); }

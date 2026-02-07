@@ -772,6 +772,7 @@ async def share_item(request: Request, item_id: str):
             "view": f"{base_url}/s/{token}?t={link_token}&U=",
             "download": f"{base_url}/d/{token}?t={link_token}&U=",
             "telegram": f"{base_url}/t/{token}?t={link_token}&U=",
+            "watch": f"{base_url}/w/{token}?t={link_token}&U=",
         }
         return JSONResponse({"code": token, "links": links, "link": links["view"]})
 
@@ -784,6 +785,7 @@ async def share_item(request: Request, item_id: str):
         "view": f"{base_url}/s/{token}?t={link_token}&U=",
         "download": f"{base_url}/d/{token}?t={link_token}&U=",
         "telegram": f"{base_url}/t/{token}?t={link_token}&U=",
+        "watch": f"{base_url}/w/{token}?t={link_token}&U=",
     }
     return JSONResponse({"code": token, "links": links, "link": links["view"]})
 
@@ -1145,6 +1147,7 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
         "view": f"{base_url}/s/{token}?t={link_token}&U=",
         "download": f"{base_url}/d/{token}?t={link_token}&U=",
         "telegram": f"{base_url}/t/{token}?t={link_token}&U=",
+        "watch": f"{base_url}/w/{token}?t={link_token}&U=",
     }
     return {"code": token, "links": links, "link": links["view"]}
 
