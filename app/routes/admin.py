@@ -81,7 +81,11 @@ async def admin_speed_test(request: Request):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
-    result = await speed_test()
+    try:
+        result = await speed_test()
+    except Exception as e:
+        result = {"ok": False, "error": str(e)}
+
     # rebuild page with result
     total_users = await User.count()
     total_files = await FileSystemItem.find(FileSystemItem.is_folder == False).count()

@@ -112,6 +112,8 @@ async def reload_bot_pool(tokens: list[str]):
 async def pool_status() -> list[dict]:
     """Return status for tg_client, bot_client, and pool bots."""
     results = []
+    tokens = _get_pool_tokens()
+
     async def check(label, client: Client | None):
         ok = False
         detail = ""
@@ -132,6 +134,11 @@ async def pool_status() -> list[dict]:
     await check("bot_client", bot_client)
     for idx, bot in enumerate(bot_pool):
         await check(f"pool_{idx}", bot)
+    # Show configured tokens that failed to start
+    if tokens:
+        started = len(bot_pool)
+        for idx in range(started, len(tokens)):
+            results.append({"label": f"pool_{idx}", "ok": False, "detail": "not started (check token/access)"})
     return results
 
 async def speed_test(sample_bytes: int = 1_000_000) -> dict:
