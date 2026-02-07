@@ -729,8 +729,12 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
 
     disposition = "attachment" if download else "inline"
 
+    # Limit parallel clients based on env (download vs stream)
+    max_workers, stripe_size = _parallel_conf(download=download)
+
     use_ephemeral = False
     parallel_clients: list[Client] = []
+    release_parallel = None
     storage_primary: Client | None = None
     if chat_id == "me":
         owner = await User.find_one(User.phone_number == item.owner_phone)
@@ -754,9 +758,10 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             except Exception:
                 client = None
         try:
-            parallel_clients = await _get_parallel_clients(chat_id)
+            parallel_clients, release_parallel = await _get_parallel_clients(chat_id, max_workers=max_workers)
         except Exception:
             parallel_clients = []
+            release_parallel = None
         if client and client not in parallel_clients:
             parallel_clients.append(client)
         storage_primary = client or (parallel_clients[0] if parallel_clients else None)
@@ -807,10 +812,8 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
             return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
         if end >= file_size:
             end = file_size - 1
-    align = _pick_align(file_size)
+    align = _pick_align(file_size, for_download=download)
 
-    # Limit parallel clients based on env
-    max_workers, stripe_size = _parallel_conf(download=download)
     if parallel_clients:
         parallel_clients = parallel_clients[:max_workers]
 
@@ -887,6 +890,11 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
                 async for chunk in tl_iter_download(msg, offset=start, limit=limit):
                     yield chunk
         finally:
+            try:
+                if release_parallel:
+                    await release_parallel()
+            except Exception:
+                pass
             if use_ephemeral and client:
                 await client.disconnect()
 

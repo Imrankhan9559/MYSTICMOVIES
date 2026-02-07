@@ -527,11 +527,12 @@ if (player) {
     fetch(`/s/hls/prepare/${itemId}`, { method: "POST" });
     if (window.Hls && Hls.isSupported()) {
       const hls = new Hls({
-        maxBufferLength: 120,
-        maxMaxBufferLength: 240,
-        maxBufferSize: 60 * 1000 * 1000,
-        backBufferLength: 30,
-        maxBufferHole: 0.5
+        maxBufferLength: 90,
+        maxMaxBufferLength: 180,
+        maxBufferSize: 80 * 1000 * 1000,
+        backBufferLength: 60,
+        maxBufferHole: 0.2,
+        startFragPrefetch: true
       });
       const refreshTracks = () => setupPartyHlsControls(hls);
       hls.on(Hls.Events.MANIFEST_PARSED, refreshTracks);

@@ -14,6 +14,13 @@ from beanie import PydanticObjectId
 from beanie.operators import In
 from app.core.telethon_storage import check_storage_access as tl_check_storage, get_message as tl_get_message, forward_message_to as tl_forward_to_user, send_file as tl_send_file, send_text as tl_send_text
 
+# Prefer uvloop before any Pyrogram clients are created
+try:
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+except Exception:
+    pass
+
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

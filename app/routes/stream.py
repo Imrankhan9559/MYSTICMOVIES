@@ -1,6 +1,7 @@
 import math
 import asyncio
 import logging
+import os
 from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, Header, Body
 from fastapi.responses import StreamingResponse, HTMLResponse, Response
@@ -50,12 +51,20 @@ def _is_video_item(item: FileSystemItem) -> bool:
     name = (item.name or "").lower()
     return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg"))
 
-def _pick_align(size: int) -> int:
+def _pick_align(size: int, for_download: bool = False) -> int:
     # Balance seek responsiveness with throughput to reduce buffering.
+    if for_download:
+        if size and size >= 200 * 1024 * 1024:
+            return 1024 * 1024
+        if size and size >= 20 * 1024 * 1024:
+            return 512 * 1024
+        if size and size >= 2 * 1024 * 1024:
+            return 128 * 1024
+        return 4096
     if size and size >= 200 * 1024 * 1024:
-        return 1024 * 1024
-    if size and size >= 20 * 1024 * 1024:
         return 256 * 1024
+    if size and size >= 20 * 1024 * 1024:
+        return 128 * 1024
     if size and size >= 2 * 1024 * 1024:
         return 64 * 1024
     return 4096
@@ -107,7 +116,18 @@ def _extract_file_size(msg) -> int | None:
     return None
 
 
-async def _get_parallel_clients(chat_id: int | str) -> list[Client]:
+_client_locks: dict[int, asyncio.Lock] = {}
+
+async def _try_acquire(lock: asyncio.Lock) -> bool:
+    if lock.locked():
+        return False
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=0)
+        return True
+    except Exception:
+        return False
+
+async def _get_parallel_clients(chat_id: int | str, max_workers: int | None = None):
     candidates: list[Client] = []
     if bot_pool:
         candidates.extend(bot_pool)
@@ -129,13 +149,26 @@ async def _get_parallel_clients(chat_id: int | str) -> list[Client]:
         unique.append(client)
 
     usable: list[Client] = []
+    acquired: list[asyncio.Lock] = []
     for client in unique:
+        if max_workers is not None and len(usable) >= max_workers:
+            break
         try:
-            if await ensure_peer_access(client, chat_id):
-                usable.append(client)
+            if not await ensure_peer_access(client, chat_id):
+                continue
         except Exception:
             continue
-    return usable
+        lock = _client_locks.setdefault(id(client), asyncio.Lock())
+        if await _try_acquire(lock):
+            usable.append(client)
+            acquired.append(lock)
+
+    async def release():
+        for lock in acquired:
+            if lock.locked():
+                lock.release()
+
+    return usable, release
 
 
 async def parallel_stream_generator(
@@ -150,7 +183,7 @@ async def parallel_stream_generator(
     if total <= 0:
         return
 
-    align = _pick_align(total)
+    align = _pick_align(total, for_download=False)
     if chunk_size < align:
         chunk_size = align
     # Ensure chunk_size is aligned
@@ -369,6 +402,7 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
     storage_client = None
     storage_primary: Client | None = None
     parallel_clients: list[Client] = []
+    release_parallel = None
     if chat_id == "me":
         client = Client("streamer", api_id=settings.API_ID, api_hash=settings.API_HASH, session_string=user.session_string, in_memory=True)
         await client.connect()
@@ -390,9 +424,14 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             except Exception:
                 storage_client = None
         try:
-            parallel_clients = await _get_parallel_clients(chat_id)
+            try:
+                max_workers = int(os.getenv("DL_WORKERS", "6"))
+            except Exception:
+                max_workers = 6
+            parallel_clients, release_parallel = await _get_parallel_clients(chat_id, max_workers=max_workers)
         except Exception:
             parallel_clients = []
+            release_parallel = None
         if storage_client and storage_client not in parallel_clients:
             parallel_clients.append(storage_client)
         storage_primary = storage_client or (parallel_clients[0] if parallel_clients else None)
@@ -441,7 +480,7 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
             return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
         if end >= file_size:
             end = file_size - 1
-    align = _pick_align(file_size)
+    align = _pick_align(file_size, for_download=False)
 
     async def cleanup_generator():
         try:
@@ -516,6 +555,11 @@ async def stream_data(request: Request, item_id: str, range: str = Header(None))
                 async for chunk in tl_iter_download(msg, offset=start, limit=limit):
                     yield chunk
         finally:
+            try:
+                if release_parallel:
+                    await release_parallel()
+            except Exception:
+                pass
             if use_ephemeral and client:
                 await client.disconnect()
 

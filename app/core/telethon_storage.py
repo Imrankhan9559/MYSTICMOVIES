@@ -145,9 +145,19 @@ async def iter_download(
     message: Message,
     offset: int = 0,
     limit: Optional[int] = None,
-    chunk_size: int = 4 * 1024 * 1024
+    chunk_size: Optional[int] = None
 ) -> AsyncGenerator[bytes, None]:
     client = await get_client()
+    if chunk_size is None:
+        try:
+            mb = int(os.getenv("TL_CHUNK_MB", "4"))
+            if mb < 1:
+                mb = 1
+            if mb > 16:
+                mb = 16
+        except Exception:
+            mb = 4
+        chunk_size = mb * 1024 * 1024
     async for chunk in client.iter_download(
         message,
         offset=offset,
