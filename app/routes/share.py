@@ -14,7 +14,7 @@ from starlette.background import BackgroundTask
 from pyrogram import Client
 from beanie.operators import In, Or
 from beanie import PydanticObjectId
-from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress, TokenSetting, WatchParty
+from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress, TokenSetting, WatchParty, WatchPartyMember, WatchPartyMessage
 from app.core.config import settings
 from app.routes.stream import telegram_stream_generator, _align_offset, _align_range, parallel_stream_generator, _get_parallel_clients, _extract_file_size, _pick_align
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id, ensure_peer_access
@@ -584,11 +584,13 @@ async def public_view(request: Request, token: str):
 
 @router.get("/w/{token}")
 async def watch_party_view(request: Request, token: str):
-    # Strict gate: require valid link token and viewer name
-    viewer_name = await _require_token_and_username(request, "https://mysticmovies.rf.gd/login")
-    if isinstance(viewer_name, RedirectResponse):
-        return viewer_name
-    party = await _get_or_create_party(token, viewer_name)
+    # Require valid link token, but allow missing username so we can prompt on-page.
+    token_doc = await TokenSetting.find_one(TokenSetting.key == "link_token")
+    provided = (request.query_params.get("t") or "").strip()
+    if not token_doc or token_doc.value != provided:
+        return RedirectResponse("https://mysticmovies.rf.gd/login")
+    viewer_name = (request.query_params.get("u") or request.query_params.get("U") or "").strip()
+    party = await _get_or_create_party(token, viewer_name) if viewer_name else None
 
     user = await get_current_user(request)
     is_admin = _is_admin(user)
@@ -659,8 +661,8 @@ async def watch_party_view(request: Request, token: str):
             "is_admin": is_admin,
             "user": user,
             "link_token": link_token,
-            "room_code": party.room_code,
-            "host_name": party.host_name
+            "room_code": party.room_code if party else "",
+            "host_name": party.host_name if party else ""
         })
 
     # Bundle or single file
@@ -699,8 +701,8 @@ async def watch_party_view(request: Request, token: str):
         "viewer_name": viewer_name,
         "token": token,
         "link_token": link_token,
-        "room_code": party.room_code,
-        "host_name": party.host_name
+        "room_code": party.room_code if party else "",
+        "host_name": party.host_name if party else ""
     })
 
 @router.get("/s/{token}/u={username}")
@@ -1006,6 +1008,16 @@ async def watch_party_join(payload: dict = Body(...)):
     if not token or not user_name:
         return {"error": "Missing token or user"}
     party = await _get_or_create_party(token, user_name)
+    # Upsert member presence
+    member = await WatchPartyMember.find_one(
+        WatchPartyMember.token == token,
+        WatchPartyMember.user_name == user_name
+    )
+    if member:
+        member.last_seen = datetime.now()
+        await member.save()
+    else:
+        await WatchPartyMember(token=token, user_name=user_name).insert()
     role = "host" if party.host_name == user_name else "viewer"
     return {"role": role, "host_name": party.host_name, "room_code": party.room_code}
 
@@ -1026,6 +1038,63 @@ async def watch_party_state(token: str):
         "room_code": party.room_code,
         "updated_at": party.updated_at.isoformat() if party.updated_at else ""
     }
+
+
+@router.get("/w/party/members")
+async def watch_party_members(token: str):
+    token = (token or "").strip()
+    if not token:
+        return {"members": []}
+    cutoff = datetime.now().timestamp() - 40
+    members = await WatchPartyMember.find(WatchPartyMember.token == token).to_list()
+    active = []
+    for m in members:
+        ts = m.last_seen.timestamp() if m.last_seen else 0
+        if ts >= cutoff:
+            active.append(m.user_name)
+    return {"members": sorted(set(active))}
+
+
+@router.post("/w/party/ping")
+async def watch_party_ping(payload: dict = Body(...)):
+    token = (payload.get("token") or "").strip()
+    user_name = (payload.get("user_name") or "").strip()
+    if not token or not user_name:
+        return {"status": "ignored"}
+    member = await WatchPartyMember.find_one(
+        WatchPartyMember.token == token,
+        WatchPartyMember.user_name == user_name
+    )
+    if member:
+        member.last_seen = datetime.now()
+        await member.save()
+    else:
+        await WatchPartyMember(token=token, user_name=user_name).insert()
+    return {"status": "ok"}
+
+
+@router.get("/w/party/chat")
+async def watch_party_chat(token: str):
+    token = (token or "").strip()
+    if not token:
+        return {"messages": []}
+    msgs = await WatchPartyMessage.find(WatchPartyMessage.token == token).sort("-created_at").limit(50).to_list()
+    msgs.reverse()
+    return {"messages": [{"user": m.user_name, "text": m.text, "ts": m.created_at.isoformat()} for m in msgs]}
+
+
+@router.post("/w/party/chat")
+async def watch_party_chat_post(payload: dict = Body(...)):
+    token = (payload.get("token") or "").strip()
+    user_name = (payload.get("user_name") or "").strip()
+    text = (payload.get("text") or "").strip()
+    if not token or not user_name or not text:
+        return {"error": "Missing fields"}
+    if len(text) > 400:
+        return {"error": "Message too long"}
+    msg = WatchPartyMessage(token=token, user_name=user_name, text=text)
+    await msg.insert()
+    return {"status": "ok"}
 
 
 @router.post("/w/party/state")

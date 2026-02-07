@@ -2,6 +2,15 @@
 {% block content %}
 
 <div id="partyApp" class="min-h-screen bg-gray-900 text-white p-4" data-token="{{ token }}" data-username="{{ viewer_name }}" data-item-id="{{ item.id }}" data-link-token="{{ link_token }}" data-room-code="{{ room_code or '' }}" data-host-name="{{ host_name or '' }}">
+  <div id="viewerGate" class="viewer-gate hidden">
+    <div class="viewer-card">
+      <div class="viewer-title">Who's watching?</div>
+      <div class="viewer-sub">Enter your name to join the watch party.</div>
+      <input id="viewerInput" type="text" placeholder="Your name" class="viewer-input" />
+      <button id="viewerSubmit" class="viewer-btn">Join Party</button>
+      <div id="viewerHint" class="viewer-hint"></div>
+    </div>
+  </div>
   <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
     <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
       <div class="bg-gray-900 p-4 border-b border-gray-700 flex items-center justify-between">
@@ -80,6 +89,18 @@
           <button id="copyJoinLink" class="bg-blue-600 hover:bg-blue-500 text-white px-3 rounded-lg text-xs font-bold">Copy</button>
         </div>
       </div>
+      <div class="text-sm text-gray-300">
+        Members:
+        <div id="partyMembers" class="mt-2 text-xs text-gray-400">Loading...</div>
+      </div>
+      <div class="text-sm text-gray-300">
+        Chat:
+        <div id="partyChat" class="mt-2 bg-gray-900 border border-gray-700 rounded-lg p-2 h-48 overflow-y-auto text-xs text-gray-200"></div>
+        <div class="mt-2 flex gap-2">
+          <input id="partyChatInput" type="text" placeholder="Type a message..." class="w-full bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-gray-200">
+          <button id="partyChatSend" class="bg-blue-600 hover:bg-blue-500 text-white px-3 rounded-lg text-xs font-bold">Send</button>
+        </div>
+      </div>
       <div id="partyLag" class="text-xs text-gray-400">Syncing...</div>
       <button id="resyncBtn" class="hidden bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded text-sm font-bold">Re-sync</button>
       <div id="episodePrompt" class="hidden text-xs text-yellow-400"></div>
@@ -88,6 +109,55 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<style>
+  .viewer-gate {
+    position: fixed;
+    inset: 0;
+    background: rgba(5, 6, 12, 0.92);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 60;
+    backdrop-filter: blur(10px);
+  }
+  .viewer-gate.hidden { display: none; }
+  .viewer-card {
+    width: min(420px, 90vw);
+    background: rgba(17, 24, 39, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 18px;
+    padding: 24px;
+    text-align: center;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+  }
+  .viewer-title { font-size: 20px; font-weight: 700; color: #fff; }
+  .viewer-sub { margin-top: 8px; font-size: 13px; color: #9aa4b2; }
+  .viewer-input {
+    margin-top: 16px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(5, 8, 18, 0.9);
+    color: #fff;
+    font-size: 14px;
+  }
+  .viewer-btn {
+    width: 100%;
+    justify-content: center;
+    margin-top: 12px;
+    padding: 10px 18px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 13px;
+    background: #e50914;
+    color: #fff;
+    border: none;
+    cursor: pointer;
+  }
+  .viewer-hint { margin-top: 10px; font-size: 12px; color: #9aa4b2; }
+</style>
+
 <script>
 const partyApp = document.getElementById("partyApp");
 const token = partyApp.dataset.token;
@@ -99,10 +169,17 @@ let roomCode = partyApp.dataset.roomCode || "";
 const player = document.getElementById("partyPlayer");
 const resyncBtn = document.getElementById("resyncBtn");
 const partyLag = document.getElementById("partyLag");
+const viewerGate = document.getElementById("viewerGate");
+const viewerInput = document.getElementById("viewerInput");
+const viewerSubmit = document.getElementById("viewerSubmit");
 const partyHost = document.getElementById("partyHost");
 const partyRoomCode = document.getElementById("partyRoomCode");
 const partyJoinLink = document.getElementById("partyJoinLink");
 const copyJoinLink = document.getElementById("copyJoinLink");
+const partyMembers = document.getElementById("partyMembers");
+const partyChat = document.getElementById("partyChat");
+const partyChatInput = document.getElementById("partyChatInput");
+const partyChatSend = document.getElementById("partyChatSend");
 const partyRole = document.getElementById("partyRole");
 const episodePrompt = document.getElementById("episodePrompt");
 
@@ -113,7 +190,7 @@ function updateJoinInfo() {
   if (!roomCode) return;
   partyRoomCode.textContent = roomCode;
   const base = window.location.origin;
-  const joinUrl = `${base}/w/${token}?t=${encodeURIComponent(linkToken)}&U=${encodeURIComponent(viewerName)}&room=${encodeURIComponent(roomCode)}`;
+  const joinUrl = `${base}/w/${token}?t=${encodeURIComponent(linkToken)}&room=${encodeURIComponent(roomCode)}`;
   partyJoinLink.value = joinUrl;
 }
 
@@ -142,6 +219,44 @@ async function joinParty() {
   }
 }
 
+async function fetchMembers() {
+  const res = await fetch(`/w/party/members?token=${encodeURIComponent(token)}`);
+  const data = await res.json();
+  if (!data.members || data.members.length === 0) {
+    partyMembers.textContent = "No members yet.";
+  } else {
+    partyMembers.textContent = data.members.join(", ");
+  }
+}
+
+async function fetchChat() {
+  const res = await fetch(`/w/party/chat?token=${encodeURIComponent(token)}`);
+  const data = await res.json();
+  if (!data.messages) return;
+  partyChat.innerHTML = data.messages.map(m => `<div><span class="text-gray-400">${m.user}:</span> ${m.text}</div>`).join("");
+  partyChat.scrollTop = partyChat.scrollHeight;
+}
+
+async function sendChat() {
+  const text = (partyChatInput?.value || "").trim();
+  if (!text) return;
+  partyChatInput.value = "";
+  await fetch("/w/party/chat", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ token, user_name: viewerName, text })
+  });
+  fetchChat();
+}
+
+partyChatSend?.addEventListener("click", sendChat);
+partyChatInput?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    sendChat();
+  }
+});
+
 async function fetchHostState() {
   const res = await fetch(`/w/party/state?token=${encodeURIComponent(token)}`);
   const data = await res.json();
@@ -154,6 +269,7 @@ async function fetchHostState() {
     }
     updateLagUI();
     maybePromptEpisode();
+    applyHostSync();
   }
 }
 
@@ -166,6 +282,25 @@ function updateLagUI() {
   } else {
     resyncBtn.classList.add("hidden");
     partyLag.textContent = "In sync";
+  }
+}
+
+function applyHostSync() {
+  if (!hostState || !player || isHost) return;
+  if (hostState.item_id && hostState.item_id !== itemId) {
+    const url = `/w/${token}?e=${encodeURIComponent(hostState.item_id)}&u=${encodeURIComponent(viewerName)}&t=${encodeURIComponent(linkToken)}${roomCode ? `&room=${encodeURIComponent(roomCode)}` : ""}`;
+    window.location.href = url;
+    return;
+  }
+  const drift = (hostState.position || 0) - (player.currentTime || 0);
+  if (Math.abs(drift) > 2) {
+    player.currentTime = hostState.position || 0;
+  }
+  if (hostState.is_playing && player.paused) {
+    player.play?.();
+  }
+  if (!hostState.is_playing && !player.paused) {
+    player.pause?.();
   }
 }
 
@@ -195,6 +330,12 @@ async function pushHostState() {
   });
 }
 
+if (player) {
+  player.addEventListener("play", pushHostState);
+  player.addEventListener("pause", pushHostState);
+  player.addEventListener("seeked", pushHostState);
+}
+
 if (resyncBtn) {
   resyncBtn.addEventListener("click", () => {
     if (hostState && player) {
@@ -204,6 +345,23 @@ if (resyncBtn) {
     }
   });
 }
+
+function openViewerGate() {
+  if (!viewerGate) return;
+  viewerGate.classList.remove("hidden");
+  viewerInput?.focus();
+}
+
+if (!viewerName) {
+  openViewerGate();
+}
+
+viewerSubmit?.addEventListener("click", () => {
+    const raw = (viewerInput?.value || "").trim();
+    if (!raw) return;
+    const roomPart = roomCode ? `&room=${encodeURIComponent(roomCode)}` : "";
+    window.location.href = `/w/${token}?u=${encodeURIComponent(raw)}&t=${encodeURIComponent(linkToken)}${roomPart}`;
+});
 
 if (player) {
   const hlsUrl = player.dataset.hls;
@@ -231,11 +389,24 @@ if (partyApp.dataset.hostName) {
 }
 updateJoinInfo();
 
-joinParty().then(() => {
-  fetchHostState();
-  setInterval(fetchHostState, 5000);
-  setInterval(pushHostState, 4000);
-});
+if (viewerName) {
+  joinParty().then(() => {
+    fetchHostState();
+    fetchMembers();
+    fetchChat();
+    setInterval(fetchHostState, 3000);
+    setInterval(pushHostState, 2000);
+    setInterval(fetchMembers, 5000);
+    setInterval(fetchChat, 3000);
+    setInterval(() => {
+      fetch("/w/party/ping", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ token, user_name: viewerName })
+      });
+    }, 10000);
+  });
+}
 </script>
 
 {% endblock %}

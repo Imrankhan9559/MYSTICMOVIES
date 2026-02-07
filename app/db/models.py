@@ -88,6 +88,25 @@ class WatchParty(Document):
     class Settings:
         name = "watch_parties"
 
+
+class WatchPartyMember(Document):
+    token: str
+    user_name: str
+    last_seen: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "watch_party_members"
+
+
+class WatchPartyMessage(Document):
+    token: str
+    user_name: str
+    text: str
+    created_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "watch_party_messages"
+
 async def init_db():
     client = AsyncIOMotorClient(settings.MONGO_URI)
-    await init_beanie(database=client.morgan_db, document_models=[User, FileSystemItem, SharedCollection, TokenSetting, PlaybackProgress, WatchParty])
+    await init_beanie(database=client.morgan_db, document_models=[User, FileSystemItem, SharedCollection, TokenSetting, PlaybackProgress, WatchParty, WatchPartyMember, WatchPartyMessage])
