@@ -21,6 +21,12 @@ try:
 except Exception:
     pass
 
+# Ensure a loop exists before Pyrogram Client construction (uvloop can require this)
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
