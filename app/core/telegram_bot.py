@@ -157,9 +157,8 @@ async def speed_test(sample_bytes: int = 1_000_000) -> dict:
             return {"ok": False, "error": "Client cannot access storage channel"}
 
         # Grab last media message
-        history = await client.get_history(chat_id, limit=10)
         msg = None
-        for m in history:
+        async for m in client.get_chat_history(chat_id, limit=10):
             if getattr(m, "document", None) or getattr(m, "video", None) or getattr(m, "audio", None):
                 msg = m
                 break
