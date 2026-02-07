@@ -143,10 +143,12 @@ if (authPlayer) {
         fetch("/hls/prepare/{{ item.id }}", { method: "POST" });
         if (window.Hls && Hls.isSupported()) {
             const hls = new Hls({
-                maxBufferLength: 300,
-                maxMaxBufferLength: 600,
-                maxBufferSize: 120 * 1000 * 1000,
-                backBufferLength: 60
+                maxBufferLength: 60,
+                maxMaxBufferLength: 120,
+                maxBufferSize: 30 * 1000 * 1000,
+                backBufferLength: 10,
+                maxBufferHole: 0.5,
+                lowLatencyMode: true
             });
             hls.on(Hls.Events.MANIFEST_PARSED, () => setupAuthHlsControls(hls));
             hls.loadSource(hlsUrl);

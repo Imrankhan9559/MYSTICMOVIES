@@ -33,19 +33,22 @@ def _is_video_item(item: FileSystemItem) -> bool:
     name = (item.name or "").lower()
     return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi"))
 
-def _parallel_conf() -> tuple[int, int]:
+def _parallel_conf(download: bool = False) -> tuple[int, int]:
+    workers_key = "DL_WORKERS_DOWNLOAD" if download else "DL_WORKERS"
+    stripe_key = "DL_STRIPE_MB_DOWNLOAD" if download else "DL_STRIPE_MB"
     try:
-        workers = int(os.getenv("DL_WORKERS", "7"))
+        workers = int(os.getenv(workers_key, "7"))
         if workers < 1: workers = 1
         if workers > 8: workers = 8
     except Exception:
         workers = 7
     try:
-        stripe_mb = int(os.getenv("DL_STRIPE_MB", "6"))
+        default_stripe = "8" if download else "2"
+        stripe_mb = int(os.getenv(stripe_key, default_stripe))
         if stripe_mb < 1: stripe_mb = 1
-        if stripe_mb > 16: stripe_mb = 16
+        if stripe_mb > 32: stripe_mb = 32
     except Exception:
-        stripe_mb = 6
+        stripe_mb = 8 if download else 2
     return workers, stripe_mb * 1024 * 1024
 
 def _extract_file_size(msg) -> int | None:
@@ -658,7 +661,7 @@ async def public_stream_by_id(item_id: str, request: Request, range: str = Heade
     align = _pick_align(file_size)
 
     # Limit parallel clients based on env
-    max_workers, stripe_size = _parallel_conf()
+    max_workers, stripe_size = _parallel_conf(download=download)
     if parallel_clients:
         parallel_clients = parallel_clients[:max_workers]
 

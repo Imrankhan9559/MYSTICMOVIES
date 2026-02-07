@@ -51,8 +51,11 @@ def _is_video_item(item: FileSystemItem) -> bool:
     return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg"))
 
 def _pick_align(size: int) -> int:
-    if size and size >= 10 * 1024 * 1024:
-        return 1024 * 1024
+    # Smaller alignment reduces over-fetch on seeks, improving seek responsiveness.
+    if size and size >= 20 * 1024 * 1024:
+        return 256 * 1024
+    if size and size >= 2 * 1024 * 1024:
+        return 64 * 1024
     return 4096
 
 def _align_offset(start: int, align: int = 4096) -> tuple[int, int]:
@@ -139,7 +142,7 @@ async def parallel_stream_generator(
     message_id: int,
     start: int,
     end: int,
-    chunk_size: int = 1024 * 1024
+    chunk_size: int = 512 * 1024
 ):
     total = end - start + 1
     if total <= 0:
