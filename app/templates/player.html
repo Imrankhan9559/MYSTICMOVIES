@@ -82,10 +82,19 @@ const authSubtitle = document.getElementById("authSubtitle");
 const authAudio = document.getElementById("authAudio");
 const authSpeed = document.getElementById("authSpeed");
 
+function setSelectState(select, enabled) {
+    if (!select) return;
+    select.disabled = !enabled;
+    select.classList.toggle("opacity-50", !enabled);
+}
+
 function resetAuthTracks() {
     if (authQuality) authQuality.innerHTML = `<option value="-1">Quality: Original</option>`;
     if (authSubtitle) authSubtitle.innerHTML = `<option value="-1">Subtitles: Off</option>`;
     if (authAudio) authAudio.innerHTML = `<option value="-1">Audio: Default</option>`;
+    setSelectState(authQuality, false);
+    setSelectState(authSubtitle, false);
+    setSelectState(authAudio, false);
 }
 
 function setupAuthHlsControls(hls) {
@@ -104,11 +113,19 @@ function setupAuthHlsControls(hls) {
             authQuality.appendChild(opt);
         });
         authQuality.onchange = () => {
-            hls.currentLevel = parseInt(authQuality.value, 10);
+            const v = parseInt(authQuality.value, 10);
+            hls.currentLevel = Number.isNaN(v) ? -1 : v;
         };
+        const current = typeof hls.currentLevel === "number" ? hls.currentLevel : -1;
+        authQuality.value = String(current);
+        setSelectState(authQuality, true);
     }
     if (authAudio && hls.audioTracks && hls.audioTracks.length) {
         authAudio.innerHTML = "";
+        const defOpt = document.createElement("option");
+        defOpt.value = "-1";
+        defOpt.textContent = "Audio: Default";
+        authAudio.appendChild(defOpt);
         hls.audioTracks.forEach((track, idx) => {
             const opt = document.createElement("option");
             opt.value = String(idx);
@@ -116,8 +133,12 @@ function setupAuthHlsControls(hls) {
             authAudio.appendChild(opt);
         });
         authAudio.onchange = () => {
-            hls.audioTrack = parseInt(authAudio.value, 10);
+            const v = parseInt(authAudio.value, 10);
+            hls.audioTrack = v < 0 || Number.isNaN(v) ? 0 : v;
         };
+        const current = typeof hls.audioTrack === "number" ? hls.audioTrack : 0;
+        authAudio.value = String(current);
+        setSelectState(authAudio, true);
     }
     if (authSubtitle && hls.subtitleTracks && hls.subtitleTracks.length) {
         authSubtitle.innerHTML = "";
@@ -132,8 +153,75 @@ function setupAuthHlsControls(hls) {
             authSubtitle.appendChild(opt);
         });
         authSubtitle.onchange = () => {
-            hls.subtitleTrack = parseInt(authSubtitle.value, 10);
+            const v = parseInt(authSubtitle.value, 10);
+            hls.subtitleTrack = Number.isNaN(v) ? -1 : v;
         };
+        const current = typeof hls.subtitleTrack === "number" ? hls.subtitleTrack : -1;
+        authSubtitle.value = String(current);
+        setSelectState(authSubtitle, true);
+    }
+}
+
+function setupNativeTracks(playerEl) {
+    if (!playerEl) return;
+    if (authQuality) {
+        authQuality.innerHTML = `<option value="-1">Quality: Auto</option>`;
+        setSelectState(authQuality, false);
+    }
+    if (authAudio) {
+        const tracks = playerEl.audioTracks ? Array.from(playerEl.audioTracks) : [];
+        if (tracks.length) {
+            authAudio.innerHTML = "";
+            const defOpt = document.createElement("option");
+            defOpt.value = "-1";
+            defOpt.textContent = "Audio: Default";
+            authAudio.appendChild(defOpt);
+            tracks.forEach((t, idx) => {
+                const opt = document.createElement("option");
+                opt.value = String(idx);
+                opt.textContent = `Audio: ${t.label || t.language || `Track ${idx + 1}`}`;
+                authAudio.appendChild(opt);
+            });
+            authAudio.onchange = () => {
+                const v = parseInt(authAudio.value, 10);
+                const target = v < 0 || Number.isNaN(v) ? 0 : v;
+                tracks.forEach((t, idx) => { t.enabled = idx === target; });
+            };
+            const enabledIdx = tracks.findIndex(t => t.enabled);
+            authAudio.value = String(enabledIdx >= 0 ? enabledIdx : 0);
+            setSelectState(authAudio, true);
+        } else {
+            authAudio.innerHTML = `<option value="-1">Audio: Default</option>`;
+            setSelectState(authAudio, false);
+        }
+    }
+    if (authSubtitle) {
+        const tracks = playerEl.textTracks ? Array.from(playerEl.textTracks).filter(t => t.kind === "subtitles" || t.kind === "captions") : [];
+        if (tracks.length) {
+            authSubtitle.innerHTML = "";
+            const off = document.createElement("option");
+            off.value = "-1";
+            off.textContent = "Subtitles: Off";
+            authSubtitle.appendChild(off);
+            tracks.forEach((t, idx) => {
+                const opt = document.createElement("option");
+                opt.value = String(idx);
+                opt.textContent = `Subtitles: ${t.label || t.language || `Track ${idx + 1}`}`;
+                authSubtitle.appendChild(opt);
+            });
+            authSubtitle.onchange = () => {
+                const v = parseInt(authSubtitle.value, 10);
+                if (Number.isNaN(v) || v < 0) {
+                    tracks.forEach(t => { t.mode = "disabled"; });
+                } else {
+                    tracks.forEach((t, idx) => { t.mode = idx === v ? "showing" : "disabled"; });
+                }
+            };
+            setSelectState(authSubtitle, true);
+        } else {
+            authSubtitle.innerHTML = `<option value="-1">Subtitles: Off</option>`;
+            setSelectState(authSubtitle, false);
+        }
     }
 }
 
@@ -143,18 +231,25 @@ if (authPlayer) {
         fetch("/hls/prepare/{{ item.id }}", { method: "POST" });
         if (window.Hls && Hls.isSupported()) {
             const hls = new Hls({
-                maxBufferLength: 60,
-                maxMaxBufferLength: 120,
-                maxBufferSize: 30 * 1000 * 1000,
-                backBufferLength: 10,
-                maxBufferHole: 0.5,
-                lowLatencyMode: true
+                maxBufferLength: 120,
+                maxMaxBufferLength: 240,
+                maxBufferSize: 60 * 1000 * 1000,
+                backBufferLength: 30,
+                maxBufferHole: 0.5
             });
-            hls.on(Hls.Events.MANIFEST_PARSED, () => setupAuthHlsControls(hls));
+            const refreshTracks = () => setupAuthHlsControls(hls);
+            hls.on(Hls.Events.MANIFEST_PARSED, refreshTracks);
+            hls.on(Hls.Events.LEVELS_UPDATED, refreshTracks);
+            hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, refreshTracks);
+            hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, refreshTracks);
+            hls.on(Hls.Events.LEVEL_SWITCHED, () => {
+                if (authQuality) authQuality.value = String(hls.currentLevel);
+            });
             hls.loadSource(hlsUrl);
             hls.attachMedia(authPlayer);
         } else if (authPlayer.canPlayType("application/vnd.apple.mpegurl")) {
             authPlayer.src = hlsUrl;
+            authPlayer.addEventListener("loadedmetadata", () => setupNativeTracks(authPlayer));
         }
     } else {
         resetAuthTracks();

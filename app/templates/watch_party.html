@@ -46,6 +46,18 @@
         {% endif %}
       </div>
 
+      <div class="bg-gray-900 p-3 border-t border-gray-700 flex flex-wrap gap-2">
+        <select id="partyQuality" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2">
+          <option value="-1">Quality: Original</option>
+        </select>
+        <select id="partySubtitle" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2">
+          <option value="-1">Subtitles: Off</option>
+        </select>
+        <select id="partyAudio" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2">
+          <option value="-1">Audio: Default</option>
+        </select>
+      </div>
+
       {% if episodes %}
       <div class="border-t border-gray-700 bg-gray-900">
         <div class="px-4 py-3 text-xs uppercase tracking-wider text-gray-400 border-b border-gray-800">Episodes</div>
@@ -167,6 +179,9 @@ const linkToken = partyApp.dataset.linkToken;
 let roomCode = partyApp.dataset.roomCode || "";
 
 const player = document.getElementById("partyPlayer");
+const partyQuality = document.getElementById("partyQuality");
+const partySubtitle = document.getElementById("partySubtitle");
+const partyAudio = document.getElementById("partyAudio");
 const resyncBtn = document.getElementById("resyncBtn");
 const partyLag = document.getElementById("partyLag");
 const viewerGate = document.getElementById("viewerGate");
@@ -192,6 +207,149 @@ function updateJoinInfo() {
   const base = window.location.origin;
   const joinUrl = `${base}/w/${token}?t=${encodeURIComponent(linkToken)}&room=${encodeURIComponent(roomCode)}`;
   partyJoinLink.value = joinUrl;
+}
+
+function setSelectState(select, enabled) {
+  if (!select) return;
+  select.disabled = !enabled;
+  select.classList.toggle("opacity-50", !enabled);
+}
+
+function resetPartyTracks() {
+  if (partyQuality) partyQuality.innerHTML = `<option value="-1">Quality: Original</option>`;
+  if (partySubtitle) partySubtitle.innerHTML = `<option value="-1">Subtitles: Off</option>`;
+  if (partyAudio) partyAudio.innerHTML = `<option value="-1">Audio: Default</option>`;
+  setSelectState(partyQuality, false);
+  setSelectState(partySubtitle, false);
+  setSelectState(partyAudio, false);
+}
+
+function setupPartyHlsControls(hls) {
+  resetPartyTracks();
+  if (partyQuality && hls.levels && hls.levels.length) {
+    partyQuality.innerHTML = "";
+    const autoOpt = document.createElement("option");
+    autoOpt.value = "-1";
+    autoOpt.textContent = "Quality: Auto";
+    partyQuality.appendChild(autoOpt);
+    hls.levels.forEach((lvl, idx) => {
+      const opt = document.createElement("option");
+      const label = lvl.height ? `${lvl.height}p` : `${Math.round((lvl.bitrate || 0) / 1000)} kbps`;
+      opt.value = String(idx);
+      opt.textContent = `Quality: ${label}`;
+      partyQuality.appendChild(opt);
+    });
+    partyQuality.onchange = () => {
+      const v = parseInt(partyQuality.value, 10);
+      hls.currentLevel = Number.isNaN(v) ? -1 : v;
+    };
+    const current = typeof hls.currentLevel === "number" ? hls.currentLevel : -1;
+    partyQuality.value = String(current);
+    setSelectState(partyQuality, true);
+  }
+  if (partyAudio && hls.audioTracks && hls.audioTracks.length) {
+    partyAudio.innerHTML = "";
+    const defOpt = document.createElement("option");
+    defOpt.value = "-1";
+    defOpt.textContent = "Audio: Default";
+    partyAudio.appendChild(defOpt);
+    hls.audioTracks.forEach((track, idx) => {
+      const opt = document.createElement("option");
+      opt.value = String(idx);
+      opt.textContent = `Audio: ${track.name || track.lang || `Track ${idx + 1}`}`;
+      partyAudio.appendChild(opt);
+    });
+    partyAudio.onchange = () => {
+      const v = parseInt(partyAudio.value, 10);
+      hls.audioTrack = v < 0 || Number.isNaN(v) ? 0 : v;
+    };
+    const current = typeof hls.audioTrack === "number" ? hls.audioTrack : 0;
+    partyAudio.value = String(current);
+    setSelectState(partyAudio, true);
+  }
+  if (partySubtitle && hls.subtitleTracks && hls.subtitleTracks.length) {
+    partySubtitle.innerHTML = "";
+    const off = document.createElement("option");
+    off.value = "-1";
+    off.textContent = "Subtitles: Off";
+    partySubtitle.appendChild(off);
+    hls.subtitleTracks.forEach((track, idx) => {
+      const opt = document.createElement("option");
+      opt.value = String(idx);
+      opt.textContent = `Subtitles: ${track.name || track.lang || `Track ${idx + 1}`}`;
+      partySubtitle.appendChild(opt);
+    });
+    partySubtitle.onchange = () => {
+      const v = parseInt(partySubtitle.value, 10);
+      hls.subtitleTrack = Number.isNaN(v) ? -1 : v;
+    };
+    const current = typeof hls.subtitleTrack === "number" ? hls.subtitleTrack : -1;
+    partySubtitle.value = String(current);
+    setSelectState(partySubtitle, true);
+  }
+}
+
+function setupPartyNativeTracks(playerEl) {
+  if (!playerEl) return;
+  if (partyQuality) {
+    partyQuality.innerHTML = `<option value="-1">Quality: Auto</option>`;
+    setSelectState(partyQuality, false);
+  }
+  if (partyAudio) {
+    const tracks = playerEl.audioTracks ? Array.from(playerEl.audioTracks) : [];
+    if (tracks.length) {
+      partyAudio.innerHTML = "";
+      const defOpt = document.createElement("option");
+      defOpt.value = "-1";
+      defOpt.textContent = "Audio: Default";
+      partyAudio.appendChild(defOpt);
+      tracks.forEach((t, idx) => {
+        const opt = document.createElement("option");
+        opt.value = String(idx);
+        opt.textContent = `Audio: ${t.label || t.language || `Track ${idx + 1}`}`;
+        partyAudio.appendChild(opt);
+      });
+      partyAudio.onchange = () => {
+        const v = parseInt(partyAudio.value, 10);
+        const target = v < 0 || Number.isNaN(v) ? 0 : v;
+        tracks.forEach((t, idx) => { t.enabled = idx === target; });
+      };
+      const enabledIdx = tracks.findIndex(t => t.enabled);
+      partyAudio.value = String(enabledIdx >= 0 ? enabledIdx : 0);
+      setSelectState(partyAudio, true);
+    } else {
+      partyAudio.innerHTML = `<option value="-1">Audio: Default</option>`;
+      setSelectState(partyAudio, false);
+    }
+  }
+  if (partySubtitle) {
+    const tracks = playerEl.textTracks ? Array.from(playerEl.textTracks).filter(t => t.kind === "subtitles" || t.kind === "captions") : [];
+    if (tracks.length) {
+      partySubtitle.innerHTML = "";
+      const off = document.createElement("option");
+      off.value = "-1";
+      off.textContent = "Subtitles: Off";
+      partySubtitle.appendChild(off);
+      tracks.forEach((t, idx) => {
+        const opt = document.createElement("option");
+        opt.value = String(idx);
+        opt.textContent = `Subtitles: ${t.label || t.language || `Track ${idx + 1}`}`;
+        partySubtitle.appendChild(opt);
+      });
+      partySubtitle.onchange = () => {
+        const v = parseInt(partySubtitle.value, 10);
+        if (Number.isNaN(v) || v < 0) {
+          tracks.forEach(t => { t.mode = "disabled"; });
+        } else {
+          tracks.forEach((t, idx) => { t.mode = idx === v ? "showing" : "disabled"; });
+        }
+      };
+      setSelectState(partySubtitle, true);
+    } else {
+      partySubtitle.innerHTML = `<option value="-1">Subtitles: Off</option>`;
+      setSelectState(partySubtitle, false);
+    }
+  }
 }
 
 if (copyJoinLink) {
@@ -369,18 +527,28 @@ if (player) {
     fetch(`/s/hls/prepare/${itemId}`, { method: "POST" });
     if (window.Hls && Hls.isSupported()) {
       const hls = new Hls({
-        maxBufferLength: 60,
-        maxMaxBufferLength: 120,
-        maxBufferSize: 30 * 1000 * 1000,
-        backBufferLength: 10,
-        maxBufferHole: 0.5,
-        lowLatencyMode: true
+        maxBufferLength: 120,
+        maxMaxBufferLength: 240,
+        maxBufferSize: 60 * 1000 * 1000,
+        backBufferLength: 30,
+        maxBufferHole: 0.5
+      });
+      const refreshTracks = () => setupPartyHlsControls(hls);
+      hls.on(Hls.Events.MANIFEST_PARSED, refreshTracks);
+      hls.on(Hls.Events.LEVELS_UPDATED, refreshTracks);
+      hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, refreshTracks);
+      hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, refreshTracks);
+      hls.on(Hls.Events.LEVEL_SWITCHED, () => {
+        if (partyQuality) partyQuality.value = String(hls.currentLevel);
       });
       hls.loadSource(hlsUrl);
       hls.attachMedia(player);
     } else if (player.canPlayType("application/vnd.apple.mpegurl")) {
       player.src = hlsUrl;
+      player.addEventListener("loadedmetadata", () => setupPartyNativeTracks(player));
     }
+  } else {
+    resetPartyTracks();
   }
 }
 

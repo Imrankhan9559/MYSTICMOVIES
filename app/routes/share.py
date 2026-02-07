@@ -44,7 +44,7 @@ def _parallel_conf(download: bool = False) -> tuple[int, int]:
     except Exception:
         workers = 7
     try:
-        default_stripe = "8" if download else "2"
+        default_stripe = "8" if download else "4"
         stripe_mb = int(os.getenv(stripe_key, default_stripe))
         if stripe_mb < 1: stripe_mb = 1
         if stripe_mb > 32: stripe_mb = 32

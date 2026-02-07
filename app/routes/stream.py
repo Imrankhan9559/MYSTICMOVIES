@@ -51,7 +51,9 @@ def _is_video_item(item: FileSystemItem) -> bool:
     return ("video" in (item.mime_type or "")) or name.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg"))
 
 def _pick_align(size: int) -> int:
-    # Smaller alignment reduces over-fetch on seeks, improving seek responsiveness.
+    # Balance seek responsiveness with throughput to reduce buffering.
+    if size and size >= 200 * 1024 * 1024:
+        return 1024 * 1024
     if size and size >= 20 * 1024 * 1024:
         return 256 * 1024
     if size and size >= 2 * 1024 * 1024:

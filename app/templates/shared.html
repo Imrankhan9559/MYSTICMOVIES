@@ -251,11 +251,21 @@ const player = document.getElementById("publicPlayer");
 const qualitySelect = document.getElementById("publicQuality");
 const subtitleSelect = document.getElementById("publicSubtitle");
 const audioSelect = document.getElementById("publicAudio");
+const speedSelect = document.getElementById("publicSpeed");
+
+function setSelectState(select, enabled) {
+    if (!select) return;
+    select.disabled = !enabled;
+    select.classList.toggle("opacity-50", !enabled);
+}
 
 function resetPublicTracks() {
     if (qualitySelect) qualitySelect.innerHTML = `<option value="-1">Quality: Original</option>`;
     if (subtitleSelect) subtitleSelect.innerHTML = `<option value="-1">Subtitles: Off</option>`;
     if (audioSelect) audioSelect.innerHTML = `<option value="-1">Audio: Default</option>`;
+    setSelectState(qualitySelect, false);
+    setSelectState(subtitleSelect, false);
+    setSelectState(audioSelect, false);
 }
 
 function setupPublicHlsControls(hls) {
@@ -274,11 +284,19 @@ function setupPublicHlsControls(hls) {
             qualitySelect.appendChild(opt);
         });
         qualitySelect.onchange = () => {
-            hls.currentLevel = parseInt(qualitySelect.value, 10);
+            const v = parseInt(qualitySelect.value, 10);
+            hls.currentLevel = Number.isNaN(v) ? -1 : v;
         };
+        const current = typeof hls.currentLevel === "number" ? hls.currentLevel : -1;
+        qualitySelect.value = String(current);
+        setSelectState(qualitySelect, true);
     }
     if (audioSelect && hls.audioTracks && hls.audioTracks.length) {
         audioSelect.innerHTML = "";
+        const defOpt = document.createElement("option");
+        defOpt.value = "-1";
+        defOpt.textContent = "Audio: Default";
+        audioSelect.appendChild(defOpt);
         hls.audioTracks.forEach((track, idx) => {
             const opt = document.createElement("option");
             opt.value = String(idx);
@@ -286,8 +304,12 @@ function setupPublicHlsControls(hls) {
             audioSelect.appendChild(opt);
         });
         audioSelect.onchange = () => {
-            hls.audioTrack = parseInt(audioSelect.value, 10);
+            const v = parseInt(audioSelect.value, 10);
+            hls.audioTrack = v < 0 || Number.isNaN(v) ? 0 : v;
         };
+        const current = typeof hls.audioTrack === "number" ? hls.audioTrack : 0;
+        audioSelect.value = String(current);
+        setSelectState(audioSelect, true);
     }
     if (subtitleSelect && hls.subtitleTracks && hls.subtitleTracks.length) {
         subtitleSelect.innerHTML = "";
@@ -302,8 +324,75 @@ function setupPublicHlsControls(hls) {
             subtitleSelect.appendChild(opt);
         });
         subtitleSelect.onchange = () => {
-            hls.subtitleTrack = parseInt(subtitleSelect.value, 10);
+            const v = parseInt(subtitleSelect.value, 10);
+            hls.subtitleTrack = Number.isNaN(v) ? -1 : v;
         };
+        const current = typeof hls.subtitleTrack === "number" ? hls.subtitleTrack : -1;
+        subtitleSelect.value = String(current);
+        setSelectState(subtitleSelect, true);
+    }
+}
+
+function setupNativeTracks(playerEl) {
+    if (!playerEl) return;
+    if (qualitySelect) {
+        qualitySelect.innerHTML = `<option value="-1">Quality: Auto</option>`;
+        setSelectState(qualitySelect, false);
+    }
+    if (audioSelect) {
+        const tracks = playerEl.audioTracks ? Array.from(playerEl.audioTracks) : [];
+        if (tracks.length) {
+            audioSelect.innerHTML = "";
+            const defOpt = document.createElement("option");
+            defOpt.value = "-1";
+            defOpt.textContent = "Audio: Default";
+            audioSelect.appendChild(defOpt);
+            tracks.forEach((t, idx) => {
+                const opt = document.createElement("option");
+                opt.value = String(idx);
+                opt.textContent = `Audio: ${t.label || t.language || `Track ${idx + 1}`}`;
+                audioSelect.appendChild(opt);
+            });
+            audioSelect.onchange = () => {
+                const v = parseInt(audioSelect.value, 10);
+                const target = v < 0 || Number.isNaN(v) ? 0 : v;
+                tracks.forEach((t, idx) => { t.enabled = idx === target; });
+            };
+            const enabledIdx = tracks.findIndex(t => t.enabled);
+            audioSelect.value = String(enabledIdx >= 0 ? enabledIdx : 0);
+            setSelectState(audioSelect, true);
+        } else {
+            audioSelect.innerHTML = `<option value="-1">Audio: Default</option>`;
+            setSelectState(audioSelect, false);
+        }
+    }
+    if (subtitleSelect) {
+        const tracks = playerEl.textTracks ? Array.from(playerEl.textTracks).filter(t => t.kind === "subtitles" || t.kind === "captions") : [];
+        if (tracks.length) {
+            subtitleSelect.innerHTML = "";
+            const off = document.createElement("option");
+            off.value = "-1";
+            off.textContent = "Subtitles: Off";
+            subtitleSelect.appendChild(off);
+            tracks.forEach((t, idx) => {
+                const opt = document.createElement("option");
+                opt.value = String(idx);
+                opt.textContent = `Subtitles: ${t.label || t.language || `Track ${idx + 1}`}`;
+                subtitleSelect.appendChild(opt);
+            });
+            subtitleSelect.onchange = () => {
+                const v = parseInt(subtitleSelect.value, 10);
+                if (Number.isNaN(v) || v < 0) {
+                    tracks.forEach(t => { t.mode = "disabled"; });
+                } else {
+                    tracks.forEach((t, idx) => { t.mode = idx === v ? "showing" : "disabled"; });
+                }
+            };
+            setSelectState(subtitleSelect, true);
+        } else {
+            subtitleSelect.innerHTML = `<option value="-1">Subtitles: Off</option>`;
+            setSelectState(subtitleSelect, false);
+        }
     }
 }
 
@@ -313,23 +402,30 @@ if (player) {
         fetch(`/s/hls/prepare/${itemId}`, { method: "POST" });
         if (window.Hls && Hls.isSupported()) {
             const hls = new Hls({
-                maxBufferLength: 60,
-                maxMaxBufferLength: 120,
-                maxBufferSize: 30 * 1000 * 1000,
-                backBufferLength: 10,
-                maxBufferHole: 0.5,
-                lowLatencyMode: true
+                maxBufferLength: 120,
+                maxMaxBufferLength: 240,
+                maxBufferSize: 60 * 1000 * 1000,
+                backBufferLength: 30,
+                maxBufferHole: 0.5
             });
-            hls.on(Hls.Events.MANIFEST_PARSED, () => setupPublicHlsControls(hls));
+            const refreshTracks = () => setupPublicHlsControls(hls);
+            hls.on(Hls.Events.MANIFEST_PARSED, refreshTracks);
+            hls.on(Hls.Events.LEVELS_UPDATED, refreshTracks);
+            hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, refreshTracks);
+            hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, refreshTracks);
+            hls.on(Hls.Events.LEVEL_SWITCHED, () => {
+                if (qualitySelect) qualitySelect.value = String(hls.currentLevel);
+            });
             hls.loadSource(hlsUrl);
             hls.attachMedia(player);
         } else if (player.canPlayType("application/vnd.apple.mpegurl")) {
             player.src = hlsUrl;
+            player.addEventListener("loadedmetadata", () => setupNativeTracks(player));
         }
     } else {
         resetPublicTracks();
     }
-    document.getElementById("publicSpeed").addEventListener("change", (e) => {
+    speedSelect?.addEventListener("change", (e) => {
         player.playbackRate = parseFloat(e.target.value);
     });
 
