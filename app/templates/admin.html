@@ -27,6 +27,65 @@
         </div>
     </div>
 
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
+        <div class="flex flex-col lg:flex-row lg:items-start gap-6">
+            <div class="flex-1">
+                <div class="flex items-center justify-between mb-3">
+                    <h3 class="font-bold text-lg text-gray-200 flex items-center gap-2">
+                        <i class="fas fa-robot"></i> Bot Pool Health
+                    </h3>
+                    <span class="text-xs bg-gray-900 text-gray-300 px-2 py-1 rounded border border-gray-700">Live check</span>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-gray-300 text-sm">
+                        <thead class="bg-gray-900 text-gray-400 uppercase text-xs">
+                            <tr>
+                                <th class="p-2 border-b border-gray-700">Bot</th>
+                                <th class="p-2 border-b border-gray-700">Status</th>
+                                <th class="p-2 border-b border-gray-700">Detail</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-700">
+                            {% for b in bots %}
+                            <tr class="hover:bg-gray-750">
+                                <td class="p-2 font-mono">{{ b.label }}</td>
+                                <td class="p-2">
+                                    {% if b.ok %}
+                                        <span class="text-green-400 font-bold">OK</span>
+                                    {% else %}
+                                        <span class="text-red-400 font-bold">FAIL</span>
+                                    {% endif %}
+                                </td>
+                                <td class="p-2 text-xs text-gray-400 break-all">{{ b.detail }}</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="3" class="p-3 text-center text-gray-500 text-sm">No bots configured</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="w-full lg:w-80 space-y-4">
+                <form action="/admin/bots/update_tokens" method="post" class="space-y-2">
+                    <label class="text-xs text-gray-400 font-semibold">Pool Tokens (comma or newline)</label>
+                    <textarea name="bot_tokens" rows="3" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-xs text-white" placeholder="123:ABC, 456:DEF">{{ pool_tokens }}</textarea>
+                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs py-2 rounded">Save & Reload Pool</button>
+                </form>
+                <form action="/admin/bots/speedtest" method="post" class="space-y-2">
+                    <label class="text-xs text-gray-400 font-semibold flex items-center gap-1"><i class="fas fa-tachometer-alt"></i> Speed Test (downloads ~1MB from storage)</label>
+                    <button type="submit" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold text-xs py-2 rounded">Run Speed Test</button>
+                    {% if speed_result %}
+                        {% if speed_result.ok %}
+                        <div class="text-xs text-green-400">~{{ (speed_result.mb_per_s or 0)|round(2) }} MB/s ({{ (speed_result.bytes/1024/1024)|round(2) }} MB in {{ speed_result.seconds|round(2) }}s)</div>
+                        {% else %}
+                        <div class="text-xs text-red-400">Failed: {{ speed_result.error }}</div>
+                        {% endif %}
+                    {% endif %}
+                </form>
+            </div>
+        </div>
+    </div>
+
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
         <div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg relative overflow-hidden group">
             <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition">

@@ -12,7 +12,15 @@ from app.core.config import settings
 from app.db.models import FileSystemItem, FilePart, User, SharedCollection
 from beanie import PydanticObjectId
 from beanie.operators import In
-from app.core.telethon_storage import check_storage_access as tl_check_storage, get_message as tl_get_message, forward_message_to as tl_forward_to_user, send_file as tl_send_file, send_text as tl_send_text
+from app.core.telethon_storage import (
+    check_storage_access as tl_check_storage,
+    get_message as tl_get_message,
+    forward_message_to as tl_forward_to_user,
+    send_file as tl_send_file,
+    send_text as tl_send_text,
+    iter_storage_messages,
+    iter_download as tl_iter_download
+)
 
 # Prefer uvloop before any Pyrogram clients are created
 try:
@@ -66,10 +74,87 @@ else:
 # Optional bot pool for parallel streaming/download
 bot_pool: list[Client] = []
 _bot_cycle = None
+_bot_status_cache: list[dict] = []
 
 def _get_pool_tokens() -> list[str]:
     raw = getattr(settings, "BOT_POOL_TOKENS", "") or ""
     return [t.strip() for t in raw.split(",") if t.strip()]
+
+async def _stop_pool():
+    global bot_pool, _bot_cycle
+    for bot in bot_pool:
+        try:
+            await bot.stop()
+        except Exception:
+            pass
+    bot_pool = []
+    _bot_cycle = None
+
+async def reload_bot_pool(tokens: list[str]):
+    """Stop existing pool and start a new one with provided tokens."""
+    await _stop_pool()
+    for idx, token in enumerate(tokens):
+        try:
+            bot = Client(f"morganxmystic_pool_{idx}", api_id=settings.API_ID, api_hash=settings.API_HASH, bot_token=token)
+            await bot.start()
+            bot_me = await bot.get_me()
+            bot._is_bot = getattr(bot_me, "is_bot", False)
+            bot_pool.append(bot)
+            try:
+                await bot.delete_webhook(drop_pending_updates=True)
+            except Exception:
+                _clear_bot_webhook_http(token)
+            await verify_storage_access_v2(bot)
+            _register_bot_handlers(bot)
+        except Exception:
+            continue
+
+async def pool_status() -> list[dict]:
+    """Return status for tg_client, bot_client, and pool bots."""
+    results = []
+    async def check(label, client: Client | None):
+        ok = False
+        detail = ""
+        if not client:
+            results.append({"label": label, "ok": False, "detail": "not configured"})
+            return
+        try:
+            me = await client.get_me()
+            await verify_storage_access_v2(client)
+            ok = True
+            detail = f"@{getattr(me, 'username', '') or me.id}"
+        except Exception as e:
+            ok = False
+            detail = str(e)
+        results.append({"label": label, "ok": ok, "detail": detail})
+
+    await check("tg_client", tg_client)
+    await check("bot_client", bot_client)
+    for idx, bot in enumerate(bot_pool):
+        await check(f"pool_{idx}", bot)
+    return results
+
+async def speed_test(sample_bytes: int = 1_000_000) -> dict:
+    """Download ~sample_bytes from latest storage media to estimate throughput."""
+    start_ts = asyncio.get_event_loop().time()
+    msg = None
+    async for candidate in iter_storage_messages(limit=10):
+        if getattr(candidate, "document", None) or getattr(candidate, "video", None) or getattr(candidate, "audio", None):
+            msg = candidate
+            break
+    if not msg:
+        return {"ok": False, "error": "No media found in storage channel"}
+    received = 0
+    try:
+        async for chunk in tl_iter_download(msg, offset=0, limit=sample_bytes):
+            received += len(chunk)
+            if received >= sample_bytes:
+                break
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    elapsed = asyncio.get_event_loop().time() - start_ts
+    mbps = (received / 1024 / 1024) / elapsed if elapsed > 0 else 0
+    return {"ok": True, "bytes": received, "seconds": elapsed, "mb_per_s": mbps}
 
 def get_pool_client() -> Client | None:
     global _bot_cycle
