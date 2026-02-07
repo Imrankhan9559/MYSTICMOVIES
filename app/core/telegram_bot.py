@@ -142,23 +142,49 @@ async def pool_status() -> list[dict]:
     return results
 
 async def speed_test(sample_bytes: int = 1_000_000) -> dict:
-    """Download ~sample_bytes from latest storage media to estimate throughput."""
+    """Download ~sample_bytes from storage via Pyrogram (works with user or bot)."""
     start_ts = asyncio.get_event_loop().time()
-    msg = None
-    async for candidate in iter_storage_messages(limit=10):
-        if getattr(candidate, "document", None) or getattr(candidate, "video", None) or getattr(candidate, "audio", None):
-            msg = candidate
-            break
-    if not msg:
-        return {"ok": False, "error": "No media found in storage channel"}
-    received = 0
+    chat_id = normalize_chat_id(get_storage_chat_id() or "me")
+
+    # Pick a client that can access storage: prefer user_client, then bot_client, then pool
+    client: Client | None = user_client or bot_client or (bot_pool[0] if bot_pool else None)
+    if not client:
+        return {"ok": False, "error": "No Pyrogram client available"}
+
     try:
-        async for chunk in tl_iter_download(msg, offset=0, limit=sample_bytes):
+        # Ensure access
+        if not await ensure_peer_access(client, chat_id):
+            return {"ok": False, "error": "Client cannot access storage channel"}
+
+        # Grab last media message
+        history = await client.get_history(chat_id, limit=10)
+        msg = None
+        for m in history:
+            if getattr(m, "document", None) or getattr(m, "video", None) or getattr(m, "audio", None):
+                msg = m
+                break
+        if not msg:
+            return {"ok": False, "error": "No media found in storage channel"}
+
+        # Stream a slice
+        file_id = None
+        if msg.document:
+            file_id = msg.document.file_id
+        elif msg.video:
+            file_id = msg.video.file_id
+        elif msg.audio:
+            file_id = msg.audio.file_id
+        if not file_id:
+            return {"ok": False, "error": "Media missing file_id"}
+
+        received = 0
+        async for chunk in client.stream_media(file_id, offset=0, limit=sample_bytes):
             received += len(chunk)
             if received >= sample_bytes:
                 break
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
     elapsed = asyncio.get_event_loop().time() - start_ts
     mbps = (received / 1024 / 1024) / elapsed if elapsed > 0 else 0
     return {"ok": True, "bytes": received, "seconds": elapsed, "mb_per_s": mbps}
