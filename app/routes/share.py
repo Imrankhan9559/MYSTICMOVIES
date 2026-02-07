@@ -1,4 +1,5 @@
 import uuid
+import random
 import re
 import os
 import shutil
@@ -108,13 +109,18 @@ async def _require_token_and_username(request: Request, login_url: str):
 
 PARTY_HOST_TIMEOUT_SECONDS = 60
 
+def _generate_room_code() -> str:
+    return f"{random.randint(0, 999999):06d}"
+
 async def _get_or_create_party(token: str, user_name: str) -> WatchParty:
     now = datetime.now()
     party = await WatchParty.find_one(WatchParty.token == token)
     if not party:
-        party = WatchParty(token=token, host_name=user_name, host_last_seen=now, updated_at=now)
+        party = WatchParty(token=token, room_code=_generate_room_code(), host_name=user_name, host_last_seen=now, updated_at=now)
         await party.insert()
         return party
+    if not getattr(party, "room_code", None):
+        party.room_code = _generate_room_code()
     host_age = (now - party.host_last_seen).total_seconds() if party.host_last_seen else PARTY_HOST_TIMEOUT_SECONDS + 1
     if host_age > PARTY_HOST_TIMEOUT_SECONDS:
         party.host_name = user_name
@@ -582,6 +588,7 @@ async def watch_party_view(request: Request, token: str):
     viewer_name = await _require_token_and_username(request, "https://mysticmovies.rf.gd/login")
     if isinstance(viewer_name, RedirectResponse):
         return viewer_name
+    party = await _get_or_create_party(token, viewer_name)
 
     user = await get_current_user(request)
     is_admin = _is_admin(user)
@@ -651,7 +658,9 @@ async def watch_party_view(request: Request, token: str):
             "token": token,
             "is_admin": is_admin,
             "user": user,
-            "link_token": link_token
+            "link_token": link_token,
+            "room_code": party.room_code,
+            "host_name": party.host_name
         })
 
     # Bundle or single file
@@ -689,7 +698,9 @@ async def watch_party_view(request: Request, token: str):
         "hls_url": active_hls,
         "viewer_name": viewer_name,
         "token": token,
-        "link_token": link_token
+        "link_token": link_token,
+        "room_code": party.room_code,
+        "host_name": party.host_name
     })
 
 @router.get("/s/{token}/u={username}")
@@ -996,7 +1007,7 @@ async def watch_party_join(payload: dict = Body(...)):
         return {"error": "Missing token or user"}
     party = await _get_or_create_party(token, user_name)
     role = "host" if party.host_name == user_name else "viewer"
-    return {"role": role, "host_name": party.host_name}
+    return {"role": role, "host_name": party.host_name, "room_code": party.room_code}
 
 
 @router.get("/w/party/state")
@@ -1012,6 +1023,7 @@ async def watch_party_state(token: str):
         "position": party.position,
         "item_id": party.item_id,
         "is_playing": party.is_playing,
+        "room_code": party.room_code,
         "updated_at": party.updated_at.isoformat() if party.updated_at else ""
     }
 
@@ -1029,9 +1041,11 @@ async def watch_party_update(payload: dict = Body(...)):
     now = datetime.now()
     party = await WatchParty.find_one(WatchParty.token == token)
     if not party:
-        party = WatchParty(token=token, host_name=user_name, host_last_seen=now, updated_at=now)
+        party = WatchParty(token=token, room_code=_generate_room_code(), host_name=user_name, host_last_seen=now, updated_at=now)
         await party.insert()
     else:
+        if not getattr(party, "room_code", None):
+            party.room_code = _generate_room_code()
         host_age = (now - party.host_last_seen).total_seconds() if party.host_last_seen else PARTY_HOST_TIMEOUT_SECONDS + 1
         if party.host_name != user_name and host_age <= PARTY_HOST_TIMEOUT_SECONDS:
             return {"status": "ignored", "reason": "not_host", "host_name": party.host_name}

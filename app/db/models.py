@@ -77,6 +77,7 @@ class PlaybackProgress(Document):
 
 class WatchParty(Document):
     token: str
+    room_code: str
     host_name: str
     host_last_seen: datetime = datetime.now()
     item_id: Optional[str] = None
