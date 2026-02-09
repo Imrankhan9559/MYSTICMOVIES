@@ -107,6 +107,61 @@ class WatchPartyMessage(Document):
     class Settings:
         name = "watch_party_messages"
 
+
+class SiteSettings(Document):
+    key: str = Field(unique=True)
+    site_name: str = "mysticmovies"
+    accent_color: str = "#facc15"
+    bg_color: str = "#070b12"
+    card_color: str = "#111827"
+    hero_title: str = "Watch Movies & Series"
+    hero_subtitle: str = "Stream, download, and send to Telegram in one place."
+    hero_cta_link: str = "/content"
+    hero_cta_text: str = "Browse Content"
+    footer_text: str = "MysticMovies"
+    updated_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "site_settings"
+
+
+class WatchlistEntry(Document):
+    user_phone: str
+    item_id: str
+    created_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "watchlist_entries"
+
+
+class ContentRequest(Document):
+    user_phone: str
+    user_name: Optional[str] = None
+    title: str
+    request_type: str = "movie"  # movie | series
+    note: Optional[str] = None
+    status: str = "pending"      # pending | fulfilled | rejected
+    created_at: datetime = datetime.now()
+    updated_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "content_requests"
+
 async def init_db():
     client = AsyncIOMotorClient(settings.MONGO_URI)
-    await init_beanie(database=client.morgan_db, document_models=[User, FileSystemItem, SharedCollection, TokenSetting, PlaybackProgress, WatchParty, WatchPartyMember, WatchPartyMessage])
+    await init_beanie(
+        database=client.morgan_db,
+        document_models=[
+            User,
+            FileSystemItem,
+            SharedCollection,
+            TokenSetting,
+            PlaybackProgress,
+            WatchParty,
+            WatchPartyMember,
+            WatchPartyMessage,
+            SiteSettings,
+            WatchlistEntry,
+            ContentRequest,
+        ],
+    )

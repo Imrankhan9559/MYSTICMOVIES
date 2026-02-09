@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="rounded-2xl border border-gray-800 bg-gradient-to-b from-gray-900 to-black p-5 sm:p-8 mb-6">
+    <div class="flex flex-col lg:flex-row gap-6">
+        <div class="lg:w-64">
+            <div class="aspect-[2/3] rounded-xl border border-gray-800 bg-gray-950 flex items-center justify-center">
+                <i class="fas fa-film text-yellow-400 text-5xl"></i>
+            </div>
+        </div>
+        <div class="flex-1">
+            <div class="flex items-center gap-2 text-xs uppercase tracking-widest text-yellow-400 mb-2">
+                <span>{{ item.type }}</span>
+                <span class="text-gray-600">•</span>
+                <span>{{ item.quality }}</span>
+                {% if item.year %}<span class="text-gray-600">•</span><span>{{ item.year }}</span>{% endif %}
+            </div>
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-white">{{ item.title }}</h1>
+            {% if item.description %}
+            <p class="text-gray-300 mt-4 leading-7">{{ item.description }}</p>
+            {% else %}
+            <p class="text-gray-400 mt-4">No description available.</p>
+            {% endif %}
+            <div class="mt-5 flex flex-wrap gap-3">
+                <a href="{{ stream_url }}" class="px-5 py-2.5 rounded-full bg-yellow-400 text-black font-bold hover:bg-yellow-300"><i class="fas fa-play mr-2"></i>Watch</a>
+                <a href="{{ download_url }}" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500"><i class="fas fa-download mr-2"></i>Download</a>
+                <a href="{{ telegram_url }}" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500"><i class="fab fa-telegram mr-2"></i>Get in Telegram</a>
+                <a href="{{ watch_url }}" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500"><i class="fas fa-users mr-2"></i>Watch Together</a>
+                {% if user %}
+                <button data-item-id="{{ item.id }}" id="watchlistToggle" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">
+                    <i class="fas fa-bookmark mr-2"></i>{{ "Remove Watchlist" if watchlisted else "Add Watchlist" }}
+                </button>
+                {% endif %}
+            </div>
+            {% if item.type == "series" %}
+            <div class="mt-5">
+                <a href="/content/season-download/{{ item.series_key }}/{{ item.season }}" class="inline-flex items-center px-4 py-2 rounded-lg bg-yellow-500/20 border border-yellow-500/40 text-yellow-300 text-sm hover:bg-yellow-500/30">
+                    <i class="fas fa-layer-group mr-2"></i>Download Season {{ item.season }} (one click)
+                </a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+</section>
+
+{% if episodes %}
+<section class="rounded-2xl border border-gray-800 bg-gray-950 p-5 sm:p-8 mb-6">
+    <h2 class="text-xl font-bold text-white mb-4">Episodes</h2>
+    <div class="space-y-2">
+        {% for ep in episodes %}
+        <a href="/content/details/{{ ep.id }}" class="flex items-center justify-between rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 hover:border-yellow-500/60 transition">
+            <div class="text-gray-200 text-sm font-semibold">S{{ ep.season }} E{{ ep.episode }} - {{ ep.title }}</div>
+            <div class="text-xs text-gray-400">{{ ep.quality }}</div>
+        </a>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{% if related %}
+<section>
+    <h2 class="text-xl font-bold text-white mb-4">Related</h2>
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+        {% for r in related %}
+        <a href="/content/details/{{ r.id }}" class="rounded-xl border border-gray-800 bg-black p-3 hover:border-yellow-500/60 transition">
+            <div class="text-[10px] text-yellow-400 uppercase">{{ r.type }}</div>
+            <div class="text-sm text-white font-semibold mt-1">{{ r.title }}</div>
+        </a>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{% if user %}
+<script>
+const watchBtn = document.getElementById("watchlistToggle");
+if (watchBtn) {
+    watchBtn.addEventListener("click", async () => {
+        const itemId = watchBtn.dataset.itemId;
+        const res = await fetch(`/content/watchlist/toggle/${itemId}`, { method: "POST" });
+        const data = await res.json();
+        if (data.status === "added") {
+            watchBtn.innerHTML = '<i class="fas fa-bookmark mr-2"></i>Remove Watchlist';
+        } else if (data.status === "removed") {
+            watchBtn.innerHTML = '<i class="fas fa-bookmark mr-2"></i>Add Watchlist';
+        }
+    });
+}
+</script>
+{% endif %}
+{% endblock %}

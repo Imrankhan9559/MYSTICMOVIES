@@ -87,6 +87,123 @@
         </div>
     </div>
 
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-sliders-h mr-2"></i> Site Settings (Admin Only)</h3>
+            <span class="text-xs bg-yellow-900 text-yellow-200 px-2 py-1 rounded">Theme & Hero</span>
+        </div>
+        <form action="/admin/site/save" method="post" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <input name="site_name" value="{{ site.site_name if site else 'mysticmovies' }}" placeholder="Site Name" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
+            <input name="accent_color" value="{{ site.accent_color if site else '#facc15' }}" placeholder="#facc15" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
+            <input name="bg_color" value="{{ site.bg_color if site else '#070b12' }}" placeholder="#070b12" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
+            <input name="card_color" value="{{ site.card_color if site else '#111827' }}" placeholder="#111827" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
+            <input name="hero_title" value="{{ site.hero_title if site else '' }}" placeholder="Hero title" class="md:col-span-2 bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
+            <input name="hero_subtitle" value="{{ site.hero_subtitle if site else '' }}" placeholder="Hero subtitle" class="md:col-span-2 bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
+            <input name="hero_cta_text" value="{{ site.hero_cta_text if site else 'Browse Content' }}" placeholder="Hero CTA text" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
+            <input name="hero_cta_link" value="{{ site.hero_cta_link if site else '/content' }}" placeholder="/content" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
+            <input name="footer_text" value="{{ site.footer_text if site else 'MysticMovies' }}" placeholder="Footer text" class="md:col-span-2 bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
+            <button class="md:col-span-2 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded p-2 text-sm">Save Site Settings</button>
+        </form>
+    </div>
+
+    <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden shadow-xl mb-10">
+        <div class="p-4 bg-gray-900 border-b border-gray-700 flex justify-between items-center">
+            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-inbox mr-2"></i> Content Requests</h3>
+            <span class="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded">User Requests</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-gray-400">
+                <thead class="bg-gray-750 text-gray-300 uppercase text-xs font-semibold tracking-wider">
+                    <tr>
+                        <th class="p-4 border-b border-gray-700">User</th>
+                        <th class="p-4 border-b border-gray-700">Type</th>
+                        <th class="p-4 border-b border-gray-700">Title</th>
+                        <th class="p-4 border-b border-gray-700">Note</th>
+                        <th class="p-4 border-b border-gray-700 text-right">Action</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-700">
+                    {% for r in pending_content_requests %}
+                    <tr class="hover:bg-gray-700 transition">
+                        <td class="p-4 text-xs">{{ r.user_phone }}</td>
+                        <td class="p-4 text-xs uppercase">{{ r.request_type }}</td>
+                        <td class="p-4 text-sm text-white">{{ r.title }}</td>
+                        <td class="p-4 text-xs text-gray-400">{{ r.note or '-' }}</td>
+                        <td class="p-4 text-right">
+                            <form action="/admin/request/{{ r.id }}/fulfilled" method="post" class="inline">
+                                <button class="bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-xs font-bold">Fulfilled</button>
+                            </form>
+                            <form action="/admin/request/{{ r.id }}/rejected" method="post" class="inline">
+                                <button class="bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded text-xs font-bold">Reject</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5" class="p-4 text-center text-gray-500 text-sm">No pending requests</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden shadow-xl mb-10">
+        <div class="p-4 bg-gray-900 border-b border-gray-700 flex justify-between items-center">
+            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-film mr-2"></i> Catalog Metadata</h3>
+            <span class="text-xs bg-purple-900 text-purple-200 px-2 py-1 rounded">Tag Movies/Series</span>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full text-left text-gray-400">
+                <thead class="bg-gray-750 text-gray-300 uppercase text-xs font-semibold tracking-wider">
+                    <tr>
+                        <th class="p-4 border-b border-gray-700">File</th>
+                        <th class="p-4 border-b border-gray-700">Type</th>
+                        <th class="p-4 border-b border-gray-700">Series/Season/Episode</th>
+                        <th class="p-4 border-b border-gray-700">Quality</th>
+                        <th class="p-4 border-b border-gray-700 text-right">Save</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-700">
+                    {% for item in content_items %}
+                    <tr class="hover:bg-gray-700 transition">
+                        <form action="/admin/content/update" method="post">
+                            <input type="hidden" name="item_id" value="{{ item.id }}">
+                            <td class="p-4 text-xs text-white max-w-[260px] truncate" title="{{ item.name }}">{{ item.name }}</td>
+                            <td class="p-4">
+                                <select name="catalog_type" class="bg-gray-900 border border-gray-700 rounded p-1 text-xs text-white">
+                                    <option value="movie" {% if item.catalog_type == "movie" %}selected{% endif %}>Movie</option>
+                                    <option value="series" {% if item.catalog_type == "series" %}selected{% endif %}>Series</option>
+                                </select>
+                            </td>
+                            <td class="p-4">
+                                <input name="series_title" value="{{ item.series_title or '' }}" placeholder="Series title" class="bg-gray-900 border border-gray-700 rounded p-1 text-xs text-white w-32 mb-1">
+                                <div class="flex gap-1">
+                                    <input name="season" value="{{ item.season or '' }}" placeholder="S" class="bg-gray-900 border border-gray-700 rounded p-1 text-xs text-white w-10">
+                                    <input name="episode" value="{{ item.episode or '' }}" placeholder="E" class="bg-gray-900 border border-gray-700 rounded p-1 text-xs text-white w-10">
+                                </div>
+                            </td>
+                            <td class="p-4">
+                                <input name="quality" value="{{ item.quality or '' }}" placeholder="1080P" class="bg-gray-900 border border-gray-700 rounded p-1 text-xs text-white w-20">
+                            </td>
+                            <td class="p-4 text-right">
+                                <button class="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-xs font-bold">Save</button>
+                            </td>
+                            <input type="hidden" name="title" value="{{ item.title or '' }}">
+                            <input type="hidden" name="description" value="{{ item.description or '' }}">
+                            <input type="hidden" name="year" value="{{ item.year or '' }}">
+                            <input type="hidden" name="genres" value="{{ (item.genres or [])|join(',') }}">
+                            <input type="hidden" name="actors" value="{{ (item.actors or [])|join(',') }}">
+                            <input type="hidden" name="director" value="{{ item.director or '' }}">
+                            <input type="hidden" name="trailer_url" value="{{ item.trailer_url or '' }}">
+                        </form>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5" class="p-4 text-center text-gray-500 text-sm">No files found</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
         <div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg relative overflow-hidden group">
             <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition">

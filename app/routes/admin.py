@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from beanie.operators import In
-from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting
+from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting, SiteSettings, ContentRequest
 from app.routes.dashboard import get_current_user, _cast_ids
 from app.core.config import settings
 from app.core.telegram_bot import pool_status, reload_bot_pool, speed_test, _get_pool_tokens
@@ -18,6 +18,13 @@ def _normalize_phone(phone: str) -> str:
 def _is_admin(user: User | None) -> bool:
     if not user: return False
     return _normalize_phone(user.phone_number) == _normalize_phone(getattr(settings, "ADMIN_PHONE", ""))
+
+async def _site_settings() -> SiteSettings:
+    row = await SiteSettings.find_one(SiteSettings.key == "main")
+    if not row:
+        row = SiteSettings(key="main")
+        await row.insert()
+    return row
 
 @router.get("/admin")
 async def admin_panel(request: Request):
@@ -43,12 +50,16 @@ async def admin_panel(request: Request):
     link_token = token_doc.value if token_doc else ""
     bots = await pool_status()
     pool_tokens = ", ".join(_get_pool_tokens())
+    site = await _site_settings()
+    pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").limit(50).to_list()
+    content_items = await FileSystemItem.find(FileSystemItem.is_folder == False).sort("-created_at").limit(120).to_list()
 
     return templates.TemplateResponse("admin.html", {
         "request": request, "total_users": total_users, "total_files": total_files, 
         "users": all_users, "user_email": user.phone_number, "pending_users": pending_users,
         "recent_progress": recent_progress, "is_admin": True, "user": user, "link_token": link_token, "items_map": items_map,
-        "bots": bots, "pool_tokens": pool_tokens, "speed_result": None
+        "bots": bots, "pool_tokens": pool_tokens, "speed_result": None, "site": site,
+        "pending_content_requests": pending_requests, "content_items": content_items
     })
 
 @router.post("/admin/token/regenerate")
@@ -101,12 +112,107 @@ async def admin_speed_test(request: Request):
     link_token = token_doc.value if token_doc else ""
     bots = await pool_status()
     pool_tokens = ", ".join(_get_pool_tokens())
+    site = await _site_settings()
+    pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").limit(50).to_list()
+    content_items = await FileSystemItem.find(FileSystemItem.is_folder == False).sort("-created_at").limit(120).to_list()
     return templates.TemplateResponse("admin.html", {
         "request": request, "total_users": total_users, "total_files": total_files, 
         "users": all_users, "user_email": user.phone_number, "pending_users": pending_users,
         "recent_progress": recent_progress, "is_admin": True, "user": user, "link_token": link_token, "items_map": items_map,
-        "bots": bots, "pool_tokens": pool_tokens, "speed_result": result
+        "bots": bots, "pool_tokens": pool_tokens, "speed_result": result, "site": site,
+        "pending_content_requests": pending_requests, "content_items": content_items
     })
+
+@router.get("/settings")
+async def admin_settings_redirect(request: Request):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    return RedirectResponse("/admin")
+
+@router.post("/admin/site/save")
+async def save_site_settings(
+    request: Request,
+    site_name: str = Form("mysticmovies"),
+    accent_color: str = Form("#facc15"),
+    bg_color: str = Form("#070b12"),
+    card_color: str = Form("#111827"),
+    hero_title: str = Form("Watch Movies & Series"),
+    hero_subtitle: str = Form("Stream, download, and send to Telegram in one place."),
+    hero_cta_text: str = Form("Browse Content"),
+    hero_cta_link: str = Form("/content"),
+    footer_text: str = Form("MysticMovies")
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    site = await _site_settings()
+    site.site_name = (site_name or "mysticmovies").strip()
+    site.accent_color = (accent_color or "#facc15").strip()
+    site.bg_color = (bg_color or "#070b12").strip()
+    site.card_color = (card_color or "#111827").strip()
+    site.hero_title = (hero_title or "").strip()
+    site.hero_subtitle = (hero_subtitle or "").strip()
+    site.hero_cta_text = (hero_cta_text or "").strip()
+    site.hero_cta_link = (hero_cta_link or "/content").strip()
+    site.footer_text = (footer_text or "MysticMovies").strip()
+    site.updated_at = datetime.now()
+    await site.save()
+    return RedirectResponse("/admin", status_code=303)
+
+@router.post("/admin/content/update")
+async def update_content_metadata(
+    request: Request,
+    item_id: str = Form(...),
+    catalog_type: str = Form("movie"),
+    title: str = Form(""),
+    description: str = Form(""),
+    year: str = Form(""),
+    genres: str = Form(""),
+    actors: str = Form(""),
+    director: str = Form(""),
+    trailer_url: str = Form(""),
+    series_title: str = Form(""),
+    season: str = Form(""),
+    episode: str = Form(""),
+    quality: str = Form("")
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    item = await FileSystemItem.get(item_id)
+    if not item:
+        raise HTTPException(404)
+    item.catalog_type = (catalog_type or "movie").strip().lower()
+    item.title = (title or "").strip()
+    item.description = (description or "").strip()
+    item.year = (year or "").strip()
+    item.genres = [g.strip() for g in (genres or "").split(",") if g.strip()]
+    item.actors = [a.strip() for a in (actors or "").split(",") if a.strip()]
+    item.director = (director or "").strip()
+    item.trailer_url = (trailer_url or "").strip()
+    item.series_title = (series_title or "").strip()
+    item.season = int(season) if (season or "").isdigit() else None
+    item.episode = int(episode) if (episode or "").isdigit() else None
+    item.quality = (quality or "").strip()
+    await item.save()
+    return RedirectResponse("/admin", status_code=303)
+
+@router.post("/admin/request/{request_id}/{action}")
+async def update_content_request(request: Request, request_id: str, action: str):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    row = await ContentRequest.get(request_id)
+    if not row:
+        raise HTTPException(404)
+    action = (action or "").lower()
+    if action not in ("fulfilled", "rejected", "pending"):
+        raise HTTPException(400)
+    row.status = action
+    row.updated_at = datetime.now()
+    await row.save()
+    return RedirectResponse("/admin", status_code=303)
 
 @router.post("/admin/delete_user")
 async def delete_user(request: Request, user_phone: str = Form(...)):

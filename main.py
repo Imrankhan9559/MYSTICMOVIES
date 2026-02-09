@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.core.telegram_bot import start_telegram, stop_telegram
 from app.core.telethon_storage import get_client as get_telethon_client, stop_client as stop_telethon_client
 from app.db.models import init_db
-from app.routes import auth, dashboard, stream, admin, share
+from app.routes import auth, content, dashboard, stream, admin, share
 
 # Prefer uvloop for faster asyncio if available
 try:
@@ -52,6 +52,7 @@ async def favicon():
 
 # Include all Routes
 app.include_router(auth.router)
+app.include_router(content.router)
 app.include_router(dashboard.router)
 app.include_router(stream.router)
 app.include_router(admin.router)

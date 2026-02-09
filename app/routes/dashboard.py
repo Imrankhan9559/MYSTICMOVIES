@@ -413,7 +413,7 @@ async def process_telegram_upload(job_id: str, file_path: str, filename: str, mi
             except: pass
 
 @router.get("/")
-async def root(): return RedirectResponse(url="/dashboard")
+async def root(): return RedirectResponse(url="/content")
 
 # --- DASHBOARD ---
 @router.get("/dashboard")

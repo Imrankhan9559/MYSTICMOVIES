@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="max-w-3xl mx-auto rounded-2xl border border-gray-800 bg-gray-950 p-6">
+    <h1 class="text-2xl font-extrabold text-white mb-2">Season {{ season_no }} Download</h1>
+    <p class="text-gray-400 text-sm mb-6">One click starts episode downloads one by one in your browser.</p>
+
+    <div class="space-y-2 mb-6">
+        {% for ep in episodes %}
+        <div class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3 flex items-center justify-between">
+            <div class="text-sm text-white">Episode {{ ep.episode }} - {{ ep.title }}</div>
+            <a class="text-xs text-yellow-400 hover:text-yellow-300" href="/s/stream/file/{{ ep.id }}?download=true">Download</a>
+        </div>
+        {% else %}
+        <div class="text-gray-500 text-sm">No episodes found for this season.</div>
+        {% endfor %}
+    </div>
+
+    <div class="flex gap-3">
+        <button id="downloadAllBtn" class="px-5 py-2.5 rounded-lg bg-yellow-400 text-black font-bold hover:bg-yellow-300">Download Entire Season</button>
+        <a href="/content/web-series" class="px-5 py-2.5 rounded-lg bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">Back to Series</a>
+    </div>
+</section>
+
+<script>
+const urls = [
+    {% for ep in episodes %}
+    "/s/stream/file/{{ ep.id }}?download=true",
+    {% endfor %}
+];
+
+function triggerDownload(url) {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+}
+
+const btn = document.getElementById("downloadAllBtn");
+if (btn) {
+    btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        btn.textContent = "Starting downloads...";
+        for (const u of urls) {
+            triggerDownload(u);
+            await new Promise(r => setTimeout(r, 1800));
+        }
+        btn.textContent = "Downloads started";
+    });
+}
+</script>
+{% endblock %}
