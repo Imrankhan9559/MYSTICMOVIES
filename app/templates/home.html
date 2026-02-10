@@ -21,7 +21,7 @@
             <a href="/content/details/{{ t.id }}" class="rounded-xl border border-gray-800 bg-black/60 p-3 hover:border-yellow-500/50 hover:-translate-y-0.5 transition">
                 <div class="text-[10px] text-yellow-300 uppercase tracking-widest mb-1">{{ t.type }}</div>
                 <div class="text-sm font-bold text-white line-clamp-2">{{ t.title }}</div>
-                <div class="text-xs text-gray-400 mt-2">{{ t.quality }}</div>
+                <div class="text-xs text-gray-400 mt-2">{{ t.primary_quality }}</div>
             </a>
             {% endfor %}
         </div>
@@ -38,7 +38,7 @@
         <a href="/content/details/{{ item.id }}" class="group rounded-xl border border-gray-800 bg-gray-900/80 p-4 hover:border-yellow-500/60 hover:shadow-[0_0_0_1px_rgba(250,204,21,0.35)] transition">
             <div class="flex items-center justify-between mb-3">
                 <span class="text-[10px] uppercase tracking-widest text-yellow-400">{{ item.type }}</span>
-                <span class="text-[10px] text-gray-400">{{ item.quality }}</span>
+                <span class="text-[10px] text-gray-400">{{ item.primary_quality }}</span>
             </div>
             <h3 class="text-sm font-bold text-white leading-5 line-clamp-2">{{ item.title }}</h3>
             {% if item.type == "series" %}
@@ -56,10 +56,10 @@
     </div>
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         {% for item in movies %}
-        <a href="/content/details/{{ item.id }}" class="rounded-xl border border-gray-800 bg-black/60 p-4 hover:border-yellow-500/60 transition">
+            <a href="/content/details/{{ item.id }}" class="rounded-xl border border-gray-800 bg-black/60 p-4 hover:border-yellow-500/60 transition">
             <div class="text-[10px] text-gray-500 uppercase">Movie</div>
             <h3 class="text-sm font-semibold text-white mt-2 line-clamp-2">{{ item.title }}</h3>
-            <div class="text-xs text-gray-400 mt-2">{{ item.quality }}</div>
+            <div class="text-xs text-gray-400 mt-2">{{ item.primary_quality }}</div>
         </a>
         {% endfor %}
     </div>
@@ -72,10 +72,10 @@
     </div>
     <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
         {% for item in series %}
-        <a href="/content/details/{{ item.id }}" class="rounded-xl border border-gray-800 bg-black/60 p-4 hover:border-yellow-500/60 transition">
+            <a href="/content/details/{{ item.id }}" class="rounded-xl border border-gray-800 bg-black/60 p-4 hover:border-yellow-500/60 transition">
             <div class="text-[10px] text-gray-500 uppercase">Series</div>
             <h3 class="text-sm font-semibold text-white mt-2 line-clamp-2">{{ item.title }}</h3>
-            <div class="text-xs text-gray-400 mt-2">S{{ item.season }} E{{ item.episode }} • {{ item.quality }}</div>
+            <div class="text-xs text-gray-400 mt-2">{{ item.season_count or 1 }} seasons</div>
         </a>
         {% endfor %}
     </div>

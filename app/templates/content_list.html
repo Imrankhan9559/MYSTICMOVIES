@@ -28,7 +28,7 @@
     <a href="/content/details/{{ item.id }}" class="rounded-xl border border-gray-800 bg-gradient-to-b from-gray-900 to-black p-4 hover:border-yellow-500/70 hover:-translate-y-0.5 transition">
         <div class="flex justify-between items-center mb-2">
             <span class="text-[10px] uppercase tracking-widest text-yellow-400">{{ item.type }}</span>
-            <span class="text-[10px] text-gray-400">{{ item.quality }}</span>
+            <span class="text-[10px] text-gray-400">{{ item.primary_quality }}</span>
         </div>
         <h3 class="text-sm font-bold text-white leading-5">{{ item.title }}</h3>
         {% if item.type == "series" %}

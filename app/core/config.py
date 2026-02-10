@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     STORAGE_CHANNEL_INVITE: str = ""
     STORAGE_CHANNEL_TITLE: str = ""
     BOT_USERNAME: str = ""
+    TMDB_API_KEY: str = ""
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GOOGLE_REDIRECT_URI: str = ""
 
     # Cache / speed settings (disabled by default)
     CACHE_ENABLED: bool = False

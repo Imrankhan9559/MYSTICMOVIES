@@ -1,4 +1,9 @@
 import traceback
+import json
+import time
+import urllib.parse
+import urllib.request
+import secrets
 from datetime import datetime
 from fastapi import APIRouter, Request, Form, Response
 from fastapi.templating import Jinja2Templates
@@ -12,6 +17,19 @@ templates = Jinja2Templates(directory="app/templates")
 
 # In-memory storage for temporary login steps (Production apps should use Redis)
 temp_auth_data = {} 
+oauth_states = {}
+
+def _google_auth_url(state: str) -> str:
+    params = {
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "online",
+        "prompt": "select_account",
+        "state": state,
+    }
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
 
 def _normalize_phone(phone: str) -> str:
     return phone.replace(" ", "")
@@ -42,6 +60,82 @@ async def logout(response: Response):
     response = RedirectResponse(url="/login")
     response.delete_cookie("user_phone")
     return response
+
+@router.get("/auth/google")
+async def google_login():
+    if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET or not settings.GOOGLE_REDIRECT_URI:
+        return JSONResponse({"error": "Google OAuth not configured"}, status_code=500)
+    state = secrets.token_urlsafe(16)
+    oauth_states[state] = time.time()
+    return RedirectResponse(_google_auth_url(state))
+
+@router.get("/auth/google/callback")
+async def google_callback(request: Request, response: Response, code: str = "", state: str = ""):
+    if not code or not state or state not in oauth_states:
+        return RedirectResponse("/login")
+    # simple state expiry (10 min)
+    if time.time() - oauth_states.get(state, 0) > 600:
+        oauth_states.pop(state, None)
+        return RedirectResponse("/login")
+    oauth_states.pop(state, None)
+
+    token_url = "https://oauth2.googleapis.com/token"
+    payload = urllib.parse.urlencode({
+        "code": code,
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "client_secret": settings.GOOGLE_CLIENT_SECRET,
+        "redirect_uri": settings.GOOGLE_REDIRECT_URI,
+        "grant_type": "authorization_code",
+    }).encode()
+    try:
+        req = urllib.request.Request(token_url, data=payload, method="POST")
+        with urllib.request.urlopen(req) as resp:
+            token_data = json.loads(resp.read().decode("utf-8"))
+        access_token = token_data.get("access_token")
+        if not access_token:
+            return RedirectResponse("/login")
+        userinfo_req = urllib.request.Request(
+            "https://openidconnect.googleapis.com/v1/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"}
+        )
+        with urllib.request.urlopen(userinfo_req) as resp:
+            userinfo = json.loads(resp.read().decode("utf-8"))
+        email = userinfo.get("email")
+        name = userinfo.get("name") or userinfo.get("given_name") or "User"
+        if not email:
+            return RedirectResponse("/login")
+        # Store Google users as approved users; use email as phone_number key.
+        existing = await User.find_one(User.phone_number == email)
+        if existing:
+            existing.first_name = name
+            existing.status = "approved"
+            existing.requested_name = name
+            existing.email = email
+            existing.auth_provider = "google"
+            await existing.save()
+        else:
+            await User(
+                phone_number=email,
+                session_string="",
+                first_name=name,
+                telegram_user_id=None,
+                status="approved",
+                requested_name=name,
+                requested_at=datetime.now(),
+                email=email,
+                auth_provider="google",
+            ).insert()
+        response = RedirectResponse(url="/content")
+        response.set_cookie(
+            key="user_phone",
+            value=email,
+            httponly=True,
+            samesite="lax",
+            secure=True
+        )
+        return response
+    except Exception:
+        return RedirectResponse("/login")
 
 @router.post("/auth/send_code")
 async def send_code(phone: str = Form(...)):

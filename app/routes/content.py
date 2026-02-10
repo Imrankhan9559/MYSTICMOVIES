@@ -1,9 +1,12 @@
 import re
 import uuid
+import json
+import asyncio
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from typing import Optional
 
-from beanie.operators import Or
 from fastapi import APIRouter, Request, Form, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -17,6 +20,13 @@ templates = Jinja2Templates(directory="app/templates")
 
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg")
 QUALITY_RE = re.compile(r"(2160p|1440p|1080p|720p|480p|380p|360p)", re.I)
+YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
+TRASH_RE = re.compile(
+    r"(x264|x265|h\.?264|h\.?265|hevc|aac|dts|hdrip|webrip|webdl|bluray|brrip|dvdrip|hdts|hdtc|cam|line|"
+    r"dual|multi|hindi|english|telugu|tamil|malayalam|punjabi|subbed|subs|proper|repack|uncut|"
+    r"yts|rarbg|evo|mkv|mp4|avi)",
+    re.I,
+)
 SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
 
 
@@ -60,6 +70,107 @@ def _clean_title(name: str) -> str:
     return base
 
 
+def _parse_name(name: str) -> dict:
+    raw = name or ""
+    cleaned = _clean_title(raw)
+    year = ""
+    m_year = YEAR_RE.search(cleaned)
+    if m_year:
+        year = m_year.group(1)
+        cleaned = cleaned.replace(year, "")
+    quality = _infer_quality(raw)
+    cleaned = QUALITY_RE.sub("", cleaned)
+    cleaned = TRASH_RE.sub("", cleaned)
+    cleaned = re.sub(r"[\[\]\(\)\-]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    season, episode = _season_episode(raw)
+    is_series = bool(SE_RE.search(raw))
+    title = cleaned.title() if cleaned else _clean_title(raw)
+    return {
+        "title": title,
+        "title_key": title.lower(),
+        "year": year,
+        "quality": quality,
+        "is_series": is_series,
+        "season": season,
+        "episode": episode,
+    }
+
+
+async def _tmdb_get(path: str, params: dict) -> dict:
+    if not settings.TMDB_API_KEY:
+        return {}
+    params = params.copy()
+    params["api_key"] = settings.TMDB_API_KEY
+    url = "https://api.themoviedb.org/3" + path + "?" + urllib.parse.urlencode(params)
+    def _fetch():
+        with urllib.request.urlopen(url) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    return await asyncio.to_thread(_fetch)
+
+
+async def _tmdb_search(title: str, year: str, is_series: bool) -> dict:
+    path = "/search/tv" if is_series else "/search/movie"
+    params = {"query": title}
+    if year and not is_series:
+        params["year"] = year
+    if year and is_series:
+        params["first_air_date_year"] = year
+    return await _tmdb_get(path, params)
+
+
+async def _tmdb_details(tmdb_id: int, is_series: bool) -> dict:
+    path = f"/tv/{tmdb_id}" if is_series else f"/movie/{tmdb_id}"
+    return await _tmdb_get(path, {"append_to_response": "videos,credits"})
+
+
+async def _enrich_group(group: dict) -> dict:
+    if not settings.TMDB_API_KEY:
+        return group
+    if group.get("description") or group.get("poster") or group.get("backdrop"):
+        return group
+    search = await _tmdb_search(group["title"], group.get("year", ""), group["type"] == "series")
+    results = (search or {}).get("results") or []
+    if not results:
+        return group
+    pick = results[0]
+    tmdb_id = pick.get("id")
+    if not tmdb_id:
+        return group
+    details = await _tmdb_details(tmdb_id, group["type"] == "series")
+    if not details:
+        return group
+
+    poster = details.get("poster_path")
+    backdrop = details.get("backdrop_path")
+    overview = details.get("overview") or ""
+    year = (details.get("release_date") or details.get("first_air_date") or "")[:4]
+    genres = [g.get("name") for g in details.get("genres", []) if g.get("name")]
+    credits = details.get("credits") or {}
+    cast = [c.get("name") for c in (credits.get("cast") or [])[:8] if c.get("name")]
+    director = ""
+    for crew in credits.get("crew") or []:
+        if crew.get("job") == "Director":
+            director = crew.get("name") or ""
+            break
+    trailer = ""
+    for v in details.get("videos", {}).get("results", []):
+        if v.get("site") == "YouTube" and v.get("type") in ("Trailer", "Teaser"):
+            trailer = f"https://www.youtube.com/watch?v={v.get('key')}"
+            break
+
+    base = "https://image.tmdb.org/t/p/w780"
+    group["poster"] = base + poster if poster else group.get("poster", "")
+    group["backdrop"] = base + backdrop if backdrop else group.get("backdrop", "")
+    group["description"] = overview or group.get("description", "")
+    group["year"] = year or group.get("year", "")
+    group["genres"] = genres or group.get("genres", [])
+    group["actors"] = cast or group.get("actors", [])
+    group["director"] = director or group.get("director", "")
+    group["trailer_url"] = trailer or group.get("trailer_url", "")
+    return group
+
+
 def _series_key(name: str) -> str:
     t = _clean_title(name)
     t = SE_RE.sub("", t)
@@ -77,21 +188,22 @@ def _season_episode(name: str) -> tuple[int, int]:
 
 def _item_card(item: FileSystemItem) -> dict:
     name = item.name or ""
-    item_type = _infer_type(item)
-    season, episode = _season_episode(name)
+    info = _parse_name(name)
+    item_type = "series" if info["is_series"] else "movie"
+    season, episode = info["season"], info["episode"]
     return {
         "id": str(item.id),
         "name": name,
-        "title": _clean_title(name),
+        "title": info["title"],
         "type": item_type,
-        "quality": _infer_quality(name),
+        "quality": info["quality"],
         "season": season,
         "episode": episode,
         "series_key": _series_key(name),
         "poster": getattr(item, "poster_url", "") or "",
         "backdrop": getattr(item, "backdrop_url", "") or "",
         "description": getattr(item, "description", "") or "",
-        "year": getattr(item, "year", "") or "",
+        "year": info["year"] or getattr(item, "year", "") or "",
         "genres": getattr(item, "genres", []) or [],
         "actors": getattr(item, "actors", []) or [],
         "director": getattr(item, "director", "") or "",
@@ -106,6 +218,16 @@ async def _get_link_token() -> str:
         token = TokenSetting(key="link_token", value=str(uuid.uuid4()))
         await token.insert()
     return token.value
+
+
+async def _ensure_share_token(file_id: str) -> str:
+    item = await FileSystemItem.get(file_id)
+    if not item:
+        return ""
+    if not item.share_token:
+        item.share_token = str(uuid.uuid4())
+        await item.save()
+    return item.share_token
 
 
 async def _site_settings() -> SiteSettings:
@@ -141,15 +263,62 @@ async def _fetch_cards(user: User | None, is_admin: bool, limit: int = 300) -> l
     return cards
 
 
+async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -> list[dict]:
+    cards = await _fetch_cards(user, is_admin, limit=limit)
+    groups = {}
+    for c in cards:
+        key = (c["title"].lower(), c["year"], c["type"])
+        if key not in groups:
+            groups[key] = {
+                "id": c["id"],
+                "title": c["title"],
+                "year": c["year"],
+                "type": c["type"],
+                "poster": c["poster"],
+                "backdrop": c["backdrop"],
+                "description": c["description"],
+                "genres": c["genres"],
+                "actors": c["actors"],
+                "director": c["director"],
+                "trailer_url": c["trailer_url"],
+                "qualities": {},
+                "seasons": {},
+                "items": [],
+            }
+        groups[key]["items"].append(c)
+        if c["type"] == "movie":
+            groups[key]["qualities"][c["quality"]] = {"file_id": c["id"], "size": c["size"]}
+        else:
+            season = c["season"]
+            episode = c["episode"]
+            season_bucket = groups[key]["seasons"].setdefault(season, {})
+            ep_bucket = season_bucket.setdefault(episode, {})
+            ep_bucket[c["quality"]] = {"file_id": c["id"], "size": c["size"]}
+    def _quality_rank(q: str) -> int:
+        order = {"2160P": 5, "1440P": 4, "1080P": 3, "720P": 2, "480P": 1, "380P": 0, "360P": 0}
+        return order.get((q or "").upper(), 0)
+
+    result = []
+    for g in groups.values():
+        if g["type"] == "movie":
+            qualities = sorted(g["qualities"].keys(), key=_quality_rank, reverse=True)
+            g["primary_quality"] = qualities[0] if qualities else "HD"
+        else:
+            g["season_count"] = len(g["seasons"])
+            g["primary_quality"] = "S" + str(min(g["seasons"].keys())) if g["seasons"] else "Series"
+        result.append(g)
+    return result
+
+
 @router.get("/")
 async def home_page(request: Request):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
-    cards = await _fetch_cards(user, is_admin, limit=220)
-    movies = [c for c in cards if c["type"] == "movie"][:24]
-    series = [c for c in cards if c["type"] == "series"][:24]
-    trending = cards[:18]
+    catalog = await _build_catalog(user, is_admin, limit=400)
+    movies = [c for c in catalog if c["type"] == "movie"][:24]
+    series = [c for c in catalog if c["type"] == "series"][:24]
+    trending = catalog[:18]
     return templates.TemplateResponse("home.html", {
         "request": request,
         "user": user,
@@ -166,7 +335,7 @@ async def content_all(request: Request, q: str = ""):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
-    cards = await _fetch_cards(user, is_admin, limit=500)
+    cards = await _build_catalog(user, is_admin, limit=800)
     q = (q or "").strip().lower()
     if q:
         cards = [c for c in cards if q in c["title"].lower()]
@@ -187,7 +356,7 @@ async def content_movies(request: Request, q: str = ""):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
-    cards = await _fetch_cards(user, is_admin, limit=500)
+    cards = await _build_catalog(user, is_admin, limit=800)
     cards = [c for c in cards if c["type"] == "movie"]
     q = (q or "").strip().lower()
     if q:
@@ -209,24 +378,18 @@ async def content_series(request: Request, q: str = ""):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
-    cards = await _fetch_cards(user, is_admin, limit=800)
+    cards = await _build_catalog(user, is_admin, limit=1200)
     cards = [c for c in cards if c["type"] == "series"]
     q = (q or "").strip().lower()
     if q:
         cards = [c for c in cards if q in c["title"].lower()]
-    # Collapse duplicates by series key for catalog page.
-    dedup = {}
-    for c in cards:
-        k = c["series_key"] or c["title"].lower()
-        if k not in dedup:
-            dedup[k] = c
     return templates.TemplateResponse("content_list.html", {
         "request": request,
         "user": user,
         "is_admin": is_admin,
         "site": settings_row,
         "title": "Web Series",
-        "cards": list(dedup.values()),
+        "cards": cards,
         "active_tab": "series",
         "query": q,
     })
@@ -236,49 +399,64 @@ async def content_series(request: Request, q: str = ""):
 async def content_details(request: Request, item_id: str):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
-    item = await FileSystemItem.get(item_id)
-    if not item or not _is_video(item):
+    catalog = await _build_catalog(user, is_admin, limit=1500)
+    group = None
+    for g in catalog:
+        if g["id"] == item_id:
+            group = g
+            break
+        for itm in g["items"]:
+            if itm["id"] == item_id:
+                group = g
+                break
+        if group:
+            break
+    if not group:
         raise HTTPException(status_code=404, detail="Content not found")
 
-    query = _content_query(user, is_admin)
-    if query:
-        allowed = False
-        if "$or" in query:
-            for cond in query["$or"]:
-                if cond.get("owner_phone") and item.owner_phone == cond["owner_phone"]:
-                    allowed = True
-                if cond.get("collaborators") and cond["collaborators"] in (item.collaborators or []):
-                    allowed = True
-        else:
-            allowed = item.owner_phone == query.get("owner_phone")
-        if not allowed and not is_admin:
-            return RedirectResponse("/login")
-
     site = await _site_settings()
-    card = _item_card(item)
-    cards = await _fetch_cards(user, is_admin, limit=250)
-    related = []
-    if card["type"] == "series":
-        key = card["series_key"]
-        eps = [c for c in cards if c["type"] == "series" and c["series_key"] == key]
-        eps.sort(key=lambda x: (x["season"], x["episode"]))
-        related = eps
-    else:
-        related = [c for c in cards if c["type"] == "movie" and c["id"] != card["id"]][:14]
-
-    if not item.share_token:
-        item.share_token = str(uuid.uuid4())
-        await item.save()
-    token = item.share_token
+    group = await _enrich_group(group)
     link_token = await _get_link_token()
-    watch_url = f"/w/{token}?t={link_token}&U="
-    telegram_url = f"/t/{token}?t={link_token}&U="
-    download_url = f"/d/{token}?t={link_token}&U="
-    stream_url = f"/player/{item_id}"
+
+    viewer_name = ""
+    if user:
+        viewer_name = user.first_name or user.phone_number
+
+    qualities = []
+    if group["type"] == "movie":
+        for q, v in group["qualities"].items():
+            token = await _ensure_share_token(v["file_id"])
+            qualities.append({
+                "label": q,
+                "size": v["size"],
+                "stream_url": f"/player/{v['file_id']}",
+                "download_url": f"/s/stream/file/{v['file_id']}?download=true",
+                "telegram_url": f"/t/{token}?t={link_token}" if token else "",
+                "watch_url": f"/w/{token}?t={link_token}" if token else "",
+            })
+
+    seasons = []
+    if group["type"] == "series":
+        for s_no, eps in sorted(group["seasons"].items(), key=lambda x: x[0]):
+            # aggregate sizes per quality
+            quality_totals = {}
+            for ep_no, variants in eps.items():
+                for q, v in variants.items():
+                    quality_totals[q] = quality_totals.get(q, 0) + (v["size"] or 0)
+                    if "token" not in v:
+                        v["token"] = await _ensure_share_token(v["file_id"])
+            seasons.append({
+                "season": s_no,
+                "qualities": [
+                    {"label": q, "size": size}
+                    for q, size in sorted(quality_totals.items(), key=lambda x: x[0], reverse=True)
+                ],
+                "episodes": eps,
+            })
 
     watchlisted = False
     if user:
-        found = await WatchlistEntry.find_one(WatchlistEntry.user_phone == user.phone_number, WatchlistEntry.item_id == str(item.id))
+        found = await WatchlistEntry.find_one(WatchlistEntry.user_phone == user.phone_number, WatchlistEntry.item_id == group["id"])
         watchlisted = found is not None
 
     return templates.TemplateResponse("content_details.html", {
@@ -286,14 +464,12 @@ async def content_details(request: Request, item_id: str):
         "user": user,
         "is_admin": is_admin,
         "site": site,
-        "item": card,
-        "episodes": related if card["type"] == "series" else [],
-        "related": related if card["type"] == "movie" else [],
-        "stream_url": stream_url,
-        "download_url": download_url,
-        "telegram_url": telegram_url,
-        "watch_url": watch_url,
+        "item": group,
+        "qualities": qualities,
+        "seasons": seasons,
         "watchlisted": watchlisted,
+        "link_token": link_token,
+        "viewer_name": viewer_name,
     })
 
 
@@ -304,7 +480,7 @@ async def content_search(request: Request, q: str):
     q = (q or "").strip().lower()
     if not q:
         return {"items": []}
-    cards = await _fetch_cards(user, is_admin, limit=600)
+    cards = await _build_catalog(user, is_admin, limit=1200)
     items = [c for c in cards if q in c["title"].lower()]
     return {"items": items[:25]}
 
@@ -334,12 +510,9 @@ async def content_watchlist(request: Request):
     is_admin = _is_admin(user)
     site = await _site_settings()
     rows = await WatchlistEntry.find(WatchlistEntry.user_phone == user.phone_number).sort("-created_at").to_list()
-    ids = [r.item_id for r in rows]
-    cards = []
-    for item_id in ids:
-        item = await FileSystemItem.get(item_id)
-        if item and _is_video(item):
-            cards.append(_item_card(item))
+    ids = {r.item_id for r in rows}
+    cards = await _build_catalog(user, is_admin, limit=1200)
+    cards = [c for c in cards if c["id"] in ids]
     return templates.TemplateResponse("content_list.html", {
         "request": request,
         "user": user,
@@ -377,12 +550,24 @@ async def season_download_page(request: Request, series_key: str, season_no: int
     if not user:
         return RedirectResponse("/login")
     is_admin = _is_admin(user)
-    cards = await _fetch_cards(user, is_admin, limit=1200)
-    season_eps = [
-        c for c in cards
-        if c["type"] == "series" and c["series_key"] == (series_key or "").lower() and c["season"] == season_no
-    ]
-    season_eps.sort(key=lambda x: x["episode"])
+    catalog = await _build_catalog(user, is_admin, limit=1500)
+    season_eps = []
+    for g in catalog:
+        if g["type"] != "series":
+            continue
+        key = (g["title"] or "").lower()
+        if key != (series_key or "").lower():
+            continue
+        for ep_no, variants in g["seasons"].get(season_no, {}).items():
+            for q, v in variants.items():
+                season_eps.append({
+                    "episode": ep_no,
+                    "title": g["title"],
+                    "quality": q,
+                    "id": v["file_id"],
+                    "size": v["size"],
+                })
+    season_eps.sort(key=lambda x: (x["episode"], x["quality"]))
     return templates.TemplateResponse("season_download.html", {
         "request": request,
         "user": user,
