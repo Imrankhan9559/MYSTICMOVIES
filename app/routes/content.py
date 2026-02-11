@@ -24,7 +24,7 @@ YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 TRASH_RE = re.compile(
     r"(x264|x265|h\.?264|h\.?265|hevc|aac|dts|hdrip|webrip|webdl|bluray|brrip|dvdrip|hdts|hdtc|cam|line|"
     r"dual|multi|hindi|english|telugu|tamil|malayalam|punjabi|subbed|subs|proper|repack|uncut|"
-    r"yts|rarbg|evo|mkv|mp4|avi)",
+    r"yts|rarbg|evo|hdhub4u|hdhub|v1|v2|v3|mkv|mp4|avi)",
     re.I,
 )
 SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
@@ -175,6 +175,10 @@ async def _enrich_group(group: dict) -> dict:
             trailer = f"https://www.youtube.com/watch?v={v.get('key')}"
             break
 
+    tmdb_title = details.get("name") if group["type"] == "series" else details.get("title")
+    if tmdb_title:
+        group["title"] = tmdb_title
+
     base = "https://image.tmdb.org/t/p/w780"
     group["poster"] = base + poster if poster else group.get("poster", "")
     group["backdrop"] = base + backdrop if backdrop else group.get("backdrop", "")
@@ -204,7 +208,9 @@ async def _persist_group_metadata(group: dict):
         update["director"] = group["director"]
     if group.get("trailer_url"):
         update["trailer_url"] = group["trailer_url"]
-    if not update:
+    title_value = (group.get("title") or "").strip()
+    group_type = (group.get("type") or "").strip().lower()
+    if not update and not title_value and not group_type:
         return
 
     for item in group.get("items", []):
@@ -212,6 +218,21 @@ async def _persist_group_metadata(group: dict):
         if not db_item:
             continue
         changed = False
+        if group_type in ("movie", "series") and not getattr(db_item, "catalog_type", ""):
+            db_item.catalog_type = group_type
+            changed = True
+        if title_value:
+            if group_type == "series":
+                if not getattr(db_item, "series_title", ""):
+                    db_item.series_title = title_value
+                    changed = True
+                if not getattr(db_item, "title", ""):
+                    db_item.title = title_value
+                    changed = True
+            else:
+                if not getattr(db_item, "title", ""):
+                    db_item.title = title_value
+                    changed = True
         if update.get("poster_url") and not getattr(db_item, "poster_url", ""):
             db_item.poster_url = update["poster_url"]
             changed = True
@@ -267,21 +288,27 @@ def _season_episode(name: str) -> tuple[int, int]:
 def _item_card(item: FileSystemItem) -> dict:
     name = item.name or ""
     info = _parse_name(name)
-    item_type = "series" if info["is_series"] else "movie"
-    season, episode = info["season"], info["episode"]
+    catalog_type = (getattr(item, "catalog_type", "") or "").lower().strip()
+    item_type = catalog_type if catalog_type in ("movie", "series") else ("series" if info["is_series"] else "movie")
+    season = getattr(item, "season", None) or info["season"]
+    episode = getattr(item, "episode", None) or info["episode"]
+    quality = getattr(item, "quality", "") or info["quality"]
+    title_override = getattr(item, "title", "") or ""
+    series_title = getattr(item, "series_title", "") or ""
+    display_title = series_title or title_override or info["title"]
     return {
         "id": str(item.id),
         "name": name,
-        "title": info["title"],
+        "title": display_title,
         "type": item_type,
-        "quality": info["quality"],
+        "quality": quality,
         "season": season,
         "episode": episode,
-        "series_key": _series_key(name),
+        "series_key": _series_key(series_title or display_title or name),
         "poster": getattr(item, "poster_url", "") or "",
         "backdrop": getattr(item, "backdrop_url", "") or "",
         "description": getattr(item, "description", "") or "",
-        "year": info["year"] or getattr(item, "year", "") or "",
+        "year": (getattr(item, "year", "") or info["year"] or ""),
         "genres": getattr(item, "genres", []) or [],
         "actors": getattr(item, "actors", []) or [],
         "director": getattr(item, "director", "") or "",
@@ -404,6 +431,17 @@ async def _build_file_links(items: list[dict], link_token: str, viewer_name: str
     for item in ordered:
         if len(links) >= limit:
             break
+        quality = (item.get("quality") or "").upper()
+        label = quality or ""
+        if item.get("type") == "series":
+            season = int(item.get("season") or 0)
+            episode = int(item.get("episode") or 0)
+            if season and episode:
+                label = f"S{season:02d}E{episode:02d} {quality or 'HD'}"
+            else:
+                label = quality or item.get("name") or "Episode"
+        if not label:
+            label = item.get("name") or "File"
         token = ""
         query = ""
         if needs_links:
@@ -413,7 +451,7 @@ async def _build_file_links(items: list[dict], link_token: str, viewer_name: str
             query = f"?{params}" if params else ""
         links.append({
             "name": item.get("name") or item.get("title") or "File",
-            "label": item.get("quality") or item.get("name") or "File",
+            "label": label,
             "view_url": f"/s/{token}{query}" if needs_links else "",
             "download_url": f"/d/{token}{query}" if needs_links else "",
             "telegram_url": f"/t/{token}{query}" if needs_links else "",
