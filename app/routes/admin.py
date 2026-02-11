@@ -9,7 +9,7 @@ from fastapi.templating import Jinja2Templates
 from beanie.operators import In, Or
 from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting, SiteSettings, ContentRequest
 from app.routes.dashboard import get_current_user, _cast_ids, _clone_parts, _build_search_regex
-from app.routes.content import refresh_tmdb_metadata, _parse_name, _tmdb_get
+from app.routes.content import refresh_tmdb_metadata, _parse_name, _tmdb_get, _ensure_group_assets
 from app.core.config import settings
 from app.core.telegram_bot import pool_status, reload_bot_pool, speed_test, _get_pool_tokens
 from app.utils.file_utils import format_size
@@ -238,6 +238,17 @@ async def _group_published_catalog() -> list[dict]:
         _summarize_group(g)
     return sorted(groups.values(), key=lambda g: g["title"].lower())
 
+
+async def _find_group_by_item_id(item_id: str) -> dict | None:
+    groups = await _group_published_catalog()
+    for g in groups:
+        if g.get("id") == item_id:
+            return g
+        for itm in g.get("items", []):
+            if itm.get("id") == item_id:
+                return g
+    return None
+
 @router.get("/admin")
 async def admin_redirect(request: Request):
     return RedirectResponse("/dashboard")
@@ -375,6 +386,10 @@ async def publish_content(request: Request):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
     published_groups = await _group_published_catalog()
+    if settings.TMDB_API_KEY:
+        for g in published_groups[:24]:
+            if not g.get("poster") and not g.get("backdrop"):
+                await _ensure_group_assets(g)
     site = await _site_settings()
     return templates.TemplateResponse("publish_content.html", {
         "request": request,
@@ -392,53 +407,11 @@ async def publish_content_edit(request: Request, group_id: str):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
-    base_item = await FileSystemItem.get(group_id)
-    if not base_item or base_item.catalog_status != "published":
+    group = await _find_group_by_item_id(group_id)
+    if not group:
         return RedirectResponse("/dashboard/publish-content", status_code=303)
-
-    group_type = (getattr(base_item, "catalog_type", "") or "movie").strip().lower()
-    group_title = (base_item.title or base_item.series_title or "").strip()
-    if not group_title:
-        return RedirectResponse("/dashboard/publish-content", status_code=303)
-
-    items = await FileSystemItem.find(
-        FileSystemItem.catalog_status == "published",
-        FileSystemItem.catalog_type == group_type,
-        Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
-    ).to_list()
-
-    group = {
-        "id": str(base_item.id),
-        "title": group_title,
-        "year": base_item.year or "",
-        "type": group_type,
-        "poster": base_item.poster_url or "",
-        "backdrop": base_item.backdrop_url or "",
-        "description": base_item.description or "",
-        "genres": base_item.genres or [],
-        "actors": base_item.actors or [],
-        "director": base_item.director or "",
-        "trailer_url": base_item.trailer_url or "",
-        "trailer_key": base_item.trailer_key or "",
-        "release_date": base_item.release_date or "",
-        "items": [],
-    }
-    for item in items:
-        info = _parse_name(item.name or "")
-        quality = getattr(item, "quality", "") or info["quality"]
-        season = getattr(item, "season", None) or info["season"]
-        episode = getattr(item, "episode", None) or info["episode"]
-        group["items"].append({
-            "id": str(item.id),
-            "name": item.name,
-            "size": item.size or 0,
-            "size_label": format_size(item.size or 0),
-            "quality": quality,
-            "season": season,
-            "episode": episode,
-            "episode_title": getattr(item, "episode_title", "") or ""
-        })
-    _summarize_group(group)
+    if settings.TMDB_API_KEY:
+        await _ensure_group_assets(group)
     site = await _site_settings()
     return templates.TemplateResponse("publish_content_edit.html", {
         "request": request,
@@ -473,11 +446,11 @@ async def publish_content_update(
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
-    base_item = await FileSystemItem.get(group_id) if group_id else None
-    if base_item:
-        group_title = (base_item.title or base_item.series_title or group_title or "").strip()
-        group_type = (getattr(base_item, "catalog_type", "") or group_type or "movie").strip().lower()
-        group_year = (base_item.year or group_year or "").strip()
+    group = await _find_group_by_item_id(group_id) if group_id else None
+    if group:
+        group_title = (group.get("title") or group_title or "").strip()
+        group_type = (group.get("type") or group_type or "movie").strip().lower()
+        group_year = (group.get("year") or group_year or "").strip()
     group_title = (group_title or "").strip()
     group_type = (group_type or "movie").strip().lower()
     group_year = (group_year or "").strip()
@@ -496,11 +469,17 @@ async def publish_content_update(
     backdrop_url = (backdrop_url or "").strip()
     release_date = (release_date or "").strip()
 
-    items = await FileSystemItem.find(
-        FileSystemItem.catalog_status == "published",
-        FileSystemItem.catalog_type == group_type,
-        Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
-    ).to_list()
+    items = []
+    if group and group.get("items"):
+        ids = [i.get("id") for i in group["items"] if i.get("id")]
+        if ids:
+            items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(ids))).to_list()
+    if not items:
+        items = await FileSystemItem.find(
+            FileSystemItem.catalog_status == "published",
+            FileSystemItem.catalog_type == group_type,
+            Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
+        ).to_list()
     for item in items:
         item.title = new_title
         if group_type == "series":
@@ -519,11 +498,12 @@ async def publish_content_update(
 
     # Rename catalog folder if title changed
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
-    if admin_phone and new_title != group_title:
+    old_title = group_title
+    if admin_phone and new_title != old_title:
         root_name = "Movies" if group_type == "movie" else "Web Series"
         root = await _find_folder(admin_phone, root_name, None)
         if root:
-            target_folder = await _find_folder(admin_phone, group_title, str(root.id))
+            target_folder = await _find_folder(admin_phone, old_title, str(root.id))
             if target_folder:
                 target_folder.name = new_title
                 await target_folder.save()
@@ -607,20 +587,25 @@ async def publish_content_delete(
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
-    base_item = await FileSystemItem.get(group_id) if group_id else None
-    if base_item:
-        group_title = (base_item.title or base_item.series_title or group_title or "").strip()
-        group_type = (getattr(base_item, "catalog_type", "") or group_type or "movie").strip().lower()
+    group = await _find_group_by_item_id(group_id) if group_id else None
+    if group:
+        group_title = (group.get("title") or group_title or "").strip()
+        group_type = (group.get("type") or group_type or "movie").strip().lower()
     group_title = (group_title or "").strip()
     group_type = (group_type or "movie").strip().lower()
     if not group_title:
         return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
-    await FileSystemItem.find(
-        FileSystemItem.catalog_status == "published",
-        FileSystemItem.catalog_type == group_type,
-        Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
-    ).delete()
+    if group and group.get("items"):
+        ids = [i.get("id") for i in group["items"] if i.get("id")]
+        if ids:
+            await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(ids))).delete()
+    else:
+        await FileSystemItem.find(
+            FileSystemItem.catalog_status == "published",
+            FileSystemItem.catalog_type == group_type,
+            Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
+        ).delete()
 
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     if admin_phone:
