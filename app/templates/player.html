@@ -4,7 +4,7 @@
     
     <div class="w-full max-w-6xl flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-4 bg-gray-800 p-4 rounded-t-lg border-b border-red-600">
         <h2 class="text-xl font-bold text-white truncate max-w-md">{{ item.name }}</h2>
-        <a href="/dashboard?folder_id={{ item.parent_id if item.parent_id else '' }}" class="text-gray-400 hover:text-white transition self-end sm:self-auto">
+        <a href="/storage?folder_id={{ item.parent_id if item.parent_id else '' }}" class="text-gray-400 hover:text-white transition self-end sm:self-auto">
             <i class="fas fa-times text-xl"></i> Close
         </a>
     </div>

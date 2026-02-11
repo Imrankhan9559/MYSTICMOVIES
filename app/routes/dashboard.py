@@ -489,12 +489,14 @@ async def process_telegram_upload(job_id: str, file_path: str, filename: str, mi
 @router.get("/")
 async def root(): return RedirectResponse(url="/content")
 
-# --- DASHBOARD ---
+# --- STORAGE ---
 @router.get("/storage")
 async def dashboard(request: Request, folder_id: Optional[str] = None):
     user = await get_current_user(request)
     if not user: return RedirectResponse("/login")
     is_admin = _is_admin(user)
+    if not is_admin:
+        return RedirectResponse("/content")
     search_query = (request.query_params.get("q") or "").strip()
     if folder_id == "None" or folder_id == "": folder_id = None
     raw_scope = (request.query_params.get("scope") or "").strip().lower()
@@ -710,6 +712,8 @@ async def upload_page(request: Request, folder_id: Optional[str] = None):
     user = await get_current_user(request)
     if not user: return RedirectResponse("/login")
     is_admin = _is_admin(user)
+    if not is_admin:
+        return RedirectResponse("/content")
     user_jobs = {k: v for k, v in upload_jobs.items() if v.get("owner") == user.phone_number}
     return templates.TemplateResponse("upload.html", {"request": request, "folder_id": folder_id, "user": user, "jobs": user_jobs, "is_admin": is_admin})
 
@@ -717,6 +721,8 @@ async def upload_page(request: Request, folder_id: Optional[str] = None):
 async def upload_file(request: Request, background_tasks: BackgroundTasks, file: UploadFile = File(...), parent_id: str = Form(""), relative_path: str = Form("")):
     user = await get_current_user(request)
     if not user: return JSONResponse({"error": "Unauthorized"}, 401)
+    if not _is_admin(user):
+        return JSONResponse({"error": "Unauthorized"}, 403)
 
     try:
         # Clean Filename (No paths)
@@ -747,6 +753,8 @@ async def upload_file(request: Request, background_tasks: BackgroundTasks, file:
 async def get_upload_status(request: Request):
     user = await get_current_user(request)
     if not user: return JSONResponse({})
+    if not _is_admin(user):
+        return JSONResponse({})
     user_jobs = {k: v for k, v in upload_jobs.items() if v.get("owner") == user.phone_number}
     return JSONResponse(user_jobs)
 
