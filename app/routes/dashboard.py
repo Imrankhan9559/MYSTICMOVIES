@@ -28,6 +28,15 @@ templates = Jinja2Templates(directory="app/templates")
 mimetypes.init()
 logger = logging.getLogger(__name__)
 ITEMS_PAGE_SIZE = 200
+QUALITY_RE = re.compile(r"(2160p|1440p|1080p|720p|480p|380p|360p)", re.I)
+YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
+TRASH_RE = re.compile(
+    r"(x264|x265|h\.?264|h\.?265|hevc|aac|dts|hdrip|webrip|webdl|bluray|brrip|dvdrip|hdts|hdtc|cam|line|"
+    r"dual|multi|hindi|english|telugu|tamil|malayalam|punjabi|subbed|subs|proper|repack|uncut|"
+    r"yts|rarbg|evo|hdhub4u|hdhub|v1|v2|v3|mkv|mp4|avi)",
+    re.I,
+)
+SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
 
 # --- IN-MEMORY JOB TRACKER ---
 upload_jobs: Dict[str, dict] = {}
@@ -51,6 +60,47 @@ def _normalize_phone(phone: str) -> str:
 
 def _natural_key(value: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", value or "")]
+
+def _clean_title(name: str) -> str:
+    base = re.sub(r"\.[^.]+$", "", name or "")
+    base = re.sub(r"[._]+", " ", base)
+    base = re.sub(r"\s+", " ", base).strip()
+    return base
+
+def _infer_quality(name: str) -> str:
+    m = QUALITY_RE.search(name or "")
+    return m.group(1).upper() if m else "HD"
+
+def _season_episode(name: str) -> tuple[int, int]:
+    m = SE_RE.search(name or "")
+    if not m:
+        return 1, 1
+    return int(m.group(1)), int(m.group(2))
+
+def _parse_catalog_name(name: str) -> dict:
+    raw = name or ""
+    cleaned = _clean_title(raw)
+    year = ""
+    m_year = YEAR_RE.search(cleaned)
+    if m_year:
+        year = m_year.group(1)
+        cleaned = cleaned.replace(year, "")
+    quality = _infer_quality(raw)
+    cleaned = QUALITY_RE.sub("", cleaned)
+    cleaned = TRASH_RE.sub("", cleaned)
+    cleaned = re.sub(r"[\[\]\(\)\-]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    season, episode = _season_episode(raw)
+    is_series = bool(SE_RE.search(raw))
+    title = cleaned.title() if cleaned else _clean_title(raw)
+    return {
+        "title": title,
+        "year": year,
+        "quality": quality,
+        "is_series": is_series,
+        "season": season,
+        "episode": episode,
+    }
 
 async def _get_link_token() -> str:
     token = await TokenSetting.find_one(TokenSetting.key == "link_token")
@@ -191,7 +241,9 @@ async def _sync_storage_folder(folder: FileSystemItem, limit: int | None = 200) 
 
     existing_items = await FileSystemItem.find(FileSystemItem.parent_id == str(folder.id)).to_list()
     existing_ids = set()
+    existing_name_size = set()
     for item in existing_items:
+        existing_name_size.add(((item.name or "").lower(), int(item.size or 0)))
         for part in item.parts or []:
             if part and getattr(part, "message_id", None):
                 existing_ids.add(part.message_id)
@@ -218,6 +270,17 @@ async def _sync_storage_folder(folder: FileSystemItem, limit: int | None = 200) 
 
             size = getattr(file_obj, "file_size", 0) or 0
             file_id = getattr(file_obj, "file_id", None) or str(msg_id)
+            key = ((name or "").lower(), int(size))
+            if key in existing_name_size:
+                continue
+
+            info = _parse_catalog_name(name)
+            catalog_type = "series" if info["is_series"] else "movie"
+            title = info["title"]
+            year = info["year"]
+            quality = info["quality"]
+            season = info["season"]
+            episode = info["episode"]
 
             new_file = FileSystemItem(
                 name=name,
@@ -227,6 +290,13 @@ async def _sync_storage_folder(folder: FileSystemItem, limit: int | None = 200) 
                 size=size,
                 mime_type=mime_type,
                 source="storage",
+                catalog_type=catalog_type,
+                title=title,
+                series_title=title if catalog_type == "series" else "",
+                year=year,
+                quality=quality,
+                season=season if catalog_type == "series" else None,
+                episode=episode if catalog_type == "series" else None,
                 parts=[FilePart(
                     telegram_file_id=str(file_id),
                     message_id=msg_id,
@@ -236,6 +306,7 @@ async def _sync_storage_folder(folder: FileSystemItem, limit: int | None = 200) 
                 )]
             )
             await new_file.insert()
+            existing_name_size.add(key)
             count += 1
     except Exception as e:
         logger.warning(f"Storage sync failed: {e}")

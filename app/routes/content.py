@@ -557,7 +557,8 @@ async def home_page(request: Request):
     series = [c for c in catalog if c["type"] == "series"][:24]
     trending = catalog[:18]
     display_groups = trending + movies + series
-    await _warm_group_assets(display_groups, limit=len(display_groups))
+    # Warm TMDB in background to keep homepage fast
+    asyncio.create_task(_warm_group_assets(display_groups, limit=12))
     seen = set()
     for group in display_groups:
         gid = group.get("id")
@@ -582,10 +583,16 @@ async def content_all(request: Request, q: str = ""):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
+    link_token = await _get_link_token()
+    viewer_name = _viewer_name(user)
     cards = await _build_catalog(user, is_admin, limit=800)
     q = (q or "").strip().lower()
     if q:
         cards = [c for c in cards if q in c["title"].lower()]
+    asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
+    for c in cards:
+        c["files"] = await _build_file_links(c.get("items", []), link_token, viewer_name, limit=3)
+        c["primary_link"] = c["files"][0]["view_url"] if c.get("files") else ""
     return templates.TemplateResponse("content_list.html", {
         "request": request,
         "user": user,
@@ -603,11 +610,17 @@ async def content_movies(request: Request, q: str = ""):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
+    link_token = await _get_link_token()
+    viewer_name = _viewer_name(user)
     cards = await _build_catalog(user, is_admin, limit=800)
     cards = [c for c in cards if c["type"] == "movie"]
     q = (q or "").strip().lower()
     if q:
         cards = [c for c in cards if q in c["title"].lower()]
+    asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
+    for c in cards:
+        c["files"] = await _build_file_links(c.get("items", []), link_token, viewer_name, limit=3)
+        c["primary_link"] = c["files"][0]["view_url"] if c.get("files") else ""
     return templates.TemplateResponse("content_list.html", {
         "request": request,
         "user": user,
@@ -625,11 +638,17 @@ async def content_series(request: Request, q: str = ""):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
+    link_token = await _get_link_token()
+    viewer_name = _viewer_name(user)
     cards = await _build_catalog(user, is_admin, limit=1200)
     cards = [c for c in cards if c["type"] == "series"]
     q = (q or "").strip().lower()
     if q:
         cards = [c for c in cards if q in c["title"].lower()]
+    asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
+    for c in cards:
+        c["files"] = await _build_file_links(c.get("items", []), link_token, viewer_name, limit=3)
+        c["primary_link"] = c["files"][0]["view_url"] if c.get("files") else ""
     return templates.TemplateResponse("content_list.html", {
         "request": request,
         "user": user,
