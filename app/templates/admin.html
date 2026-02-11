@@ -29,6 +29,32 @@
     </div>
 
     <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+                <div class="text-xs uppercase text-gray-500 font-bold">TMDB Metadata</div>
+                {% if tmdb_configured %}
+                    <div class="text-green-400 font-semibold">TMDB_API_KEY configured</div>
+                {% else %}
+                    <div class="text-red-400 font-semibold">TMDB_API_KEY missing</div>
+                    <div class="text-xs text-gray-500 mt-1">Set it in `.env` (local) or Render Environment Variables.</div>
+                {% endif %}
+                {% if tmdb_status == "refresh_started" %}
+                    <div class="text-xs text-yellow-300 mt-1">Refresh started. Check a content page in 1-2 minutes.</div>
+                {% elif tmdb_status == "missing" %}
+                    <div class="text-xs text-red-300 mt-1">Cannot refresh without TMDB_API_KEY.</div>
+                {% endif %}
+            </div>
+            <div class="flex flex-wrap gap-2">
+                <form action="/admin/tmdb/refresh" method="post">
+                    <button type="submit" class="px-4 py-2 bg-yellow-500 hover:bg-yellow-400 rounded text-black text-xs font-bold" {% if not tmdb_configured %}disabled{% endif %}>
+                        Refresh TMDB Metadata
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
         <div class="flex flex-col lg:flex-row lg:items-start gap-6">
             <div class="flex-1">
                 <div class="flex items-center justify-between mb-3">

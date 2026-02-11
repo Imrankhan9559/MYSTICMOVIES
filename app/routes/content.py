@@ -163,16 +163,41 @@ async def _enrich_group(group: dict) -> dict:
     year = (details.get("release_date") or details.get("first_air_date") or "")[:4]
     genres = [g.get("name") for g in details.get("genres", []) if g.get("name")]
     credits = details.get("credits") or {}
-    cast = [c.get("name") for c in (credits.get("cast") or [])[:8] if c.get("name")]
+    cast_rows = credits.get("cast") or []
+    cast = [c.get("name") for c in cast_rows[:8] if c.get("name")]
+    profile_base = "https://image.tmdb.org/t/p/w185"
+    cast_profiles = []
+    for c in cast_rows[:12]:
+        name = c.get("name") or ""
+        if not name:
+            continue
+        role = c.get("character") or ""
+        profile_path = c.get("profile_path")
+        image = profile_base + profile_path if profile_path else ""
+        cast_profiles.append({"name": name, "role": role, "image": image})
+
     director = ""
     for crew in credits.get("crew") or []:
         if crew.get("job") == "Director":
             director = crew.get("name") or ""
             break
+    if not director and group["type"] == "series":
+        created_by = details.get("created_by") or []
+        if created_by:
+            director = created_by[0].get("name") or ""
+        if not director:
+            for crew in credits.get("crew") or []:
+                if crew.get("job") in ("Creator", "Executive Producer"):
+                    director = crew.get("name") or ""
+                    break
+
     trailer = ""
+    trailer_key = ""
     for v in details.get("videos", {}).get("results", []):
         if v.get("site") == "YouTube" and v.get("type") in ("Trailer", "Teaser"):
-            trailer = f"https://www.youtube.com/watch?v={v.get('key')}"
+            trailer_key = v.get("key") or ""
+            if trailer_key:
+                trailer = f"https://www.youtube.com/watch?v={trailer_key}"
             break
 
     tmdb_title = details.get("name") if group["type"] == "series" else details.get("title")
@@ -188,6 +213,9 @@ async def _enrich_group(group: dict) -> dict:
     group["actors"] = cast or group.get("actors", [])
     group["director"] = director or group.get("director", "")
     group["trailer_url"] = trailer or group.get("trailer_url", "")
+    if trailer_key:
+        group["trailer_key"] = trailer_key
+    group["cast_profiles"] = cast_profiles or group.get("cast_profiles", [])
     return group
 
 async def _persist_group_metadata(group: dict):
@@ -208,6 +236,10 @@ async def _persist_group_metadata(group: dict):
         update["director"] = group["director"]
     if group.get("trailer_url"):
         update["trailer_url"] = group["trailer_url"]
+    if group.get("trailer_key"):
+        update["trailer_key"] = group["trailer_key"]
+    if group.get("cast_profiles"):
+        update["cast_profiles"] = group["cast_profiles"]
     title_value = (group.get("title") or "").strip()
     group_type = (group.get("type") or "").strip().lower()
     if not update and not title_value and not group_type:
@@ -226,11 +258,15 @@ async def _persist_group_metadata(group: dict):
                 if not getattr(db_item, "series_title", ""):
                     db_item.series_title = title_value
                     changed = True
-                if not getattr(db_item, "title", ""):
+                current_title = getattr(db_item, "title", "") or ""
+                parsed_title = _parse_name(db_item.name or "").get("title", "")
+                if not current_title or current_title.strip().lower() == parsed_title.strip().lower():
                     db_item.title = title_value
                     changed = True
             else:
-                if not getattr(db_item, "title", ""):
+                current_title = getattr(db_item, "title", "") or ""
+                parsed_title = _parse_name(db_item.name or "").get("title", "")
+                if not current_title or current_title.strip().lower() == parsed_title.strip().lower():
                     db_item.title = title_value
                     changed = True
         if update.get("poster_url") and not getattr(db_item, "poster_url", ""):
@@ -257,17 +293,52 @@ async def _persist_group_metadata(group: dict):
         if update.get("trailer_url") and not getattr(db_item, "trailer_url", ""):
             db_item.trailer_url = update["trailer_url"]
             changed = True
+        if update.get("trailer_key") and not getattr(db_item, "trailer_key", ""):
+            db_item.trailer_key = update["trailer_key"]
+            changed = True
+        if update.get("cast_profiles") and not getattr(db_item, "cast_profiles", []):
+            db_item.cast_profiles = update["cast_profiles"]
+            changed = True
         if changed:
             await db_item.save()
 
 async def _ensure_group_assets(group: dict) -> dict:
     if not settings.TMDB_API_KEY:
         return group
-    if group.get("description") or group.get("poster") or group.get("backdrop"):
+    missing = (
+        not group.get("description")
+        or not group.get("poster")
+        or not group.get("backdrop")
+        or not group.get("genres")
+        or not group.get("actors")
+        or not group.get("director")
+        or not group.get("trailer_url")
+        or not group.get("cast_profiles")
+    )
+    if not missing:
         return group
     await _enrich_group(group)
     await _persist_group_metadata(group)
     return group
+
+async def refresh_tmdb_metadata(limit: int | None = None) -> dict:
+    if not settings.TMDB_API_KEY:
+        return {"ok": False, "error": "TMDB_API_KEY not configured"}
+    try:
+        max_limit = limit if limit is not None else 2000
+        catalog = await _build_catalog(None, True, limit=max_limit)
+        updated = 0
+        total = 0
+        for group in catalog:
+            total += 1
+            before = bool(group.get("poster") or group.get("backdrop") or group.get("description"))
+            await _ensure_group_assets(group)
+            after = bool(group.get("poster") or group.get("backdrop") or group.get("description"))
+            if after and not before:
+                updated += 1
+        return {"ok": True, "updated": updated, "total": total}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def _series_key(name: str) -> str:
@@ -313,6 +384,8 @@ def _item_card(item: FileSystemItem) -> dict:
         "actors": getattr(item, "actors", []) or [],
         "director": getattr(item, "director", "") or "",
         "trailer_url": getattr(item, "trailer_url", "") or "",
+        "trailer_key": getattr(item, "trailer_key", "") or "",
+        "cast_profiles": getattr(item, "cast_profiles", []) or [],
         "size": item.size or 0,
     }
 

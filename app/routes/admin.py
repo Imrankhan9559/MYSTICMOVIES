@@ -1,4 +1,5 @@
 from datetime import datetime
+import asyncio
 import uuid
 from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
@@ -6,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 from beanie.operators import In
 from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting, SiteSettings, ContentRequest
 from app.routes.dashboard import get_current_user, _cast_ids
+from app.routes.content import refresh_tmdb_metadata
 from app.core.config import settings
 from app.core.telegram_bot import pool_status, reload_bot_pool, speed_test, _get_pool_tokens
 
@@ -54,12 +56,16 @@ async def admin_panel(request: Request):
     pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").limit(50).to_list()
     content_items = await FileSystemItem.find(FileSystemItem.is_folder == False).sort("-created_at").limit(120).to_list()
 
+    tmdb_configured = bool(getattr(settings, "TMDB_API_KEY", ""))
+    tmdb_status = (request.query_params.get("tmdb") or "").strip().lower()
+
     return templates.TemplateResponse("admin.html", {
         "request": request, "total_users": total_users, "total_files": total_files, 
         "users": all_users, "user_email": user.phone_number, "pending_users": pending_users,
         "recent_progress": recent_progress, "is_admin": True, "user": user, "link_token": link_token, "items_map": items_map,
         "bots": bots, "pool_tokens": pool_tokens, "speed_result": None, "site": site,
-        "pending_content_requests": pending_requests, "content_items": content_items
+        "pending_content_requests": pending_requests, "content_items": content_items,
+        "tmdb_configured": tmdb_configured, "tmdb_status": tmdb_status
     })
 
 @router.post("/admin/token/regenerate")
@@ -115,13 +121,27 @@ async def admin_speed_test(request: Request):
     site = await _site_settings()
     pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").limit(50).to_list()
     content_items = await FileSystemItem.find(FileSystemItem.is_folder == False).sort("-created_at").limit(120).to_list()
+    tmdb_configured = bool(getattr(settings, "TMDB_API_KEY", ""))
+    tmdb_status = (request.query_params.get("tmdb") or "").strip().lower()
     return templates.TemplateResponse("admin.html", {
         "request": request, "total_users": total_users, "total_files": total_files, 
         "users": all_users, "user_email": user.phone_number, "pending_users": pending_users,
         "recent_progress": recent_progress, "is_admin": True, "user": user, "link_token": link_token, "items_map": items_map,
         "bots": bots, "pool_tokens": pool_tokens, "speed_result": result, "site": site,
-        "pending_content_requests": pending_requests, "content_items": content_items
+        "pending_content_requests": pending_requests, "content_items": content_items,
+        "tmdb_configured": tmdb_configured, "tmdb_status": tmdb_status
     })
+
+@router.post("/admin/tmdb/refresh")
+async def admin_refresh_tmdb(request: Request):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    if not getattr(settings, "TMDB_API_KEY", ""):
+        return RedirectResponse("/admin?tmdb=missing", status_code=303)
+    # Fire-and-forget; refresh can take time for large catalogs.
+    asyncio.create_task(refresh_tmdb_metadata(limit=None))
+    return RedirectResponse("/admin?tmdb=refresh_started", status_code=303)
 
 @router.get("/settings")
 async def admin_settings_redirect(request: Request):
