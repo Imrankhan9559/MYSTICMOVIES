@@ -18,7 +18,7 @@
             <div class="text-[11px] text-gray-400 mt-1">{{ item.year }}</div>
             {% endif %}
         </div>
-        <a href="/content/details/{{ item.id }}" class="absolute inset-0" aria-label="Open {{ item.title }}"></a>
+        <a href="/content/details/{{ item.slug }}" class="absolute inset-0" aria-label="Open {{ item.title }}"></a>
     </div>
     <div class="p-3 space-y-1">
         {% if item.files and item.files|length > 0 %}

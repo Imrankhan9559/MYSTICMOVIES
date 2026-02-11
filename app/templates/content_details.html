@@ -33,13 +33,13 @@
                 <button data-item-id="{{ item.id }}" id="watchlistToggle" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">
                     <i class="fas fa-bookmark mr-2"></i>{{ "Remove Watchlist" if watchlisted else "Add Watchlist" }}
                 </button>
-                {% if item.trailer_url %}
-                <a href="{{ item.trailer_url }}" target="_blank" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">
-                    <i class="fas fa-video mr-2"></i>Trailer
-                </a>
-                {% endif %}
                 {% else %}
                 <a href="/login" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">Login to Watch</a>
+                {% endif %}
+                {% if item.trailer_embed or item.trailer_url %}
+                <a href="#trailer" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">
+                    <i class="fas fa-video mr-2"></i>Trailer
+                </a>
                 {% endif %}
             </div>
             <div class="mt-5 text-xs text-gray-400 flex flex-wrap gap-2">
@@ -81,13 +81,13 @@
             </div>
             {% endif %}
 
-            {% if item.trailer_key or item.trailer_url %}
-            <div class="mt-6">
+            {% if item.trailer_embed or item.trailer_url %}
+            <div class="mt-6" id="trailer">
                 <h3 class="text-sm font-semibold text-white mb-3">Trailer</h3>
-                {% if item.trailer_key %}
+                {% if item.trailer_embed %}
                 <div class="aspect-video rounded-xl overflow-hidden border border-gray-800 bg-black">
                     <iframe
-                        src="https://www.youtube.com/embed/{{ item.trailer_key }}"
+                        src="https://www.youtube.com/embed/{{ item.trailer_embed }}"
                         title="Trailer"
                         frameborder="0"
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -166,12 +166,23 @@ const watchBtn = document.getElementById("watchlistToggle");
 if (watchBtn) {
     watchBtn.addEventListener("click", async () => {
         const itemId = watchBtn.dataset.itemId;
-        const res = await fetch(`/content/watchlist/toggle/${itemId}`, { method: "POST" });
-        const data = await res.json();
-        if (data.status === "added") {
-            watchBtn.innerHTML = '<i class="fas fa-bookmark mr-2"></i>Remove Watchlist';
-        } else if (data.status === "removed") {
-            watchBtn.innerHTML = '<i class="fas fa-bookmark mr-2"></i>Add Watchlist';
+        try {
+            const res = await fetch(`/content/watchlist/toggle/${itemId}`, { method: "POST", credentials: "same-origin" });
+            if (!res.ok) {
+                if (res.status === 401) {
+                    window.location.href = "/login";
+                    return;
+                }
+                return;
+            }
+            const data = await res.json();
+            if (data.status === "added") {
+                watchBtn.innerHTML = '<i class="fas fa-bookmark mr-2"></i>Remove Watchlist';
+            } else if (data.status === "removed") {
+                watchBtn.innerHTML = '<i class="fas fa-bookmark mr-2"></i>Add Watchlist';
+            }
+        } catch (e) {
+            return;
         }
     });
 }

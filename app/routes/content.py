@@ -365,6 +365,39 @@ def _season_episode(name: str) -> tuple[int, int]:
     return int(m.group(1)), int(m.group(2))
 
 
+def _slugify(text: str) -> str:
+    value = (text or "").strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    return value.strip("-")
+
+
+def _group_slug(title: str, year: str) -> str:
+    base = _slugify(title)
+    year = (year or "").strip()
+    if year:
+        return f"{base}-{year}"
+    return base
+
+
+def _youtube_key(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.netloc or "").lower()
+        if "youtu.be" in host:
+            return parsed.path.lstrip("/")
+        if "youtube" in host:
+            if parsed.path.startswith("/embed/"):
+                return parsed.path.split("/embed/")[-1]
+            params = urllib.parse.parse_qs(parsed.query)
+            if "v" in params and params["v"]:
+                return params["v"][0]
+    except Exception:
+        return ""
+    return ""
+
+
 def _item_card(item: FileSystemItem) -> dict:
     name = item.name or ""
     info = _parse_name(name)
@@ -463,6 +496,7 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
                 "id": c["id"],
                 "title": c["title"],
                 "year": c["year"],
+                "slug": _group_slug(c["title"], c["year"]),
                 "release_date": c.get("release_date", ""),
                 "type": c["type"],
                 "poster": c["poster"],
@@ -682,27 +716,49 @@ async def content_series(request: Request, q: str = ""):
     })
 
 
-@router.get("/content/details/{item_id}")
-async def content_details(request: Request, item_id: str):
+@router.get("/content/details/{content_key}")
+async def content_details(request: Request, content_key: str):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     catalog = await _build_catalog(user, is_admin, limit=1500)
     group = None
-    for g in catalog:
-        if g["id"] == item_id:
-            group = g
-            break
-        for itm in g["items"]:
-            if itm["id"] == item_id:
+    content_key = (content_key or "").strip()
+    slug_key = content_key.lower()
+    is_object_id = bool(re.fullmatch(r"[0-9a-fA-F]{24}", content_key))
+
+    if not is_object_id:
+        for g in catalog:
+            if (g.get("slug") or "") == slug_key:
                 group = g
                 break
-        if group:
-            break
+        if not group:
+            base = slug_key
+            year = ""
+            parts = slug_key.rsplit("-", 1)
+            if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) == 4:
+                base, year = parts[0], parts[1]
+            for g in catalog:
+                if _slugify(g.get("title", "")) == base and (not year or (g.get("year") or "") == year):
+                    group = g
+                    break
+
+    if not group:
+        for g in catalog:
+            if g["id"] == content_key:
+                group = g
+                break
+            for itm in g["items"]:
+                if itm["id"] == content_key:
+                    group = g
+                    break
+            if group:
+                break
     if not group:
         raise HTTPException(status_code=404, detail="Content not found")
 
     site = await _site_settings()
     group = await _ensure_group_assets(group)
+    group["trailer_embed"] = group.get("trailer_key") or _youtube_key(group.get("trailer_url"))
     link_token = await _get_link_token()
 
     viewer_name = _viewer_name(user)

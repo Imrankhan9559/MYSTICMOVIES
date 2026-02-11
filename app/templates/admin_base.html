@@ -158,6 +158,12 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a href="/dashboard/publish-content" class="nav-link {% if request.url.path.startswith('/dashboard/publish-content') %}active{% endif %}">
+                            <i class="nav-icon fas fa-folder-open"></i>
+                            <p>Publish Content</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a href="/storage" class="nav-link {% if request.url.path.startswith('/storage') %}active{% endif %}">
                             <i class="nav-icon fas fa-database"></i>
                             <p>Storage</p>

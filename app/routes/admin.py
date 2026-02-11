@@ -51,6 +51,46 @@ async def _ensure_folder(owner_phone: str, name: str, parent_id: str | None, sou
     await folder.insert()
     return folder
 
+
+async def _find_folder(owner_phone: str, name: str, parent_id: str | None) -> FileSystemItem | None:
+    return await FileSystemItem.find_one(
+        FileSystemItem.is_folder == True,
+        FileSystemItem.parent_id == parent_id,
+        FileSystemItem.name == name,
+        FileSystemItem.owner_phone == owner_phone
+    )
+
+
+async def _cleanup_empty_tree(folder_id: str | None) -> None:
+    if not folder_id:
+        return
+    folder = await FileSystemItem.get(folder_id)
+    if not folder or not folder.is_folder:
+        return
+    # Clean children first
+    children = await FileSystemItem.find(FileSystemItem.parent_id == str(folder.id)).to_list()
+    for child in children:
+        if child.is_folder:
+            await _cleanup_empty_tree(str(child.id))
+    # Re-check children after cleanup
+    remaining = await FileSystemItem.find(FileSystemItem.parent_id == str(folder.id)).count()
+    if remaining == 0:
+        await folder.delete()
+
+
+async def _cleanup_parents(folder_id: str | None) -> None:
+    current_id = folder_id
+    while current_id:
+        folder = await FileSystemItem.get(current_id)
+        if not folder or not folder.is_folder:
+            return
+        remaining = await FileSystemItem.find(FileSystemItem.parent_id == str(folder.id)).count()
+        if remaining > 0:
+            return
+        parent_id = folder.parent_id
+        await folder.delete()
+        current_id = parent_id
+
 def _quality_rank(q: str) -> int:
     order = {"2160P": 5, "1440P": 4, "1080P": 3, "720P": 2, "480P": 1, "380P": 0, "360P": 0, "HD": 0}
     return order.get((q or "").upper(), 0)
@@ -127,9 +167,19 @@ async def _group_storage_suggestions() -> list[dict]:
         year = (getattr(item, "year", "") or info["year"] or "").strip()
         key = (_title_key(getattr(item, "title", "") or item.name or ""), year, ctype)
         group = groups.setdefault(key, {
+            "id": str(item.id),
             "title": display_title,
             "year": year,
             "type": ctype,
+            "poster": getattr(item, "poster_url", "") or "",
+            "backdrop": getattr(item, "backdrop_url", "") or "",
+            "description": getattr(item, "description", "") or "",
+            "genres": getattr(item, "genres", []) or [],
+            "actors": getattr(item, "actors", []) or [],
+            "director": getattr(item, "director", "") or "",
+            "trailer_url": getattr(item, "trailer_url", "") or "",
+            "trailer_key": getattr(item, "trailer_key", "") or "",
+            "release_date": getattr(item, "release_date", "") or "",
             "items": []
         })
         quality = getattr(item, "quality", "") or info["quality"]
@@ -142,7 +192,8 @@ async def _group_storage_suggestions() -> list[dict]:
             "size_label": format_size(item.size or 0),
             "quality": quality,
             "season": season,
-            "episode": episode
+            "episode": episode,
+            "episode_title": getattr(item, "episode_title", "") or ""
         })
     # sort items by quality/episode
     for g in groups.values():
@@ -315,6 +366,210 @@ async def add_content(request: Request):
         "site": site
     })
 
+@router.get("/dashboard/publish-content")
+async def publish_content(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    published_groups = await _group_published_catalog()
+    site = await _site_settings()
+    return templates.TemplateResponse("publish_content.html", {
+        "request": request,
+        "user": user,
+        "is_admin": True,
+        "published_groups": published_groups,
+        "site": site
+    })
+
+@router.post("/dashboard/publish-content/update")
+async def publish_content_update(
+    request: Request,
+    group_title: str = Form(""),
+    group_year: str = Form(""),
+    group_type: str = Form("movie"),
+    title: str = Form(""),
+    year: str = Form(""),
+    description: str = Form(""),
+    genres: str = Form(""),
+    actors: str = Form(""),
+    director: str = Form(""),
+    trailer_url: str = Form(""),
+    trailer_key: str = Form(""),
+    poster_url: str = Form(""),
+    backdrop_url: str = Form(""),
+    release_date: str = Form("")
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    group_title = (group_title or "").strip()
+    group_type = (group_type or "movie").strip().lower()
+    group_year = (group_year or "").strip()
+    if not group_title:
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+
+    new_title = (title or "").strip() or group_title
+    new_year = (year or "").strip() or group_year
+    desc = (description or "").strip()
+    genres_list = [g.strip() for g in (genres or "").split(",") if g.strip()]
+    actors_list = [a.strip() for a in (actors or "").split(",") if a.strip()]
+    director = (director or "").strip()
+    trailer_url = (trailer_url or "").strip()
+    trailer_key = (trailer_key or "").strip()
+    poster_url = (poster_url or "").strip()
+    backdrop_url = (backdrop_url or "").strip()
+    release_date = (release_date or "").strip()
+
+    items = await FileSystemItem.find(
+        FileSystemItem.catalog_status == "published",
+        FileSystemItem.catalog_type == group_type,
+        FileSystemItem.title == group_title
+    ).to_list()
+    for item in items:
+        item.title = new_title
+        if group_type == "series":
+            item.series_title = new_title
+        item.year = new_year
+        item.description = desc
+        item.genres = genres_list
+        item.actors = actors_list
+        item.director = director
+        item.trailer_url = trailer_url
+        item.trailer_key = trailer_key
+        item.poster_url = poster_url
+        item.backdrop_url = backdrop_url
+        item.release_date = release_date
+        await item.save()
+
+    # Rename catalog folder if title changed
+    admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
+    if admin_phone and new_title != group_title:
+        root_name = "Movies" if group_type == "movie" else "Web Series"
+        root = await _find_folder(admin_phone, root_name, None)
+        if root:
+            target_folder = await _find_folder(admin_phone, group_title, str(root.id))
+            if target_folder:
+                target_folder.name = new_title
+                await target_folder.save()
+
+    return RedirectResponse("/dashboard/publish-content", status_code=303)
+
+@router.post("/dashboard/publish-content/delete")
+async def publish_content_delete(
+    request: Request,
+    group_title: str = Form(""),
+    group_type: str = Form("movie")
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    group_title = (group_title or "").strip()
+    group_type = (group_type or "movie").strip().lower()
+    if not group_title:
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+
+    await FileSystemItem.find(
+        FileSystemItem.catalog_status == "published",
+        FileSystemItem.catalog_type == group_type,
+        FileSystemItem.title == group_title
+    ).delete()
+
+    admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
+    if admin_phone:
+        root_name = "Movies" if group_type == "movie" else "Web Series"
+        root = await _find_folder(admin_phone, root_name, None)
+        if root:
+            target_folder = await _find_folder(admin_phone, group_title, str(root.id))
+            if target_folder:
+                await _cleanup_empty_tree(str(target_folder.id))
+
+    return RedirectResponse("/dashboard/publish-content", status_code=303)
+
+@router.post("/dashboard/publish-content/delete-file")
+async def publish_content_delete_file(
+    request: Request,
+    published_id: str = Form("")
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    if not published_id:
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+    item = await FileSystemItem.get(published_id)
+    if not item or item.catalog_status != "published":
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+    parent_id = item.parent_id
+    await item.delete()
+    await _cleanup_parents(parent_id)
+    return RedirectResponse("/dashboard/publish-content", status_code=303)
+
+@router.post("/dashboard/publish-content/update-file")
+async def publish_content_update_file(
+    request: Request,
+    published_id: str = Form(""),
+    storage_id: str = Form(""),
+    quality: str = Form(""),
+    season: str = Form(""),
+    episode: str = Form(""),
+    episode_title: str = Form("")
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    if not published_id:
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+    item = await FileSystemItem.get(published_id)
+    if not item or item.catalog_status != "published":
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+
+    item.quality = (quality or "").strip()
+    if (season or "").strip():
+        try:
+            item.season = int(season)
+        except Exception:
+            pass
+    else:
+        item.season = None
+    if (episode or "").strip():
+        try:
+            item.episode = int(episode)
+        except Exception:
+            pass
+    else:
+        item.episode = None
+    item.episode_title = (episode_title or "").strip()
+
+    if storage_id:
+        storage_item = await FileSystemItem.get(storage_id)
+        if storage_item and storage_item.source == "storage":
+            item.name = storage_item.name
+            item.size = storage_item.size or 0
+            item.mime_type = storage_item.mime_type
+            item.parts = _clone_parts(storage_item.parts)
+            storage_item.catalog_status = "used"
+            await storage_item.save()
+
+    # If series metadata changed, ensure the file is in the correct season/quality folder
+    if item.catalog_type == "series":
+        admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
+        if admin_phone:
+            root = await _find_folder(admin_phone, "Web Series", None)
+            if root:
+                series_title = item.series_title or item.title or ""
+                series_folder = await _find_folder(admin_phone, series_title, str(root.id))
+                if series_folder:
+                    season_val = item.season or 1
+                    quality_val = (item.quality or "HD").strip() or "HD"
+                    season_folder = await _ensure_folder(admin_phone, f"Season {season_val}", str(series_folder.id))
+                    quality_folder = await _ensure_folder(admin_phone, quality_val, str(season_folder.id))
+                    item.parent_id = str(quality_folder.id)
+
+    await item.save()
+    return RedirectResponse("/dashboard/publish-content", status_code=303)
+
 @router.get("/dashboard/storage/search")
 async def admin_storage_search(request: Request, q: str = "", offset: int = 0, limit: int = 200):
     user = await get_current_user(request)
@@ -333,9 +588,7 @@ async def admin_storage_search(request: Request, q: str = "", offset: int = 0, l
     limit = max(20, min(limit, 500))
 
     query: dict = {
-        "source": "storage",
-        "is_folder": False,
-        "catalog_status": {"$nin": ["published", "used"]},
+        "is_folder": False
     }
     if q:
         search_regex = _build_search_regex(q)
@@ -343,7 +596,8 @@ async def admin_storage_search(request: Request, q: str = "", offset: int = 0, l
             return {"items": [], "has_more": False}
         query["name"] = {"$regex": search_regex, "$options": "i"}
 
-    items = await FileSystemItem.find(query).sort("-created_at").skip(offset).limit(limit + 1).to_list()
+    sort_field = "name" if q else "-created_at"
+    items = await FileSystemItem.find(query).sort(sort_field).skip(offset).limit(limit + 1).to_list()
     has_more = len(items) > limit
     if has_more:
         items = items[:limit]
