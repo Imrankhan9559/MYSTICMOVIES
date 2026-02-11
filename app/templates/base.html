@@ -69,9 +69,9 @@
                 <a href="/content" class="text-gray-300 hover:text-yellow-300 transition">Content</a>
                 <a href="/content/movies" class="text-gray-300 hover:text-yellow-300 transition">Movies</a>
                 <a href="/content/web-series" class="text-gray-300 hover:text-yellow-300 transition">Web Series</a>
-                <a href="/dashboard" class="text-gray-300 hover:text-yellow-300 transition">Storage</a>
                 {% if is_admin %}
-                <a href="/main-control" class="text-gray-300 hover:text-yellow-300 transition">Main Control</a>
+                <a href="/dashboard" class="text-gray-300 hover:text-yellow-300 transition">Dashboard</a>
+                <a href="/storage" class="text-gray-300 hover:text-yellow-300 transition">Storage</a>
                 {% endif %}
             </nav>
             <div class="flex items-center gap-2 sm:gap-3">
@@ -100,8 +100,10 @@
             <div>© 2026 {{ _site.footer_text if _site else 'MysticMovies' }}. Stream. Download. Telegram.</div>
             <div class="flex items-center gap-3">
                 <a href="/content" class="hover:text-yellow-300 transition">Content</a>
-                <a href="/dashboard" class="hover:text-yellow-300 transition">Storage</a>
-                {% if is_admin %}<a href="/main-control" class="hover:text-yellow-300 transition">Main Control</a>{% endif %}
+                {% if is_admin %}
+                <a href="/dashboard" class="hover:text-yellow-300 transition">Dashboard</a>
+                <a href="/storage" class="hover:text-yellow-300 transition">Storage</a>
+                {% endif %}
             </div>
         </div>
     </footer>

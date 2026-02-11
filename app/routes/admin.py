@@ -127,9 +127,13 @@ async def _group_published_catalog() -> list[dict]:
 
 @router.get("/admin")
 async def admin_redirect(request: Request):
-    return RedirectResponse("/main-control")
+    return RedirectResponse("/dashboard")
 
 @router.get("/main-control")
+async def main_control_alias(request: Request):
+    return RedirectResponse("/dashboard")
+
+@router.get("/dashboard")
 async def main_control(request: Request):
     user = await get_current_user(request)
     if not user: return RedirectResponse("/login")
@@ -162,6 +166,17 @@ async def main_control(request: Request):
 
     storage_suggestions = await _group_storage_suggestions()
     published_groups = await _group_published_catalog()
+    published_movies = await FileSystemItem.find(
+        FileSystemItem.is_folder == False,
+        FileSystemItem.catalog_status == "published",
+        FileSystemItem.catalog_type == "movie"
+    ).count()
+    published_series = await FileSystemItem.find(
+        FileSystemItem.is_folder == False,
+        FileSystemItem.catalog_status == "published",
+        FileSystemItem.catalog_type == "series"
+    ).count()
+    suggestion_groups = len(storage_suggestions)
 
     return templates.TemplateResponse("admin.html", {
         "request": request, "total_users": total_users, "total_files": total_files, 
@@ -171,10 +186,14 @@ async def main_control(request: Request):
         "pending_content_requests": pending_requests, "content_items": content_items,
         "tmdb_configured": tmdb_configured, "tmdb_status": tmdb_status,
         "storage_suggestions": storage_suggestions,
-        "published_groups": published_groups
+        "published_groups": published_groups,
+        "published_movies": published_movies,
+        "published_series": published_series,
+        "suggestion_groups": suggestion_groups
     })
 
 @router.get("/main-control/tmdb/lookup")
+@router.get("/dashboard/tmdb/lookup")
 async def main_control_tmdb_lookup(q: str = "", content_type: str = "movie"):
     if not settings.TMDB_API_KEY:
         return {"ok": False, "error": "TMDB_API_KEY missing"}
@@ -227,6 +246,7 @@ async def main_control_tmdb_lookup(q: str = "", content_type: str = "movie"):
         return {"ok": False, "error": str(e)}
 
 @router.post("/main-control/publish")
+@router.post("/dashboard/publish")
 async def main_control_publish(
     request: Request,
     item_ids: str = Form(""),
@@ -244,10 +264,10 @@ async def main_control_publish(
         raise HTTPException(403)
     raw_ids = [i.strip() for i in (item_ids or "").split(",") if i.strip()]
     if not raw_ids:
-        return RedirectResponse("/main-control", status_code=303)
+        return RedirectResponse("/dashboard", status_code=303)
     items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(raw_ids))).to_list()
     if not items:
-        return RedirectResponse("/main-control", status_code=303)
+        return RedirectResponse("/dashboard", status_code=303)
 
     catalog_type = (catalog_type or "movie").strip().lower()
     title = (title or "").strip()
@@ -262,7 +282,7 @@ async def main_control_publish(
 
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     if not admin_phone:
-        return RedirectResponse("/main-control", status_code=303)
+        return RedirectResponse("/dashboard", status_code=303)
 
     if catalog_type == "movie":
         root = await _ensure_folder(admin_phone, "Movies", None)
@@ -350,9 +370,10 @@ async def main_control_publish(
         except Exception:
             pass
 
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/main-control/update-metadata")
+@router.post("/dashboard/update-metadata")
 async def main_control_update_metadata(
     request: Request,
     group_title: str = Form(""),
@@ -373,7 +394,7 @@ async def main_control_update_metadata(
     group_type = (group_type or "movie").strip().lower()
     group_year = (group_year or "").strip()
     if not group_title:
-        return RedirectResponse("/main-control", status_code=303)
+        return RedirectResponse("/dashboard", status_code=303)
 
     new_title = (title or "").strip() or group_title
     new_year = (year or "").strip() or group_year
@@ -405,9 +426,10 @@ async def main_control_update_metadata(
             item.trailer_url = trailer_url
         await item.save()
 
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/main-control/delete")
+@router.post("/dashboard/delete")
 async def main_control_delete_group(
     request: Request,
     group_title: str = Form(""),
@@ -419,13 +441,13 @@ async def main_control_delete_group(
     group_title = (group_title or "").strip()
     group_type = (group_type or "movie").strip().lower()
     if not group_title:
-        return RedirectResponse("/main-control", status_code=303)
+        return RedirectResponse("/dashboard", status_code=303)
     await FileSystemItem.find(
         FileSystemItem.catalog_status == "published",
         FileSystemItem.catalog_type == group_type,
         FileSystemItem.title == group_title
     ).delete()
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/token/regenerate")
 async def regenerate_link_token(request: Request):
@@ -441,7 +463,7 @@ async def regenerate_link_token(request: Request):
     else:
         token_doc = TokenSetting(key="link_token", value=new_val)
         await token_doc.insert()
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/bots/update_tokens")
 async def admin_update_tokens(request: Request, bot_tokens: str = Form("")):
@@ -450,7 +472,7 @@ async def admin_update_tokens(request: Request, bot_tokens: str = Form("")):
         raise HTTPException(403)
     tokens = [t.strip() for t in bot_tokens.replace("\n", ",").split(",") if t.strip()]
     await reload_bot_pool(tokens)
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/bots/speedtest")
 async def admin_speed_test(request: Request):
@@ -484,6 +506,17 @@ async def admin_speed_test(request: Request):
     tmdb_status = (request.query_params.get("tmdb") or "").strip().lower()
     storage_suggestions = await _group_storage_suggestions()
     published_groups = await _group_published_catalog()
+    published_movies = await FileSystemItem.find(
+        FileSystemItem.is_folder == False,
+        FileSystemItem.catalog_status == "published",
+        FileSystemItem.catalog_type == "movie"
+    ).count()
+    published_series = await FileSystemItem.find(
+        FileSystemItem.is_folder == False,
+        FileSystemItem.catalog_status == "published",
+        FileSystemItem.catalog_type == "series"
+    ).count()
+    suggestion_groups = len(storage_suggestions)
     return templates.TemplateResponse("admin.html", {
         "request": request, "total_users": total_users, "total_files": total_files, 
         "users": all_users, "user_email": user.phone_number, "pending_users": pending_users,
@@ -492,7 +525,10 @@ async def admin_speed_test(request: Request):
         "pending_content_requests": pending_requests, "content_items": content_items,
         "tmdb_configured": tmdb_configured, "tmdb_status": tmdb_status,
         "storage_suggestions": storage_suggestions,
-        "published_groups": published_groups
+        "published_groups": published_groups,
+        "published_movies": published_movies,
+        "published_series": published_series,
+        "suggestion_groups": suggestion_groups
     })
 
 @router.post("/admin/tmdb/refresh")
@@ -501,17 +537,17 @@ async def admin_refresh_tmdb(request: Request):
     if not _is_admin(user):
         raise HTTPException(403)
     if not getattr(settings, "TMDB_API_KEY", ""):
-        return RedirectResponse("/main-control?tmdb=missing", status_code=303)
+        return RedirectResponse("/dashboard?tmdb=missing", status_code=303)
     # Fire-and-forget; refresh can take time for large catalogs.
     asyncio.create_task(refresh_tmdb_metadata(limit=None))
-    return RedirectResponse("/main-control?tmdb=refresh_started", status_code=303)
+    return RedirectResponse("/dashboard?tmdb=refresh_started", status_code=303)
 
 @router.get("/settings")
 async def admin_settings_redirect(request: Request):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
-    return RedirectResponse("/main-control")
+    return RedirectResponse("/dashboard")
 
 @router.post("/admin/site/save")
 async def save_site_settings(
@@ -541,7 +577,7 @@ async def save_site_settings(
     site.footer_text = (footer_text or "MysticMovies").strip()
     site.updated_at = datetime.now()
     await site.save()
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/content/update")
 async def update_content_metadata(
@@ -579,7 +615,7 @@ async def update_content_metadata(
     item.episode = int(episode) if (episode or "").isdigit() else None
     item.quality = (quality or "").strip()
     await item.save()
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/request/{request_id}/{action}")
 async def update_content_request(request: Request, request_id: str, action: str):
@@ -595,7 +631,7 @@ async def update_content_request(request: Request, request_id: str, action: str)
     row.status = action
     row.updated_at = datetime.now()
     await row.save()
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/delete_user")
 async def delete_user(request: Request, user_phone: str = Form(...)):
@@ -611,7 +647,7 @@ async def delete_user(request: Request, user_phone: str = Form(...)):
         # Optional: Delete their files too
         await FileSystemItem.find(FileSystemItem.owner_phone == user_phone).delete()
     
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/approve_user")
 async def approve_user(request: Request, user_phone: str = Form(...)):
@@ -623,7 +659,7 @@ async def approve_user(request: Request, user_phone: str = Form(...)):
         target.status = "approved"
         target.approved_at = datetime.now()
         await target.save()
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/block_user")
 async def block_user(request: Request, user_phone: str = Form(...)):
@@ -634,4 +670,4 @@ async def block_user(request: Request, user_phone: str = Form(...)):
     if target:
         target.status = "blocked"
         await target.save()
-    return RedirectResponse("/main-control", status_code=303)
+    return RedirectResponse("/dashboard", status_code=303)

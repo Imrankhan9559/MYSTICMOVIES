@@ -490,7 +490,7 @@ async def process_telegram_upload(job_id: str, file_path: str, filename: str, mi
 async def root(): return RedirectResponse(url="/content")
 
 # --- DASHBOARD ---
-@router.get("/dashboard")
+@router.get("/storage")
 async def dashboard(request: Request, folder_id: Optional[str] = None):
     user = await get_current_user(request)
     if not user: return RedirectResponse("/login")
@@ -528,7 +528,7 @@ async def dashboard(request: Request, folder_id: Optional[str] = None):
                 if folder_id:
                     current_folder = await FileSystemItem.get(folder_id)
                     if not current_folder or not _can_access(user, current_folder, is_admin):
-                        return RedirectResponse("/dashboard")
+                        return RedirectResponse("/storage")
                     query["parent_id"] = folder_id
                 else:
                     query["parent_id"] = None
@@ -537,9 +537,9 @@ async def dashboard(request: Request, folder_id: Optional[str] = None):
     elif folder_id:
         current_folder = await FileSystemItem.get(folder_id)
         if not current_folder:
-            return RedirectResponse("/dashboard")
+            return RedirectResponse("/storage")
         if not _can_access(user, current_folder, is_admin):
-            return RedirectResponse("/dashboard")
+            return RedirectResponse("/storage")
 
         if storage_folder and str(storage_folder.id) == str(folder_id):
             try:
@@ -806,7 +806,7 @@ async def delete_item(request: Request, item_id: str):
     is_admin = _is_admin(user)
     if item and _can_access(user, item, is_admin):
         await item.delete()
-    return RedirectResponse(f"/dashboard?folder_id={item.parent_id if item and item.parent_id else ''}", 303)
+    return RedirectResponse(f"/storage?folder_id={item.parent_id if item and item.parent_id else ''}", 303)
 
 @router.post("/share/{item_id}")
 async def share_item(request: Request, item_id: str):
@@ -869,7 +869,7 @@ async def create_folder(request: Request, folder_name: str = Form(...), parent_i
     if not user: return RedirectResponse("/login")
     final_parent_id = parent_id if parent_id and parent_id != "None" else None
     await FileSystemItem(name=folder_name, is_folder=True, parent_id=final_parent_id, owner_phone=user.phone_number).insert()
-    return RedirectResponse(url=f"/dashboard?folder_id={final_parent_id}" if final_parent_id else "/dashboard", status_code=303)
+    return RedirectResponse(url=f"/storage?folder_id={final_parent_id}" if final_parent_id else "/storage", status_code=303)
 
 @router.post("/folder/create_json")
 async def create_folder_json(request: Request, payload: Dict = Body(...)):
