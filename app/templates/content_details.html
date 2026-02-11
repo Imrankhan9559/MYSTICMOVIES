@@ -189,19 +189,21 @@ function renderEpisodes(seasonNo, quality) {
     const container = document.getElementById(`season-${seasonNo}`);
     list.innerHTML = "";
     const episodes = season.episodes || {};
+    const titles = season.episode_titles || {};
     Object.keys(episodes).sort((a,b) => parseInt(a)-parseInt(b)).forEach(ep => {
         const variants = episodes[ep];
         if (!variants[quality]) return;
         const v = variants[quality];
         const row = document.createElement("div");
         row.className = "flex items-center justify-between rounded border border-gray-800 bg-black px-3 py-2";
+        const titleText = titles[ep] ? ` - ${titles[ep]}` : "";
         const viewUrl = v.view_url || "";
         const downloadUrl = v.download_url || "";
         const watchUrl = v.watch_url || "";
         const telegramUrl = v.telegram_url || "";
         const adminLink = isAdmin ? `<a href="/player/${v.file_id}" class="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-100">Admin Player</a>` : "";
         row.innerHTML = `
-            <div class="text-xs text-gray-200">Episode ${ep}</div>
+            <div class="text-xs text-gray-200">Episode ${ep}${titleText}</div>
             <div class="flex gap-2">
                 {% if user %}
                 <a href="${viewUrl}" class="px-2 py-1 rounded bg-yellow-400 text-black text-[10px] font-bold">Watch</a>

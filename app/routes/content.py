@@ -384,6 +384,7 @@ def _item_card(item: FileSystemItem) -> dict:
         "quality": quality,
         "season": season,
         "episode": episode,
+        "episode_title": getattr(item, "episode_title", "") or "",
         "series_key": _series_key(series_title or display_title or name),
         "poster": getattr(item, "poster_url", "") or "",
         "backdrop": getattr(item, "backdrop_url", "") or "",
@@ -475,6 +476,7 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
                 "cast_profiles": c.get("cast_profiles", []),
                 "qualities": {},
                 "seasons": {},
+                "episode_titles": {},
                 "items": [],
             }
         groups[key]["items"].append(c)
@@ -486,6 +488,9 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
             season_bucket = groups[key]["seasons"].setdefault(season, {})
             ep_bucket = season_bucket.setdefault(episode, {})
             ep_bucket[c["quality"]] = {"file_id": c["id"], "size": c["size"]}
+            title_map = groups[key]["episode_titles"].setdefault(season, {})
+            if c.get("episode_title"):
+                title_map[episode] = c.get("episode_title")
     result = []
     for g in groups.values():
         if g["type"] == "movie":
@@ -742,6 +747,7 @@ async def content_details(request: Request, item_id: str):
                     for q, size in sorted(quality_totals.items(), key=lambda x: x[0], reverse=True)
                 ],
                 "episodes": eps,
+                "episode_titles": (group.get("episode_titles", {}) or {}).get(s_no, {}),
             })
 
     watchlisted = False

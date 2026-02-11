@@ -114,13 +114,18 @@
             <div class="card-header">
                 <h3 class="card-title"><i class="fas fa-film"></i> Published Catalog</h3>
                 <div class="card-tools">
+                    <div class="btn-group btn-group-sm mr-2" role="group">
+                        <button type="button" class="btn btn-outline-light catalog-filter active" data-filter="all">All</button>
+                        <button type="button" class="btn btn-outline-light catalog-filter" data-filter="movie">Movies</button>
+                        <button type="button" class="btn btn-outline-light catalog-filter" data-filter="series">Series</button>
+                    </div>
                     <span class="badge badge-info">Visible on Home and Content pages</span>
                 </div>
             </div>
             <div class="card-body">
                 {% if published_groups and published_groups|length > 0 %}
                     {% for group in published_groups %}
-                    <form id="update-form-{{ loop.index0 }}" action="/dashboard/update-metadata" method="post" class="card card-outline card-dark mb-4">
+                    <form id="update-form-{{ loop.index0 }}" action="/dashboard/update-metadata" method="post" class="card card-outline card-dark mb-4 published-group" data-type="{{ group.type }}">
                         <input type="hidden" name="group_title" value="{{ group.title }}">
                         <input type="hidden" name="group_year" value="{{ group.year }}">
                         <input type="hidden" name="group_type" value="{{ group.type }}">
@@ -668,6 +673,24 @@ document.querySelectorAll(".tmdb-fetch").forEach(function (btn) {
             btn.disabled = false;
             btn.textContent = "Auto Fetch TMDB";
         }
+    });
+});
+
+document.querySelectorAll(".catalog-filter").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+        var filter = btn.dataset.filter || "all";
+        document.querySelectorAll(".catalog-filter").forEach(function (b) {
+            b.classList.remove("active");
+        });
+        btn.classList.add("active");
+        document.querySelectorAll(".published-group").forEach(function (group) {
+            var type = group.dataset.type || "";
+            if (filter === "all" || type === filter) {
+                group.style.display = "";
+            } else {
+                group.style.display = "none";
+            }
+        });
     });
 });
 </script>

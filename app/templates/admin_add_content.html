@@ -6,7 +6,7 @@
         <div class="row mb-2">
             <div class="col-sm-6">
                 <h1 class="m-0">Add Content</h1>
-                <div class="admin-section-note">Search TMDB, fill metadata, then attach storage files.</div>
+                <div class="admin-section-note">Search TMDB, fill metadata, then map storage files.</div>
             </div>
             <div class="col-sm-6">
                 <ol class="breadcrumb float-sm-right">
@@ -125,7 +125,7 @@
                 </div>
             </div>
 
-            <div class="card card-outline card-info">
+            <div class="card card-outline card-info" id="tmdb-seasons-card">
                 <div class="card-header">
                     <h3 class="card-title"><i class="fas fa-list"></i> TMDB Seasons & Episodes</h3>
                     <div class="card-tools">
@@ -147,69 +147,64 @@
                 </div>
                 <div class="card-body">
                     <div id="episode-list" class="text-sm text-muted">Select a TMDB series to map episodes.</div>
+                    <div class="mt-3">
+                        <button type="submit" class="btn btn-success">Publish Series</button>
+                        <a href="/storage" class="btn btn-outline-light ml-2">Open Storage</a>
+                    </div>
                 </div>
             </div>
 
-            <div class="card card-outline card-dark" id="file-section">
+            <div class="card card-outline card-dark" id="movie-mapper">
                 <div class="card-header">
-                    <h3 class="card-title"><i class="fas fa-file-video"></i> Attach Storage Files</h3>
+                    <h3 class="card-title"><i class="fas fa-film"></i> Movie File Mapping</h3>
                     <div class="card-tools">
                         <span class="badge badge-dark">Pending: {{ pending_storage or 0 }}</span>
                     </div>
                 </div>
                 <div class="card-body">
-                    <div class="form-row align-items-end">
-                        <div class="form-group col-md-6">
-                            <label>Filter files</label>
-                            <input id="file-filter" class="form-control" placeholder="Search filenames">
-                        </div>
+                    <div class="admin-section-note mb-2">Select up to 4 quality files for this movie.</div>
+                    <div class="movie-quality-row form-row align-items-end mb-2">
                         <div class="form-group col-md-3">
-                            <label>Selected Files</label>
-                            <div id="selected-count" class="form-control-plaintext text-white">0</div>
+                            <label>Quality</label>
+                            <input type="text" class="form-control form-control-sm movie-quality-input" value="1080p">
                         </div>
-                        <div class="form-group col-md-3">
-                            <label>Total Size</label>
-                            <div id="selected-size" class="form-control-plaintext text-white">0 MB</div>
+                        <div class="form-group col-md-9">
+                            <label>File</label>
+                            <select class="custom-select custom-select-sm movie-file-select"></select>
                         </div>
                     </div>
-                    <div class="table-responsive">
-                        <table class="table table-sm table-dark mb-0" id="files-table">
-                            <thead>
-                                <tr>
-                                    <th>Select</th>
-                                    <th>File</th>
-                                    <th>Type</th>
-                            <th>Quality</th>
-                            <th>Season</th>
-                            <th>Episode</th>
-                            <th class="text-right">Size</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for f in files %}
-                                <tr data-name="{{ f.name|lower }}">
-                                    <td>
-                                        <input type="checkbox" class="file-check" value="{{ f.id }}" data-size="{{ f.size }}" data-type="{{ f.type }}">
-                                    </td>
-                                    <td class="text-truncate" style="max-width: 280px;" title="{{ f.name }}">{{ f.name }}</td>
-                                    <td>{{ f.type }}</td>
-                                    <td>
-                                        <input type="text" class="form-control form-control-sm file-quality" value="{{ f.quality }}" data-id="{{ f.id }}">
-                                    </td>
-                                    <td>
-                                        <input type="number" class="form-control form-control-sm file-season" value="{{ f.season or '' }}" data-id="{{ f.id }}" min="1">
-                                    </td>
-                                    <td>
-                                        <input type="number" class="form-control form-control-sm file-episode" value="{{ f.episode or '' }}" data-id="{{ f.id }}" min="1">
-                                    </td>
-                                    <td class="text-right">{{ f.size_label }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
+                    <div class="movie-quality-row form-row align-items-end mb-2">
+                        <div class="form-group col-md-3">
+                            <label>Quality</label>
+                            <input type="text" class="form-control form-control-sm movie-quality-input" value="720p">
+                        </div>
+                        <div class="form-group col-md-9">
+                            <label>File</label>
+                            <select class="custom-select custom-select-sm movie-file-select"></select>
+                        </div>
+                    </div>
+                    <div class="movie-quality-row form-row align-items-end mb-2">
+                        <div class="form-group col-md-3">
+                            <label>Quality</label>
+                            <input type="text" class="form-control form-control-sm movie-quality-input" value="480p">
+                        </div>
+                        <div class="form-group col-md-9">
+                            <label>File</label>
+                            <select class="custom-select custom-select-sm movie-file-select"></select>
+                        </div>
+                    </div>
+                    <div class="movie-quality-row form-row align-items-end mb-2">
+                        <div class="form-group col-md-3">
+                            <label>Quality</label>
+                            <input type="text" class="form-control form-control-sm movie-quality-input" value="360p">
+                        </div>
+                        <div class="form-group col-md-9">
+                            <label>File</label>
+                            <select class="custom-select custom-select-sm movie-file-select"></select>
+                        </div>
                     </div>
                     <div class="mt-3">
-                        <button type="submit" class="btn btn-success">Publish Selected Files</button>
+                        <button type="submit" class="btn btn-success">Publish Movie</button>
                         <a href="/storage" class="btn btn-outline-light ml-2">Open Storage</a>
                     </div>
                 </div>
@@ -234,9 +229,10 @@ const releaseDateField = document.getElementById("release-date-field");
 const tmdbIdField = document.getElementById("tmdb-id-field");
 const successAlert = document.getElementById("tmdb-success");
 const seasonsContainer = document.getElementById("tmdb-seasons");
+const seasonsCard = document.getElementById("tmdb-seasons-card");
 const episodeList = document.getElementById("episode-list");
 const episodeMapper = document.getElementById("episode-mapper");
-const fileSection = document.getElementById("file-section");
+const movieMapper = document.getElementById("movie-mapper");
 let currentTmdbId = null;
 let currentSeasons = [];
 
@@ -244,10 +240,12 @@ function setModeFromType() {
     const type = document.getElementById("type-field").value;
     if (type === "series") {
         episodeMapper.style.display = "";
-        fileSection.style.display = "none";
+        movieMapper.style.display = "none";
+        if (seasonsCard) seasonsCard.style.display = "";
     } else {
         episodeMapper.style.display = "none";
-        fileSection.style.display = "";
+        movieMapper.style.display = "";
+        if (seasonsCard) seasonsCard.style.display = "none";
     }
 }
 
@@ -266,11 +264,18 @@ function fileOptionsHtml() {
     }).join("");
 }
 
-function addQualityRow(container, season, episode) {
+function populateMovieSelects() {
+    document.querySelectorAll(".movie-file-select").forEach(select => {
+        select.innerHTML = fileOptionsHtml();
+    });
+}
+
+function addQualityRow(container, season, episode, episodeTitle) {
     const row = document.createElement("div");
     row.className = "form-row align-items-end quality-row mt-2";
     row.dataset.season = season;
     row.dataset.episode = episode;
+    row.dataset.episodeTitle = episodeTitle || "";
     row.innerHTML = `
         <div class="form-group col-md-2">
             <label class="text-xs">Quality</label>
@@ -323,6 +328,7 @@ function appendEpisodeCard(container, seasonNo, episodeNo, name) {
     epCard.className = "mb-2 p-2 border border-gray-700 rounded";
     epCard.dataset.season = seasonNo;
     epCard.dataset.episode = episodeNo;
+    epCard.dataset.episodeTitle = name || "";
     const epHeader = document.createElement("div");
     epHeader.className = "d-flex justify-content-between align-items-center";
     epHeader.innerHTML = `<div class=\"text-white text-sm\">E${episodeNo}: ${name}</div>`;
@@ -337,8 +343,8 @@ function appendEpisodeCard(container, seasonNo, episodeNo, name) {
     qualityContainer.className = "quality-container";
     epCard.appendChild(qualityContainer);
 
-    addBtn.addEventListener("click", () => addQualityRow(qualityContainer, seasonNo, episodeNo));
-    addQualityRow(qualityContainer, seasonNo, episodeNo);
+    addBtn.addEventListener("click", () => addQualityRow(qualityContainer, seasonNo, episodeNo, name || ""));
+    addQualityRow(qualityContainer, seasonNo, episodeNo, name || "");
 
     container.appendChild(epCard);
 }
@@ -441,35 +447,11 @@ document.getElementById("tmdb-search-btn").addEventListener("click", async () =>
     });
 });
 
-const checks = Array.from(document.querySelectorAll(".file-check"));
 const itemIdsInput = document.getElementById("item_ids");
-const selectedCount = document.getElementById("selected-count");
-const selectedSize = document.getElementById("selected-size");
 const overridesInput = document.getElementById("overrides");
 document.getElementById("type-field").addEventListener("change", setModeFromType);
 setModeFromType();
-
-function updateSelected() {
-    const selected = checks.filter(c => c.checked);
-    itemIdsInput.value = selected.map(c => c.value).join(",");
-    selectedCount.textContent = selected.length;
-    const totalBytes = selected.reduce((sum, c) => sum + parseInt(c.dataset.size || "0", 10), 0);
-    const mb = (totalBytes / 1024 / 1024).toFixed(2);
-    selectedSize.textContent = `${mb} MB`;
-    const hasSeries = selected.some(c => (c.dataset.type || "") === "series");
-    if (selected.length > 0) {
-        document.getElementById("type-field").value = hasSeries ? "series" : "movie";
-    }
-}
-checks.forEach(c => c.addEventListener("change", updateSelected));
-updateSelected();
-
-document.getElementById("file-filter").addEventListener("input", (e) => {
-    const term = (e.target.value || "").toLowerCase();
-    document.querySelectorAll("#files-table tbody tr").forEach((row) => {
-        row.style.display = row.dataset.name.includes(term) ? "" : "none";
-    });
-});
+populateMovieSelects();
 
 document.getElementById("add-manual-episode").addEventListener("click", () => {
     const seasonInput = prompt("Season number?");
@@ -510,10 +492,11 @@ document.getElementById("publishForm").addEventListener("submit", (e) => {
         rows.forEach(row => {
             const season = row.dataset.season;
             const episode = row.dataset.episode;
+            const episodeTitle = row.dataset.episodeTitle || "";
             const quality = row.querySelector(".quality-input")?.value?.trim() || "";
             const fileId = row.querySelector(".file-select")?.value || "";
             if (!fileId) return;
-            overrides[fileId] = { season, episode, quality };
+            overrides[fileId] = { season, episode, quality, episode_title: episodeTitle };
             selectedIds.add(fileId);
         });
         if (selectedIds.size === 0) {
@@ -523,18 +506,20 @@ document.getElementById("publishForm").addEventListener("submit", (e) => {
         }
         itemIdsInput.value = Array.from(selectedIds).join(",");
     } else {
-        const selected = checks.filter(c => c.checked);
-        if (selected.length === 0) {
+        const rows = Array.from(document.querySelectorAll(".movie-quality-row"));
+        rows.forEach(row => {
+            const quality = row.querySelector(".movie-quality-input")?.value?.trim() || "";
+            const fileId = row.querySelector(".movie-file-select")?.value || "";
+            if (!fileId) return;
+            overrides[fileId] = { quality };
+            selectedIds.add(fileId);
+        });
+        if (selectedIds.size === 0) {
             e.preventDefault();
             alert("Select at least one file to publish.");
             return;
         }
-        selected.forEach(c => {
-            const id = c.value;
-            const qualityEl = document.querySelector(`.file-quality[data-id="${id}"]`);
-            overrides[id] = { quality: qualityEl ? qualityEl.value.trim() : "" };
-        });
-        itemIdsInput.value = selected.map(c => c.value).join(",");
+        itemIdsInput.value = Array.from(selectedIds).join(",");
     }
 
     overridesInput.value = JSON.stringify(overrides);

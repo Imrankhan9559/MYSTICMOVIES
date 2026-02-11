@@ -41,6 +41,7 @@ class FileSystemItem(Document):
     quality: Optional[str] = None
     season: Optional[int] = None
     episode: Optional[int] = None
+    episode_title: Optional[str] = None
     poster_url: Optional[str] = None
     backdrop_url: Optional[str] = None
     description: Optional[str] = None

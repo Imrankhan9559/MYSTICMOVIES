@@ -565,6 +565,7 @@ async def _publish_items(
             override = overrides.get(str(item.id), {}) or {}
             season_val = override.get("season") or getattr(item, "season", None) or info["season"]
             episode_val = override.get("episode") or getattr(item, "episode", None) or info["episode"]
+            episode_title = (override.get("episode_title") or override.get("title") or getattr(item, "episode_title", "") or "").strip()
             try:
                 season = int(season_val) if season_val else 1
             except Exception:
@@ -600,6 +601,7 @@ async def _publish_items(
                 quality=quality,
                 season=season,
                 episode=episode,
+                episode_title=episode_title,
                 description=desc,
                 release_date=release_date,
                 genres=genres_list,
@@ -631,6 +633,8 @@ async def _publish_items(
                 except Exception:
                     pass
             item.catalog_status = "used"
+            if override.get("episode_title"):
+                item.episode_title = override.get("episode_title")
             await item.save()
         except Exception:
             pass
