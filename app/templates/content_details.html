@@ -20,6 +20,7 @@
                 <span class="text-gray-600">•</span>
                 <span>{{ item.quality }}</span>
                 {% if item.year %}<span class="text-gray-600">•</span><span>{{ item.year }}</span>{% endif %}
+                {% if item.release_date %}<span class="text-gray-600">•</span><span>{{ item.release_date }}</span>{% endif %}
             </div>
             <h1 class="text-3xl sm:text-4xl font-extrabold text-white">{{ item.title }}</h1>
             {% if item.description %}

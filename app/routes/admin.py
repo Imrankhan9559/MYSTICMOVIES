@@ -2,6 +2,7 @@ from datetime import datetime
 import re
 import asyncio
 import uuid
+import json
 from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -408,10 +409,22 @@ async def tmdb_details(tmdb_id: int, content_type: str = "movie"):
             return {"ok": False, "error": "TMDB details not found"}
         title = details.get("name") if content_type == "series" else details.get("title")
         overview = details.get("overview") or ""
-        year = (details.get("release_date") or details.get("first_air_date") or "")[:4]
+        release_date = (details.get("release_date") or details.get("first_air_date") or "")
+        year = release_date[:4] if release_date else ""
         genres = [g.get("name") for g in details.get("genres", []) if g.get("name")]
         credits = details.get("credits") or {}
-        cast = [c.get("name") for c in (credits.get("cast") or [])[:12] if c.get("name")]
+        cast_rows = credits.get("cast") or []
+        cast = [c.get("name") for c in cast_rows[:12] if c.get("name")]
+        cast_profiles = []
+        profile_base = "https://image.tmdb.org/t/p/w185"
+        for c in cast_rows[:12]:
+            name = c.get("name") or ""
+            if not name:
+                continue
+            role = c.get("character") or ""
+            profile_path = c.get("profile_path")
+            image = profile_base + profile_path if profile_path else ""
+            cast_profiles.append({"name": name, "role": role, "image": image})
         director = ""
         for crew in credits.get("crew") or []:
             if crew.get("job") == "Director":
@@ -432,14 +445,17 @@ async def tmdb_details(tmdb_id: int, content_type: str = "movie"):
             "ok": True,
             "title": title,
             "year": year,
+            "release_date": release_date,
             "description": overview,
             "genres": genres,
             "actors": cast,
+            "cast_profiles": cast_profiles,
             "director": director,
             "trailer_url": trailer,
             "trailer_key": trailer_key,
             "poster": poster_url,
-            "backdrop": backdrop_url
+            "backdrop": backdrop_url,
+            "tmdb_id": tmdb_id
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -485,6 +501,9 @@ async def _publish_items(
     poster_url: str = "",
     backdrop_url: str = "",
     trailer_key: str = "",
+    cast_profiles: list | None = None,
+    release_date: str = "",
+    tmdb_id: int | None = None,
     overrides: dict | None = None
 ) -> None:
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
@@ -493,6 +512,8 @@ async def _publish_items(
     catalog_type = (catalog_type or "movie").strip().lower()
 
     overrides = overrides or {}
+    cast_profiles = cast_profiles or []
+    release_date = (release_date or "").strip()
 
     if catalog_type == "movie":
         root = await _ensure_folder(admin_phone, "Movies", None)
@@ -523,6 +544,7 @@ async def _publish_items(
                 year=year,
                 quality=quality,
                 description=desc,
+                release_date=release_date,
                 genres=genres_list,
                 actors=actors_list,
                 director=director,
@@ -530,6 +552,8 @@ async def _publish_items(
                 trailer_key=trailer_key,
                 poster_url=poster_url,
                 backdrop_url=backdrop_url,
+                cast_profiles=cast_profiles,
+                tmdb_id=tmdb_id,
                 parts=_clone_parts(item.parts)
             )
             await new_file.insert()
@@ -577,6 +601,7 @@ async def _publish_items(
                 season=season,
                 episode=episode,
                 description=desc,
+                release_date=release_date,
                 genres=genres_list,
                 actors=actors_list,
                 director=director,
@@ -584,6 +609,8 @@ async def _publish_items(
                 trailer_key=trailer_key,
                 poster_url=poster_url,
                 backdrop_url=backdrop_url,
+                cast_profiles=cast_profiles,
+                tmdb_id=tmdb_id,
                 parts=_clone_parts(item.parts)
             )
             await new_file.insert()
@@ -621,6 +648,9 @@ async def main_control_publish(
     actors: str = Form(""),
     director: str = Form(""),
     trailer_url: str = Form(""),
+    release_date: str = Form(""),
+    tmdb_id: str = Form(""),
+    cast_profiles: str = Form(""),
     poster_url: str = Form(""),
     backdrop_url: str = Form(""),
     trailer_key: str = Form(""),
@@ -657,6 +687,17 @@ async def main_control_publish(
         except Exception:
             override_map = {}
 
+    cast_profiles_list = []
+    if cast_profiles:
+        try:
+            cast_profiles_list = json.loads(cast_profiles)
+        except Exception:
+            cast_profiles_list = []
+    try:
+        tmdb_id_val = int(tmdb_id) if tmdb_id else None
+    except Exception:
+        tmdb_id_val = None
+
     await _publish_items(
         items=items,
         catalog_type=catalog_type,
@@ -667,9 +708,12 @@ async def main_control_publish(
         actors_list=actors_list,
         director=director,
         trailer_url=trailer_url,
+        release_date=release_date,
         poster_url=(poster_url or "").strip(),
         backdrop_url=(backdrop_url or "").strip(),
         trailer_key=(trailer_key or "").strip(),
+        cast_profiles=cast_profiles_list,
+        tmdb_id=tmdb_id_val,
         overrides=override_map
     )
 
@@ -686,6 +730,9 @@ async def publish_by_title(
     actors: str = Form(""),
     director: str = Form(""),
     trailer_url: str = Form(""),
+    release_date: str = Form(""),
+    tmdb_id: str = Form(""),
+    cast_profiles: str = Form(""),
     poster_url: str = Form(""),
     backdrop_url: str = Form(""),
     trailer_key: str = Form("")
@@ -733,6 +780,17 @@ async def publish_by_title(
     if not matched:
         return RedirectResponse("/dashboard?publish=not_found", status_code=303)
 
+    cast_profiles_list = []
+    if cast_profiles:
+        try:
+            cast_profiles_list = json.loads(cast_profiles)
+        except Exception:
+            cast_profiles_list = []
+    try:
+        tmdb_id_val = int(tmdb_id) if tmdb_id else None
+    except Exception:
+        tmdb_id_val = None
+
     await _publish_items(
         items=matched,
         catalog_type=catalog_type,
@@ -743,9 +801,12 @@ async def publish_by_title(
         actors_list=actors_list,
         director=director,
         trailer_url=trailer_url,
+        release_date=release_date,
         poster_url=(poster_url or "").strip(),
         backdrop_url=(backdrop_url or "").strip(),
-        trailer_key=(trailer_key or "").strip()
+        trailer_key=(trailer_key or "").strip(),
+        cast_profiles=cast_profiles_list,
+        tmdb_id=tmdb_id_val
     )
     return RedirectResponse("/dashboard?publish=ok", status_code=303)
 

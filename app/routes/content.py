@@ -162,7 +162,8 @@ async def _enrich_group(group: dict) -> dict:
     poster = details.get("poster_path")
     backdrop = details.get("backdrop_path")
     overview = details.get("overview") or ""
-    year = (details.get("release_date") or details.get("first_air_date") or "")[:4]
+    release_date = (details.get("release_date") or details.get("first_air_date") or "")
+    year = release_date[:4] if release_date else ""
     genres = [g.get("name") for g in details.get("genres", []) if g.get("name")]
     credits = details.get("credits") or {}
     cast_rows = credits.get("cast") or []
@@ -211,6 +212,7 @@ async def _enrich_group(group: dict) -> dict:
     group["backdrop"] = base + backdrop if backdrop else group.get("backdrop", "")
     group["description"] = overview or group.get("description", "")
     group["year"] = year or group.get("year", "")
+    group["release_date"] = release_date or group.get("release_date", "")
     group["genres"] = genres or group.get("genres", [])
     group["actors"] = cast or group.get("actors", [])
     group["director"] = director or group.get("director", "")
@@ -230,6 +232,8 @@ async def _persist_group_metadata(group: dict):
         update["description"] = group["description"]
     if group.get("year"):
         update["year"] = group["year"]
+    if group.get("release_date"):
+        update["release_date"] = group["release_date"]
     if group.get("genres"):
         update["genres"] = group["genres"]
     if group.get("actors"):
@@ -282,6 +286,9 @@ async def _persist_group_metadata(group: dict):
             changed = True
         if update.get("year") and not getattr(db_item, "year", ""):
             db_item.year = update["year"]
+            changed = True
+        if update.get("release_date") and not getattr(db_item, "release_date", ""):
+            db_item.release_date = update["release_date"]
             changed = True
         if update.get("genres") and not getattr(db_item, "genres", []):
             db_item.genres = update["genres"]
@@ -382,6 +389,7 @@ def _item_card(item: FileSystemItem) -> dict:
         "backdrop": getattr(item, "backdrop_url", "") or "",
         "description": getattr(item, "description", "") or "",
         "year": (getattr(item, "year", "") or info["year"] or ""),
+        "release_date": getattr(item, "release_date", "") or "",
         "genres": getattr(item, "genres", []) or [],
         "actors": getattr(item, "actors", []) or [],
         "director": getattr(item, "director", "") or "",
@@ -454,6 +462,7 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
                 "id": c["id"],
                 "title": c["title"],
                 "year": c["year"],
+                "release_date": c.get("release_date", ""),
                 "type": c["type"],
                 "poster": c["poster"],
                 "backdrop": c["backdrop"],
@@ -462,6 +471,8 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
                 "actors": c["actors"],
                 "director": c["director"],
                 "trailer_url": c["trailer_url"],
+                "trailer_key": c.get("trailer_key", ""),
+                "cast_profiles": c.get("cast_profiles", []),
                 "qualities": {},
                 "seasons": {},
                 "items": [],
@@ -480,9 +491,11 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
         if g["type"] == "movie":
             qualities = sorted(g["qualities"].keys(), key=_quality_rank, reverse=True)
             g["primary_quality"] = qualities[0] if qualities else "HD"
+            g["quality"] = g["primary_quality"]
         else:
             g["season_count"] = len(g["seasons"])
             g["primary_quality"] = "S" + str(min(g["seasons"].keys())) if g["seasons"] else "Series"
+            g["quality"] = g["primary_quality"]
         result.append(g)
     return result
 

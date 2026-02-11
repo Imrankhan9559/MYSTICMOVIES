@@ -28,6 +28,7 @@
                 {% if not tmdb_configured %}
                     <div class="alert alert-danger">TMDB_API_KEY missing. Configure it before searching.</div>
                 {% endif %}
+                <div id="tmdb-success" class="alert alert-success d-none">TMDB data loaded. You can edit fields below.</div>
                 <div class="form-row align-items-end">
                     <div class="form-group col-md-5">
                         <label>Search Title</label>
@@ -59,6 +60,8 @@
             <input type="hidden" name="poster_url" id="poster-field">
             <input type="hidden" name="backdrop_url" id="backdrop-field">
             <input type="hidden" name="trailer_key" id="trailer-key-field">
+            <input type="hidden" name="cast_profiles" id="cast-profiles-field">
+            <input type="hidden" name="tmdb_id" id="tmdb-id-field">
             <div class="card card-outline card-secondary">
                 <div class="card-header">
                     <h3 class="card-title"><i class="fas fa-pen"></i> Metadata</h3>
@@ -82,6 +85,10 @@
                         <div class="form-group col-md-2">
                             <label>Year</label>
                             <input id="year-field" name="year" class="form-control">
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>Release Date</label>
+                            <input id="release-date-field" name="release_date" class="form-control" placeholder="YYYY-MM-DD">
                         </div>
                         <div class="form-group col-md-4">
                             <label>Trailer URL</label>
@@ -130,7 +137,20 @@
                 </div>
             </div>
 
-            <div class="card card-outline card-dark">
+            <div class="card card-outline card-primary" id="episode-mapper" style="display: none;">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="fas fa-layer-group"></i> Episode File Mapping</h3>
+                    <div class="card-tools">
+                        <button type="button" id="add-manual-episode" class="btn btn-sm btn-outline-light">Add Episode</button>
+                        <span class="badge badge-primary">Add qualities per episode</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div id="episode-list" class="text-sm text-muted">Select a TMDB series to map episodes.</div>
+                </div>
+            </div>
+
+            <div class="card card-outline card-dark" id="file-section">
                 <div class="card-header">
                     <h3 class="card-title"><i class="fas fa-file-video"></i> Attach Storage Files</h3>
                     <div class="card-tools">
@@ -201,6 +221,7 @@
 
 {% block page_scripts %}
 <script>
+const storageFiles = {{ files|tojson }};
 const tmdbQuery = document.getElementById("tmdb-query");
 const tmdbType = document.getElementById("tmdb-type");
 const tmdbResults = document.getElementById("tmdb-results");
@@ -208,8 +229,27 @@ const googleLink = document.getElementById("google-search-link");
 const posterField = document.getElementById("poster-field");
 const backdropField = document.getElementById("backdrop-field");
 const trailerKeyField = document.getElementById("trailer-key-field");
+const castProfilesField = document.getElementById("cast-profiles-field");
+const releaseDateField = document.getElementById("release-date-field");
+const tmdbIdField = document.getElementById("tmdb-id-field");
+const successAlert = document.getElementById("tmdb-success");
 const seasonsContainer = document.getElementById("tmdb-seasons");
+const episodeList = document.getElementById("episode-list");
+const episodeMapper = document.getElementById("episode-mapper");
+const fileSection = document.getElementById("file-section");
 let currentTmdbId = null;
+let currentSeasons = [];
+
+function setModeFromType() {
+    const type = document.getElementById("type-field").value;
+    if (type === "series") {
+        episodeMapper.style.display = "";
+        fileSection.style.display = "none";
+    } else {
+        episodeMapper.style.display = "none";
+        fileSection.style.display = "";
+    }
+}
 
 function setGoogleLink() {
     const q = (tmdbQuery.value || "").trim();
@@ -218,10 +258,97 @@ function setGoogleLink() {
 setGoogleLink();
 tmdbQuery.addEventListener("input", setGoogleLink);
 
+function fileOptionsHtml() {
+    if (!storageFiles || storageFiles.length === 0) return "<option value=\"\">No storage files</option>";
+    return "<option value=\"\">Select file</option>" + storageFiles.map(f => {
+        const label = `${f.name} (${f.size_label})`;
+        return `<option value=\"${f.id}\">${label}</option>`;
+    }).join("");
+}
+
+function addQualityRow(container, season, episode) {
+    const row = document.createElement("div");
+    row.className = "form-row align-items-end quality-row mt-2";
+    row.dataset.season = season;
+    row.dataset.episode = episode;
+    row.innerHTML = `
+        <div class="form-group col-md-2">
+            <label class="text-xs">Quality</label>
+            <input type="text" class="form-control form-control-sm quality-input" placeholder="1080p">
+        </div>
+        <div class="form-group col-md-8">
+            <label class="text-xs">File</label>
+            <select class="custom-select custom-select-sm file-select">
+                ${fileOptionsHtml()}
+            </select>
+        </div>
+        <div class="form-group col-md-2">
+            <button type="button" class="btn btn-sm btn-danger remove-quality">Remove</button>
+        </div>
+    `;
+    row.querySelector(".remove-quality").addEventListener("click", () => row.remove());
+    container.appendChild(row);
+}
+
+function renderEpisodeMapping(seasons) {
+    if (!seasons || seasons.length === 0) {
+        episodeList.textContent = "No episodes available.";
+        return;
+    }
+    episodeList.innerHTML = "";
+    seasons.forEach(season => {
+        const seasonBlock = document.createElement("div");
+        seasonBlock.className = "mb-3 p-3 border border-secondary rounded bg-dark";
+        seasonBlock.dataset.season = season.season;
+        seasonBlock.id = `season-block-${season.season}`;
+        const header = document.createElement("div");
+        header.className = "font-weight-bold text-white mb-2";
+        header.textContent = `${season.name} (Episodes: ${season.episode_count || season.episodes.length})`;
+        seasonBlock.appendChild(header);
+
+        const episodesContainer = document.createElement("div");
+        episodesContainer.className = "episodes-container";
+        seasonBlock.appendChild(episodesContainer);
+
+        (season.episodes || []).forEach(ep => {
+            appendEpisodeCard(episodesContainer, season.season, ep.episode, ep.name || "");
+        });
+
+        episodeList.appendChild(seasonBlock);
+    });
+}
+
+function appendEpisodeCard(container, seasonNo, episodeNo, name) {
+    const epCard = document.createElement("div");
+    epCard.className = "mb-2 p-2 border border-gray-700 rounded";
+    epCard.dataset.season = seasonNo;
+    epCard.dataset.episode = episodeNo;
+    const epHeader = document.createElement("div");
+    epHeader.className = "d-flex justify-content-between align-items-center";
+    epHeader.innerHTML = `<div class=\"text-white text-sm\">E${episodeNo}: ${name}</div>`;
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "btn btn-sm btn-outline-info";
+    addBtn.textContent = "+ Quality";
+    epHeader.appendChild(addBtn);
+    epCard.appendChild(epHeader);
+
+    const qualityContainer = document.createElement("div");
+    qualityContainer.className = "quality-container";
+    epCard.appendChild(qualityContainer);
+
+    addBtn.addEventListener("click", () => addQualityRow(qualityContainer, seasonNo, episodeNo));
+    addQualityRow(qualityContainer, seasonNo, episodeNo);
+
+    container.appendChild(epCard);
+}
+
 document.getElementById("tmdb-search-btn").addEventListener("click", async () => {
     const q = (tmdbQuery.value || "").trim();
     const type = tmdbType.value;
     if (!q) return;
+    successAlert.classList.add("d-none");
+    tmdbResults.style.display = "";
     tmdbResults.innerHTML = "";
     const res = await fetch(`/dashboard/tmdb/search?q=${encodeURIComponent(q)}&content_type=${encodeURIComponent(type)}`);
     const data = await res.json();
@@ -264,6 +391,9 @@ document.getElementById("tmdb-search-btn").addEventListener("click", async () =>
             posterField.value = detail.poster || "";
             backdropField.value = detail.backdrop || "";
             trailerKeyField.value = detail.trailer_key || "";
+            castProfilesField.value = JSON.stringify(detail.cast_profiles || []);
+            releaseDateField.value = detail.release_date || "";
+            tmdbIdField.value = detail.tmdb_id || "";
             currentTmdbId = row.id;
             if (type === "series") {
                 seasonsContainer.textContent = "Loading seasons...";
@@ -271,8 +401,12 @@ document.getElementById("tmdb-search-btn").addEventListener("click", async () =>
                 const seasonData = await seasonRes.json();
                 if (!seasonData.ok) {
                     seasonsContainer.textContent = seasonData.error || "Failed to load seasons.";
+                    currentSeasons = [];
+                    renderEpisodeMapping([]);
                 } else if (!seasonData.seasons || seasonData.seasons.length === 0) {
                     seasonsContainer.textContent = "No seasons found.";
+                    currentSeasons = [];
+                    renderEpisodeMapping([]);
                 } else {
                     seasonsContainer.innerHTML = "";
                     seasonData.seasons.forEach(season => {
@@ -290,10 +424,18 @@ document.getElementById("tmdb-search-btn").addEventListener("click", async () =>
                         }
                         seasonsContainer.appendChild(block);
                     });
+                    currentSeasons = seasonData.seasons;
+                    renderEpisodeMapping(currentSeasons);
                 }
             } else {
                 seasonsContainer.textContent = "Select a TMDB series to load seasons.";
+                currentSeasons = [];
+                renderEpisodeMapping([]);
             }
+            successAlert.classList.remove("d-none");
+            tmdbResults.innerHTML = "";
+            tmdbResults.style.display = "none";
+            setModeFromType();
         });
         tmdbResults.appendChild(col);
     });
@@ -304,6 +446,8 @@ const itemIdsInput = document.getElementById("item_ids");
 const selectedCount = document.getElementById("selected-count");
 const selectedSize = document.getElementById("selected-size");
 const overridesInput = document.getElementById("overrides");
+document.getElementById("type-field").addEventListener("change", setModeFromType);
+setModeFromType();
 
 function updateSelected() {
     const selected = checks.filter(c => c.checked);
@@ -327,25 +471,72 @@ document.getElementById("file-filter").addEventListener("input", (e) => {
     });
 });
 
-document.getElementById("publishForm").addEventListener("submit", (e) => {
-    const selected = checks.filter(c => c.checked);
-    if (selected.length === 0) {
-        e.preventDefault();
-        alert("Select at least one file to publish.");
-        return;
+document.getElementById("add-manual-episode").addEventListener("click", () => {
+    const seasonInput = prompt("Season number?");
+    if (!seasonInput) return;
+    const episodeInput = prompt("Episode number?");
+    if (!episodeInput) return;
+    const nameInput = prompt("Episode name (optional)?") || "";
+    const seasonNo = parseInt(seasonInput, 10);
+    const episodeNo = parseInt(episodeInput, 10);
+    if (!seasonNo || !episodeNo) return;
+
+    let seasonBlock = document.getElementById(`season-block-${seasonNo}`);
+    if (!seasonBlock) {
+        seasonBlock = document.createElement("div");
+        seasonBlock.className = "mb-3 p-3 border border-secondary rounded bg-dark";
+        seasonBlock.dataset.season = seasonNo;
+        seasonBlock.id = `season-block-${seasonNo}`;
+        const header = document.createElement("div");
+        header.className = "font-weight-bold text-white mb-2";
+        header.textContent = `Season ${seasonNo}`;
+        seasonBlock.appendChild(header);
+        const episodesContainer = document.createElement("div");
+        episodesContainer.className = "episodes-container";
+        seasonBlock.appendChild(episodesContainer);
+        episodeList.appendChild(seasonBlock);
     }
+    const episodesContainer = seasonBlock.querySelector(".episodes-container") || seasonBlock;
+    appendEpisodeCard(episodesContainer, seasonNo, episodeNo, nameInput);
+});
+
+document.getElementById("publishForm").addEventListener("submit", (e) => {
+    const type = document.getElementById("type-field").value;
     const overrides = {};
-    selected.forEach(c => {
-        const id = c.value;
-        const qualityEl = document.querySelector(`.file-quality[data-id="${id}"]`);
-        const seasonEl = document.querySelector(`.file-season[data-id="${id}"]`);
-        const episodeEl = document.querySelector(`.file-episode[data-id="${id}"]`);
-        overrides[id] = {
-            quality: qualityEl ? qualityEl.value.trim() : "",
-            season: seasonEl ? seasonEl.value.trim() : "",
-            episode: episodeEl ? episodeEl.value.trim() : ""
-        };
-    });
+    const selectedIds = new Set();
+
+    if (type === "series") {
+        const rows = Array.from(document.querySelectorAll(".quality-row"));
+        rows.forEach(row => {
+            const season = row.dataset.season;
+            const episode = row.dataset.episode;
+            const quality = row.querySelector(".quality-input")?.value?.trim() || "";
+            const fileId = row.querySelector(".file-select")?.value || "";
+            if (!fileId) return;
+            overrides[fileId] = { season, episode, quality };
+            selectedIds.add(fileId);
+        });
+        if (selectedIds.size === 0) {
+            e.preventDefault();
+            alert("Add at least one file per episode before publishing.");
+            return;
+        }
+        itemIdsInput.value = Array.from(selectedIds).join(",");
+    } else {
+        const selected = checks.filter(c => c.checked);
+        if (selected.length === 0) {
+            e.preventDefault();
+            alert("Select at least one file to publish.");
+            return;
+        }
+        selected.forEach(c => {
+            const id = c.value;
+            const qualityEl = document.querySelector(`.file-quality[data-id="${id}"]`);
+            overrides[id] = { quality: qualityEl ? qualityEl.value.trim() : "" };
+        });
+        itemIdsInput.value = selected.map(c => c.value).join(",");
+    }
+
     overridesInput.value = JSON.stringify(overrides);
 });
 </script>

@@ -44,12 +44,14 @@ class FileSystemItem(Document):
     poster_url: Optional[str] = None
     backdrop_url: Optional[str] = None
     description: Optional[str] = None
+    release_date: Optional[str] = None
     genres: List[str] = []
     actors: List[str] = []
     director: Optional[str] = None
     trailer_url: Optional[str] = None
     trailer_key: Optional[str] = None
     cast_profiles: List[dict] = []
+    tmdb_id: Optional[int] = None
     
     share_token: Optional[str] = None
     collaborators: List[str] = [] 
