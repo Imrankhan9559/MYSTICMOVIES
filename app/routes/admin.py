@@ -6,7 +6,7 @@ import json
 from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
-from beanie.operators import In
+from beanie.operators import In, Or
 from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting, SiteSettings, ContentRequest
 from app.routes.dashboard import get_current_user, _cast_ids, _clone_parts, _build_search_regex
 from app.routes.content import refresh_tmdb_metadata, _parse_name, _tmdb_get
@@ -384,9 +384,76 @@ async def publish_content(request: Request):
         "site": site
     })
 
+@router.get("/dashboard/publish-content/edit/{group_id}")
+async def publish_content_edit(request: Request, group_id: str):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    base_item = await FileSystemItem.get(group_id)
+    if not base_item or base_item.catalog_status != "published":
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+
+    group_type = (getattr(base_item, "catalog_type", "") or "movie").strip().lower()
+    group_title = (base_item.title or base_item.series_title or "").strip()
+    if not group_title:
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+
+    items = await FileSystemItem.find(
+        FileSystemItem.catalog_status == "published",
+        FileSystemItem.catalog_type == group_type,
+        Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
+    ).to_list()
+
+    group = {
+        "id": str(base_item.id),
+        "title": group_title,
+        "year": base_item.year or "",
+        "type": group_type,
+        "poster": base_item.poster_url or "",
+        "backdrop": base_item.backdrop_url or "",
+        "description": base_item.description or "",
+        "genres": base_item.genres or [],
+        "actors": base_item.actors or [],
+        "director": base_item.director or "",
+        "trailer_url": base_item.trailer_url or "",
+        "trailer_key": base_item.trailer_key or "",
+        "release_date": base_item.release_date or "",
+        "items": [],
+    }
+    for item in items:
+        info = _parse_name(item.name or "")
+        quality = getattr(item, "quality", "") or info["quality"]
+        season = getattr(item, "season", None) or info["season"]
+        episode = getattr(item, "episode", None) or info["episode"]
+        group["items"].append({
+            "id": str(item.id),
+            "name": item.name,
+            "size": item.size or 0,
+            "size_label": format_size(item.size or 0),
+            "quality": quality,
+            "season": season,
+            "episode": episode,
+            "episode_title": getattr(item, "episode_title", "") or ""
+        })
+    _summarize_group(group)
+    site = await _site_settings()
+    return templates.TemplateResponse("publish_content_edit.html", {
+        "request": request,
+        "user": user,
+        "is_admin": True,
+        "group": group,
+        "site": site,
+        "return_to": f"/dashboard/publish-content/edit/{group_id}"
+    })
+
+@router.post("/dashboard/publish-content/save")
 @router.post("/dashboard/publish-content/update")
 async def publish_content_update(
     request: Request,
+    group_id: str = Form(""),
     group_title: str = Form(""),
     group_year: str = Form(""),
     group_type: str = Form("movie"),
@@ -400,16 +467,22 @@ async def publish_content_update(
     trailer_key: str = Form(""),
     poster_url: str = Form(""),
     backdrop_url: str = Form(""),
-    release_date: str = Form("")
+    release_date: str = Form(""),
+    return_to: str = Form("")
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
+    base_item = await FileSystemItem.get(group_id) if group_id else None
+    if base_item:
+        group_title = (base_item.title or base_item.series_title or group_title or "").strip()
+        group_type = (getattr(base_item, "catalog_type", "") or group_type or "movie").strip().lower()
+        group_year = (base_item.year or group_year or "").strip()
     group_title = (group_title or "").strip()
     group_type = (group_type or "movie").strip().lower()
     group_year = (group_year or "").strip()
     if not group_title:
-        return RedirectResponse("/dashboard/publish-content", status_code=303)
+        return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
     new_title = (title or "").strip() or group_title
     new_year = (year or "").strip() or group_year
@@ -426,7 +499,7 @@ async def publish_content_update(
     items = await FileSystemItem.find(
         FileSystemItem.catalog_status == "published",
         FileSystemItem.catalog_type == group_type,
-        FileSystemItem.title == group_title
+        Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
     ).to_list()
     for item in items:
         item.title = new_title
@@ -455,26 +528,98 @@ async def publish_content_update(
                 target_folder.name = new_title
                 await target_folder.save()
 
-    return RedirectResponse("/dashboard/publish-content", status_code=303)
+    return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
-@router.post("/dashboard/publish-content/delete")
-async def publish_content_delete(
+@router.post("/dashboard/publish-content/add-files")
+async def publish_content_add_files(
     request: Request,
-    group_title: str = Form(""),
-    group_type: str = Form("movie")
+    group_id: str = Form(""),
+    item_ids: str = Form(""),
+    overrides: str = Form("")
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
+    if not group_id:
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+    base_item = await FileSystemItem.get(group_id)
+    if not base_item or base_item.catalog_status != "published":
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+
+    raw_ids = [i.strip() for i in (item_ids or "").split(",") if i.strip()]
+    if not raw_ids:
+        return RedirectResponse(f"/dashboard/publish-content/edit/{group_id}", status_code=303)
+    items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(raw_ids))).to_list()
+    if not items:
+        return RedirectResponse(f"/dashboard/publish-content/edit/{group_id}", status_code=303)
+
+    override_map = {}
+    if overrides:
+        try:
+            override_map = json.loads(overrides)
+        except Exception:
+            override_map = {}
+
+    catalog_type = (getattr(base_item, "catalog_type", "") or "movie").strip().lower()
+    title = (base_item.title or base_item.series_title or "").strip()
+    year = base_item.year or ""
+    desc = base_item.description or ""
+    genres_list = base_item.genres or []
+    actors_list = base_item.actors or []
+    director = base_item.director or ""
+    trailer_url = base_item.trailer_url or ""
+    poster_url = base_item.poster_url or ""
+    backdrop_url = base_item.backdrop_url or ""
+    trailer_key = base_item.trailer_key or ""
+    release_date = base_item.release_date or ""
+    cast_profiles_list = base_item.cast_profiles or []
+    tmdb_id_val = getattr(base_item, "tmdb_id", None)
+
+    await _publish_items(
+        items=items,
+        catalog_type=catalog_type,
+        title=title,
+        year=year,
+        desc=desc,
+        genres_list=genres_list,
+        actors_list=actors_list,
+        director=director,
+        trailer_url=trailer_url,
+        release_date=release_date,
+        poster_url=poster_url,
+        backdrop_url=backdrop_url,
+        trailer_key=trailer_key,
+        cast_profiles=cast_profiles_list,
+        tmdb_id=tmdb_id_val,
+        overrides=override_map
+    )
+
+    return RedirectResponse(f"/dashboard/publish-content/edit/{group_id}", status_code=303)
+
+@router.post("/dashboard/publish-content/delete")
+async def publish_content_delete(
+    request: Request,
+    group_id: str = Form(""),
+    group_title: str = Form(""),
+    group_type: str = Form("movie"),
+    return_to: str = Form("")
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    base_item = await FileSystemItem.get(group_id) if group_id else None
+    if base_item:
+        group_title = (base_item.title or base_item.series_title or group_title or "").strip()
+        group_type = (getattr(base_item, "catalog_type", "") or group_type or "movie").strip().lower()
     group_title = (group_title or "").strip()
     group_type = (group_type or "movie").strip().lower()
     if not group_title:
-        return RedirectResponse("/dashboard/publish-content", status_code=303)
+        return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
     await FileSystemItem.find(
         FileSystemItem.catalog_status == "published",
         FileSystemItem.catalog_type == group_type,
-        FileSystemItem.title == group_title
+        Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
     ).delete()
 
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
@@ -486,25 +631,26 @@ async def publish_content_delete(
             if target_folder:
                 await _cleanup_empty_tree(str(target_folder.id))
 
-    return RedirectResponse("/dashboard/publish-content", status_code=303)
+    return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.post("/dashboard/publish-content/delete-file")
 async def publish_content_delete_file(
     request: Request,
-    published_id: str = Form("")
+    published_id: str = Form(""),
+    return_to: str = Form("")
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
     if not published_id:
-        return RedirectResponse("/dashboard/publish-content", status_code=303)
+        return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
     item = await FileSystemItem.get(published_id)
     if not item or item.catalog_status != "published":
-        return RedirectResponse("/dashboard/publish-content", status_code=303)
+        return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
     parent_id = item.parent_id
     await item.delete()
     await _cleanup_parents(parent_id)
-    return RedirectResponse("/dashboard/publish-content", status_code=303)
+    return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.post("/dashboard/publish-content/update-file")
 async def publish_content_update_file(
@@ -514,16 +660,17 @@ async def publish_content_update_file(
     quality: str = Form(""),
     season: str = Form(""),
     episode: str = Form(""),
-    episode_title: str = Form("")
+    episode_title: str = Form(""),
+    return_to: str = Form("")
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
     if not published_id:
-        return RedirectResponse("/dashboard/publish-content", status_code=303)
+        return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
     item = await FileSystemItem.get(published_id)
     if not item or item.catalog_status != "published":
-        return RedirectResponse("/dashboard/publish-content", status_code=303)
+        return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
     item.quality = (quality or "").strip()
     if (season or "").strip():
@@ -568,7 +715,7 @@ async def publish_content_update_file(
                     item.parent_id = str(quality_folder.id)
 
     await item.save()
-    return RedirectResponse("/dashboard/publish-content", status_code=303)
+    return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.get("/dashboard/storage/search")
 async def admin_storage_search(request: Request, q: str = "", offset: int = 0, limit: int = 200):

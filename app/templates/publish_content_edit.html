@@ -1,0 +1,447 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="content-header">
+    <div class="container-fluid">
+        <div class="row mb-2">
+            <div class="col-sm-6">
+                <h1 class="m-0">Edit Content</h1>
+                <div class="admin-section-note">Update details, add files, or remove files for this title.</div>
+            </div>
+            <div class="col-sm-6">
+                <ol class="breadcrumb float-sm-right">
+                    <li class="breadcrumb-item"><a href="/dashboard">Dashboard</a></li>
+                    <li class="breadcrumb-item"><a href="/dashboard/publish-content">Publish Content</a></li>
+                    <li class="breadcrumb-item active">Edit</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</div>
+
+<section class="content">
+    <div class="container-fluid">
+        <div class="card card-outline card-dark mb-4">
+            <div class="card-header">
+                <h3 class="card-title">
+                    <i class="fas fa-pen"></i> {{ group.title }}
+                    <span class="badge badge-secondary ml-2">{{ group.type|title }}</span>
+                    {% if group.year %}<span class="badge badge-light ml-1">{{ group.year }}</span>{% endif %}
+                </h3>
+                <div class="card-tools">
+                    <a href="/dashboard/publish-content" class="btn btn-sm btn-outline-light">Back</a>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3 mb-3 mb-md-0">
+                        {% if group.poster %}
+                            <img src="{{ group.poster }}" alt="{{ group.title }}" class="img-fluid rounded border border-secondary mb-2">
+                        {% else %}
+                            <div class="rounded border border-secondary bg-dark d-flex align-items-center justify-content-center" style="height: 260px;">
+                                <i class="fas fa-film text-warning" style="font-size: 48px;"></i>
+                            </div>
+                        {% endif %}
+                        {% if group.backdrop %}
+                            <img src="{{ group.backdrop }}" alt="{{ group.title }} backdrop" class="img-fluid rounded border border-secondary">
+                        {% endif %}
+                    </div>
+                    <div class="col-md-9">
+                        <form action="/dashboard/publish-content/save" method="post">
+                            <input type="hidden" name="group_id" value="{{ group.id }}">
+                            <input type="hidden" name="return_to" value="{{ return_to }}">
+                            <div class="form-row">
+                                <div class="form-group col-md-5">
+                                    <label>Title</label>
+                                    <input name="title" value="{{ group.title }}" class="form-control" />
+                                </div>
+                                <div class="form-group col-md-2">
+                                    <label>Year</label>
+                                    <input name="year" value="{{ group.year }}" class="form-control" />
+                                </div>
+                                <div class="form-group col-md-3">
+                                    <label>Release Date</label>
+                                    <input name="release_date" value="{{ group.release_date or '' }}" class="form-control" placeholder="YYYY-MM-DD" />
+                                </div>
+                                <div class="form-group col-md-2">
+                                    <label>Type</label>
+                                    <input value="{{ group.type }}" class="form-control" readonly />
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group col-md-6">
+                                    <label>Poster URL</label>
+                                    <input name="poster_url" value="{{ group.poster or '' }}" class="form-control" />
+                                </div>
+                                <div class="form-group col-md-6">
+                                    <label>Backdrop URL</label>
+                                    <input name="backdrop_url" value="{{ group.backdrop or '' }}" class="form-control" />
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group col-md-6">
+                                    <label>Trailer URL</label>
+                                    <input name="trailer_url" value="{{ group.trailer_url or '' }}" class="form-control" />
+                                </div>
+                                <div class="form-group col-md-6">
+                                    <label>Trailer Key (YouTube)</label>
+                                    <input name="trailer_key" value="{{ group.trailer_key or '' }}" class="form-control" />
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group col-md-6">
+                                    <label>Description</label>
+                                    <textarea name="description" rows="3" class="form-control">{{ group.description or '' }}</textarea>
+                                </div>
+                                <div class="form-group col-md-6">
+                                    <div class="form-row">
+                                        <div class="form-group col-md-6">
+                                            <label>Genres (comma)</label>
+                                            <input name="genres" value="{{ group.genres|join(', ') if group.genres else '' }}" class="form-control" />
+                                        </div>
+                                        <div class="form-group col-md-6">
+                                            <label>Director</label>
+                                            <input name="director" value="{{ group.director or '' }}" class="form-control" />
+                                        </div>
+                                        <div class="form-group col-md-12">
+                                            <label>Actors (comma)</label>
+                                            <input name="actors" value="{{ group.actors|join(', ') if group.actors else '' }}" class="form-control" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <button class="btn btn-primary">Save Details</button>
+                        </form>
+                    </div>
+                </div>
+
+                <hr class="border-secondary" />
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <h5 class="mb-0">Files</h5>
+                    <span class="text-muted text-sm">{{ group.file_count }} files · {{ group.total_size_label }}</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>File</th>
+                                <th>Quality</th>
+                                <th>Season</th>
+                                <th>Episode</th>
+                                <th>Episode Title</th>
+                                <th class="text-right">Size</th>
+                                <th class="text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in group['items'] %}
+                            {% set form_id = "file-form-" ~ item.id %}
+                            <tr>
+                                <td class="text-truncate" style="max-width: 220px;" title="{{ item.name }}">{{ item.name }}</td>
+                                <td>
+                                    <input name="quality" value="{{ item.quality or '' }}" class="form-control form-control-sm" form="{{ form_id }}" />
+                                </td>
+                                <td>
+                                    {% if group.type == 'series' %}
+                                    <input name="season" value="{{ item.season or '' }}" class="form-control form-control-sm" form="{{ form_id }}" />
+                                    {% else %}
+                                    <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if group.type == 'series' %}
+                                    <input name="episode" value="{{ item.episode or '' }}" class="form-control form-control-sm" form="{{ form_id }}" />
+                                    {% else %}
+                                    <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if group.type == 'series' %}
+                                    <input name="episode_title" value="{{ item.episode_title or '' }}" class="form-control form-control-sm" form="{{ form_id }}" />
+                                    {% else %}
+                                    <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td class="text-right">{{ item.size_label }}</td>
+                                <td class="text-right">
+                                    <form id="{{ form_id }}" action="/dashboard/publish-content/update-file" method="post" class="d-none">
+                                        <input type="hidden" name="published_id" value="{{ item.id }}">
+                                        <input type="hidden" name="storage_id" value="" id="storage-id-{{ item.id }}">
+                                        <input type="hidden" name="return_to" value="{{ return_to }}">
+                                    </form>
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        <button type="button" class="btn btn-outline-light choose-file" data-target="{{ item.id }}">Change File</button>
+                                        <button type="submit" form="{{ form_id }}" class="btn btn-primary">Save</button>
+                                        <form action="/dashboard/publish-content/delete-file" method="post" class="d-inline">
+                                            <input type="hidden" name="published_id" value="{{ item.id }}">
+                                            <input type="hidden" name="return_to" value="{{ return_to }}">
+                                            <button type="submit" class="btn btn-danger" onclick="return confirm('Delete this file?')">Delete</button>
+                                        </form>
+                                    </div>
+                                    <div id="storage-label-{{ item.id }}" class="text-xs text-muted mt-1">No replacement selected</div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+
+                <hr class="border-secondary" />
+                <div class="card card-outline card-secondary">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-plus"></i> Add Files</h3>
+                        <div class="card-tools">
+                            <span class="badge badge-secondary">{{ group.type|title }}</span>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <form id="add-files-form" action="/dashboard/publish-content/add-files" method="post">
+                            <input type="hidden" name="group_id" value="{{ group.id }}">
+                            <input type="hidden" name="item_ids" id="add-item-ids">
+                            <input type="hidden" name="overrides" id="add-overrides">
+                            <div id="add-files-list"></div>
+                            <div class="mt-2">
+                                <button type="button" id="add-row-btn" class="btn btn-sm btn-outline-light">Add Row</button>
+                                <button type="submit" class="btn btn-sm btn-success ml-2">Attach Files</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+</section>
+
+<div id="file-picker-modal" class="d-none" style="position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 2000; overflow-y: auto;">
+    <div class="container-fluid" style="min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 1.5rem;">
+        <div class="card card-outline card-dark w-100" style="max-width: 920px;">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-search"></i> Storage File Picker</h3>
+                <div class="card-tools">
+                    <button type="button" id="file-picker-close" class="btn btn-sm btn-outline-light">Close</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="form-row align-items-end">
+                    <div class="form-group col-md-8">
+                        <label>Search storage files</label>
+                        <input id="file-picker-search" class="form-control" placeholder="Search filename or size (e.g. 1080p, 1.4 GB)">
+                    </div>
+                    <div class="form-group col-md-4">
+                        <label>Results</label>
+                        <div id="file-picker-count" class="form-control-plaintext text-white">0 files</div>
+                    </div>
+                </div>
+                <div class="table-responsive" style="max-height: 420px; overflow-y: auto;">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>File</th>
+                                <th class="text-right">Size</th>
+                            </tr>
+                        </thead>
+                        <tbody id="file-picker-body"></tbody>
+                    </table>
+                </div>
+                <div class="mt-3 text-center">
+                    <button type="button" id="file-picker-more" class="btn btn-outline-light btn-sm">Load More</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+const groupType = "{{ group.type }}";
+const addFilesList = document.getElementById("add-files-list");
+const addRowBtn = document.getElementById("add-row-btn");
+const addFilesForm = document.getElementById("add-files-form");
+const addItemIds = document.getElementById("add-item-ids");
+const addOverrides = document.getElementById("add-overrides");
+
+function createFileRow() {
+    const row = document.createElement("div");
+    row.className = "border border-secondary rounded p-3 mb-2";
+    row.innerHTML = `
+        <div class="form-row align-items-end">
+            ${groupType === "series" ? `
+            <div class="form-group col-md-2">
+                <label>Season</label>
+                <input type="number" class="form-control form-control-sm season-input" min="1" value="1">
+            </div>
+            <div class="form-group col-md-2">
+                <label>Episode</label>
+                <input type="number" class="form-control form-control-sm episode-input" min="1" value="1">
+            </div>
+            <div class="form-group col-md-3">
+                <label>Episode Title</label>
+                <input type="text" class="form-control form-control-sm episode-title-input" placeholder="Episode name">
+            </div>
+            ` : ``}
+            <div class="form-group col-md-${groupType === "series" ? "2" : "3"}">
+                <label>Quality</label>
+                <input type="text" class="form-control form-control-sm quality-input" placeholder="1080p">
+            </div>
+            <div class="form-group col-md-${groupType === "series" ? "3" : "6"}">
+                <label>File</label>
+                <div class="input-group input-group-sm">
+                    <input type="hidden" class="storage-id">
+                    <input type="text" class="form-control form-control-sm storage-label" value="No file selected" readonly>
+                    <div class="input-group-append">
+                        <button type="button" class="btn btn-outline-light pick-file">Browse</button>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group col-md-1">
+                <button type="button" class="btn btn-sm btn-danger remove-row">Remove</button>
+            </div>
+        </div>
+    `;
+    row.querySelector(".remove-row").addEventListener("click", () => row.remove());
+    row.querySelector(".pick-file").addEventListener("click", () => {
+        const storageInput = row.querySelector(".storage-id");
+        const labelEl = row.querySelector(".storage-label");
+        openFilePicker(storageInput, labelEl);
+    });
+    return row;
+}
+
+function ensureInitialRow() {
+    if (addFilesList.children.length === 0) {
+        addFilesList.appendChild(createFileRow());
+    }
+}
+
+addRowBtn.addEventListener("click", () => {
+    addFilesList.appendChild(createFileRow());
+});
+
+addFilesForm.addEventListener("submit", (e) => {
+    const rows = Array.from(addFilesList.children);
+    const overrides = {};
+    const ids = new Set();
+    rows.forEach(row => {
+        const storageId = row.querySelector(".storage-id")?.value || "";
+        if (!storageId) return;
+        const quality = row.querySelector(".quality-input")?.value?.trim() || "";
+        const payload = { quality };
+        if (groupType === "series") {
+            payload.season = row.querySelector(".season-input")?.value || "";
+            payload.episode = row.querySelector(".episode-input")?.value || "";
+            payload.episode_title = row.querySelector(".episode-title-input")?.value?.trim() || "";
+        }
+        overrides[storageId] = payload;
+        ids.add(storageId);
+    });
+    if (ids.size === 0) {
+        e.preventDefault();
+        alert("Select at least one storage file to attach.");
+        return;
+    }
+    addItemIds.value = Array.from(ids).join(",");
+    addOverrides.value = JSON.stringify(overrides);
+});
+
+ensureInitialRow();
+
+const filePickerModal = document.getElementById("file-picker-modal");
+const filePickerClose = document.getElementById("file-picker-close");
+const filePickerSearch = document.getElementById("file-picker-search");
+const filePickerBody = document.getElementById("file-picker-body");
+const filePickerCount = document.getElementById("file-picker-count");
+const filePickerMore = document.getElementById("file-picker-more");
+let activeStorageInput = null;
+let activeLabel = null;
+let pickerQuery = "";
+let pickerOffset = 0;
+let pickerLoading = false;
+let pickerTimer = null;
+
+async function fetchPickerResults(reset) {
+    if (pickerLoading) return;
+    pickerLoading = true;
+    if (reset) {
+        pickerOffset = 0;
+        filePickerBody.innerHTML = "";
+        filePickerCount.textContent = "Loading...";
+    }
+    const params = new URLSearchParams();
+    if (pickerQuery) params.set("q", pickerQuery);
+    params.set("offset", pickerOffset.toString());
+    params.set("limit", "200");
+    try {
+        const res = await fetch(`/dashboard/storage/search?${params.toString()}`);
+        const data = await res.json();
+        const items = data.items || [];
+        items.forEach(f => {
+            const row = document.createElement("tr");
+            row.innerHTML = `
+                <td class="text-truncate" style="max-width: 520px;" title="${f.name}">${f.name}</td>
+                <td class="text-right">${f.size_label}</td>
+            `;
+            row.addEventListener("click", () => {
+                if (activeStorageInput) {
+                    activeStorageInput.value = f.id;
+                }
+                if (activeLabel) {
+                    if ("value" in activeLabel) {
+                        activeLabel.value = `${f.name} (${f.size_label})`;
+                    } else {
+                        activeLabel.textContent = `${f.name} (${f.size_label})`;
+                    }
+                }
+                closeFilePicker();
+            });
+            filePickerBody.appendChild(row);
+        });
+        pickerOffset += items.length;
+        filePickerCount.textContent = `${pickerOffset} files`;
+        filePickerMore.style.display = data.has_more ? "" : "none";
+    } catch (e) {
+        filePickerCount.textContent = "Failed to load files";
+    } finally {
+        pickerLoading = false;
+    }
+}
+
+function openFilePicker(storageInput, labelEl) {
+    activeStorageInput = storageInput;
+    activeLabel = labelEl;
+    pickerQuery = (filePickerSearch.value || "").trim();
+    fetchPickerResults(true);
+    filePickerModal.classList.remove("d-none");
+    filePickerSearch.focus();
+}
+
+function closeFilePicker() {
+    activeStorageInput = null;
+    activeLabel = null;
+    filePickerModal.classList.add("d-none");
+}
+
+document.querySelectorAll(".choose-file").forEach(btn => {
+    btn.addEventListener("click", () => {
+        const targetId = btn.dataset.target;
+        const storageInput = document.getElementById(`storage-id-${targetId}`);
+        const labelEl = document.getElementById(`storage-label-${targetId}`);
+        openFilePicker(storageInput, labelEl);
+    });
+});
+
+filePickerClose.addEventListener("click", closeFilePicker);
+filePickerModal.addEventListener("click", (e) => {
+    if (e.target === filePickerModal) closeFilePicker();
+});
+filePickerSearch.addEventListener("input", (e) => {
+    if (pickerTimer) clearTimeout(pickerTimer);
+    pickerTimer = setTimeout(() => {
+        pickerQuery = (e.target.value || "").trim();
+        fetchPickerResults(true);
+    }, 250);
+});
+filePickerMore.addEventListener("click", () => fetchPickerResults(false));
+</script>
+{% endblock %}
