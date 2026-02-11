@@ -8,7 +8,7 @@ from fastapi.templating import Jinja2Templates
 from beanie.operators import In
 from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting, SiteSettings, ContentRequest
 from app.routes.dashboard import get_current_user, _cast_ids, _clone_parts
-from app.routes.content import refresh_tmdb_metadata, _parse_name
+from app.routes.content import refresh_tmdb_metadata, _parse_name, _tmdb_get
 from app.core.config import settings
 from app.core.telegram_bot import pool_status, reload_bot_pool, speed_test, _get_pool_tokens
 from app.utils.file_utils import format_size
@@ -444,6 +444,34 @@ async def tmdb_details(tmdb_id: int, content_type: str = "movie"):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+@router.get("/dashboard/tmdb/seasons")
+async def tmdb_seasons(tmdb_id: int):
+    if not settings.TMDB_API_KEY:
+        return {"ok": False, "error": "TMDB_API_KEY missing", "seasons": []}
+    try:
+        details = await _tmdb_get(f"/tv/{tmdb_id}", {})
+        seasons = []
+        for s in details.get("seasons", []) or []:
+            season_no = s.get("season_number")
+            if season_no is None:
+                continue
+            season_details = await _tmdb_get(f"/tv/{tmdb_id}/season/{season_no}", {})
+            episodes = []
+            for ep in season_details.get("episodes", []) or []:
+                episodes.append({
+                    "episode": ep.get("episode_number"),
+                    "name": ep.get("name") or ""
+                })
+            seasons.append({
+                "season": season_no,
+                "name": s.get("name") or f"Season {season_no}",
+                "episode_count": s.get("episode_count") or len(episodes),
+                "episodes": episodes
+            })
+        return {"ok": True, "seasons": seasons}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "seasons": []}
+
 async def _publish_items(
     items: list[FileSystemItem],
     catalog_type: str,
@@ -453,12 +481,18 @@ async def _publish_items(
     genres_list: list[str],
     actors_list: list[str],
     director: str,
-    trailer_url: str
+    trailer_url: str,
+    poster_url: str = "",
+    backdrop_url: str = "",
+    trailer_key: str = "",
+    overrides: dict | None = None
 ) -> None:
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     if not admin_phone:
         return
     catalog_type = (catalog_type or "movie").strip().lower()
+
+    overrides = overrides or {}
 
     if catalog_type == "movie":
         root = await _ensure_folder(admin_phone, "Movies", None)
@@ -473,7 +507,8 @@ async def _publish_items(
             if existing:
                 continue
             info = _parse_name(item.name or "")
-            quality = getattr(item, "quality", "") or info["quality"] or "HD"
+            override = overrides.get(str(item.id), {}) or {}
+            quality = (override.get("quality") or getattr(item, "quality", "") or info["quality"] or "HD").strip()
             new_file = FileSystemItem(
                 name=item.name,
                 is_folder=False,
@@ -492,6 +527,9 @@ async def _publish_items(
                 actors=actors_list,
                 director=director,
                 trailer_url=trailer_url,
+                trailer_key=trailer_key,
+                poster_url=poster_url,
+                backdrop_url=backdrop_url,
                 parts=_clone_parts(item.parts)
             )
             await new_file.insert()
@@ -500,9 +538,18 @@ async def _publish_items(
         series_folder = await _ensure_folder(admin_phone, title, str(root.id))
         for item in items:
             info = _parse_name(item.name or "")
-            season = getattr(item, "season", None) or info["season"]
-            episode = getattr(item, "episode", None) or info["episode"]
-            quality = getattr(item, "quality", "") or info["quality"] or "HD"
+            override = overrides.get(str(item.id), {}) or {}
+            season_val = override.get("season") or getattr(item, "season", None) or info["season"]
+            episode_val = override.get("episode") or getattr(item, "episode", None) or info["episode"]
+            try:
+                season = int(season_val) if season_val else 1
+            except Exception:
+                season = 1
+            try:
+                episode = int(episode_val) if episode_val else 1
+            except Exception:
+                episode = 1
+            quality = (override.get("quality") or getattr(item, "quality", "") or info["quality"] or "HD").strip()
             season_folder = await _ensure_folder(admin_phone, f"Season {season}", str(series_folder.id))
             quality_folder = await _ensure_folder(admin_phone, quality, str(season_folder.id))
             existing = await FileSystemItem.find_one(
@@ -534,12 +581,28 @@ async def _publish_items(
                 actors=actors_list,
                 director=director,
                 trailer_url=trailer_url,
+                trailer_key=trailer_key,
+                poster_url=poster_url,
+                backdrop_url=backdrop_url,
                 parts=_clone_parts(item.parts)
             )
             await new_file.insert()
 
     for item in items:
         try:
+            override = overrides.get(str(item.id), {}) or {}
+            if override.get("quality"):
+                item.quality = override.get("quality")
+            if override.get("season"):
+                try:
+                    item.season = int(override.get("season"))
+                except Exception:
+                    pass
+            if override.get("episode"):
+                try:
+                    item.episode = int(override.get("episode"))
+                except Exception:
+                    pass
             item.catalog_status = "used"
             await item.save()
         except Exception:
@@ -557,7 +620,11 @@ async def main_control_publish(
     genres: str = Form(""),
     actors: str = Form(""),
     director: str = Form(""),
-    trailer_url: str = Form("")
+    trailer_url: str = Form(""),
+    poster_url: str = Form(""),
+    backdrop_url: str = Form(""),
+    trailer_key: str = Form(""),
+    overrides: str = Form("")
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
@@ -583,6 +650,13 @@ async def main_control_publish(
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     if not admin_phone:
         return RedirectResponse("/dashboard", status_code=303)
+    override_map = {}
+    if overrides:
+        try:
+            override_map = json.loads(overrides)
+        except Exception:
+            override_map = {}
+
     await _publish_items(
         items=items,
         catalog_type=catalog_type,
@@ -592,7 +666,11 @@ async def main_control_publish(
         genres_list=genres_list,
         actors_list=actors_list,
         director=director,
-        trailer_url=trailer_url
+        trailer_url=trailer_url,
+        poster_url=(poster_url or "").strip(),
+        backdrop_url=(backdrop_url or "").strip(),
+        trailer_key=(trailer_key or "").strip(),
+        overrides=override_map
     )
 
     return RedirectResponse("/dashboard", status_code=303)
@@ -607,7 +685,10 @@ async def publish_by_title(
     genres: str = Form(""),
     actors: str = Form(""),
     director: str = Form(""),
-    trailer_url: str = Form("")
+    trailer_url: str = Form(""),
+    poster_url: str = Form(""),
+    backdrop_url: str = Form(""),
+    trailer_key: str = Form("")
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
@@ -661,7 +742,10 @@ async def publish_by_title(
         genres_list=genres_list,
         actors_list=actors_list,
         director=director,
-        trailer_url=trailer_url
+        trailer_url=trailer_url,
+        poster_url=(poster_url or "").strip(),
+        backdrop_url=(backdrop_url or "").strip(),
+        trailer_key=(trailer_key or "").strip()
     )
     return RedirectResponse("/dashboard?publish=ok", status_code=303)
 

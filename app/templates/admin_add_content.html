@@ -55,6 +55,10 @@
 
         <form id="publishForm" action="/dashboard/publish" method="post">
             <input type="hidden" name="item_ids" id="item_ids">
+            <input type="hidden" name="overrides" id="overrides">
+            <input type="hidden" name="poster_url" id="poster-field">
+            <input type="hidden" name="backdrop_url" id="backdrop-field">
+            <input type="hidden" name="trailer_key" id="trailer-key-field">
             <div class="card card-outline card-secondary">
                 <div class="card-header">
                     <h3 class="card-title"><i class="fas fa-pen"></i> Metadata</h3>
@@ -114,6 +118,18 @@
                 </div>
             </div>
 
+            <div class="card card-outline card-info">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="fas fa-list"></i> TMDB Seasons & Episodes</h3>
+                    <div class="card-tools">
+                        <span class="badge badge-info">Series only</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div id="tmdb-seasons" class="text-sm text-muted">Select a TMDB series to load seasons.</div>
+                </div>
+            </div>
+
             <div class="card card-outline card-dark">
                 <div class="card-header">
                     <h3 class="card-title"><i class="fas fa-file-video"></i> Attach Storage Files</h3>
@@ -143,9 +159,10 @@
                                     <th>Select</th>
                                     <th>File</th>
                                     <th>Type</th>
-                                    <th>Quality</th>
-                                    <th>Season/Episode</th>
-                                    <th class="text-right">Size</th>
+                            <th>Quality</th>
+                            <th>Season</th>
+                            <th>Episode</th>
+                            <th class="text-right">Size</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -156,13 +173,14 @@
                                     </td>
                                     <td class="text-truncate" style="max-width: 280px;" title="{{ f.name }}">{{ f.name }}</td>
                                     <td>{{ f.type }}</td>
-                                    <td>{{ f.quality }}</td>
                                     <td>
-                                        {% if f.type == 'series' %}
-                                            S{{ f.season or '?' }}E{{ f.episode or '?' }}
-                                        {% else %}
-                                            -
-                                        {% endif %}
+                                        <input type="text" class="form-control form-control-sm file-quality" value="{{ f.quality }}" data-id="{{ f.id }}">
+                                    </td>
+                                    <td>
+                                        <input type="number" class="form-control form-control-sm file-season" value="{{ f.season or '' }}" data-id="{{ f.id }}" min="1">
+                                    </td>
+                                    <td>
+                                        <input type="number" class="form-control form-control-sm file-episode" value="{{ f.episode or '' }}" data-id="{{ f.id }}" min="1">
                                     </td>
                                     <td class="text-right">{{ f.size_label }}</td>
                                 </tr>
@@ -187,6 +205,11 @@ const tmdbQuery = document.getElementById("tmdb-query");
 const tmdbType = document.getElementById("tmdb-type");
 const tmdbResults = document.getElementById("tmdb-results");
 const googleLink = document.getElementById("google-search-link");
+const posterField = document.getElementById("poster-field");
+const backdropField = document.getElementById("backdrop-field");
+const trailerKeyField = document.getElementById("trailer-key-field");
+const seasonsContainer = document.getElementById("tmdb-seasons");
+let currentTmdbId = null;
 
 function setGoogleLink() {
     const q = (tmdbQuery.value || "").trim();
@@ -238,6 +261,39 @@ document.getElementById("tmdb-search-btn").addEventListener("click", async () =>
             document.getElementById("director-field").value = detail.director || "";
             document.getElementById("trailer-field").value = detail.trailer_url || "";
             document.getElementById("type-field").value = type;
+            posterField.value = detail.poster || "";
+            backdropField.value = detail.backdrop || "";
+            trailerKeyField.value = detail.trailer_key || "";
+            currentTmdbId = row.id;
+            if (type === "series") {
+                seasonsContainer.textContent = "Loading seasons...";
+                const seasonRes = await fetch(`/dashboard/tmdb/seasons?tmdb_id=${row.id}`);
+                const seasonData = await seasonRes.json();
+                if (!seasonData.ok) {
+                    seasonsContainer.textContent = seasonData.error || "Failed to load seasons.";
+                } else if (!seasonData.seasons || seasonData.seasons.length === 0) {
+                    seasonsContainer.textContent = "No seasons found.";
+                } else {
+                    seasonsContainer.innerHTML = "";
+                    seasonData.seasons.forEach(season => {
+                        const block = document.createElement("div");
+                        block.className = "mb-3";
+                        const title = document.createElement("div");
+                        title.className = "font-weight-bold text-white mb-1";
+                        title.textContent = `${season.name} (Episodes: ${season.episode_count || season.episodes.length})`;
+                        block.appendChild(title);
+                        if (season.episodes && season.episodes.length > 0) {
+                            const list = document.createElement("div");
+                            list.className = "text-muted";
+                            list.textContent = season.episodes.map(ep => `E${ep.episode}: ${ep.name || ""}`).join(" · ");
+                            block.appendChild(list);
+                        }
+                        seasonsContainer.appendChild(block);
+                    });
+                }
+            } else {
+                seasonsContainer.textContent = "Select a TMDB series to load seasons.";
+            }
         });
         tmdbResults.appendChild(col);
     });
@@ -247,6 +303,7 @@ const checks = Array.from(document.querySelectorAll(".file-check"));
 const itemIdsInput = document.getElementById("item_ids");
 const selectedCount = document.getElementById("selected-count");
 const selectedSize = document.getElementById("selected-size");
+const overridesInput = document.getElementById("overrides");
 
 function updateSelected() {
     const selected = checks.filter(c => c.checked);
@@ -268,6 +325,28 @@ document.getElementById("file-filter").addEventListener("input", (e) => {
     document.querySelectorAll("#files-table tbody tr").forEach((row) => {
         row.style.display = row.dataset.name.includes(term) ? "" : "none";
     });
+});
+
+document.getElementById("publishForm").addEventListener("submit", (e) => {
+    const selected = checks.filter(c => c.checked);
+    if (selected.length === 0) {
+        e.preventDefault();
+        alert("Select at least one file to publish.");
+        return;
+    }
+    const overrides = {};
+    selected.forEach(c => {
+        const id = c.value;
+        const qualityEl = document.querySelector(`.file-quality[data-id="${id}"]`);
+        const seasonEl = document.querySelector(`.file-season[data-id="${id}"]`);
+        const episodeEl = document.querySelector(`.file-episode[data-id="${id}"]`);
+        overrides[id] = {
+            quality: qualityEl ? qualityEl.value.trim() : "",
+            season: seasonEl ? seasonEl.value.trim() : "",
+            episode: episodeEl ? episodeEl.value.trim() : ""
+        };
+    });
+    overridesInput.value = JSON.stringify(overrides);
 });
 </script>
 {% endblock %}
