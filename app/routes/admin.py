@@ -225,7 +225,6 @@ async def main_control(request: Request):
     tmdb_configured = bool(getattr(settings, "TMDB_API_KEY", ""))
     tmdb_status = (request.query_params.get("tmdb") or "").strip().lower()
 
-    storage_suggestions = await _group_storage_suggestions()
     published_groups = await _group_published_catalog()
     published_movies = await FileSystemItem.find(
         FileSystemItem.is_folder == False,
@@ -237,7 +236,11 @@ async def main_control(request: Request):
         FileSystemItem.catalog_status == "published",
         FileSystemItem.catalog_type == "series"
     ).count()
-    suggestion_groups = len(storage_suggestions)
+    pending_storage = await FileSystemItem.find({
+        "source": "storage",
+        "is_folder": False,
+        "catalog_status": {"$nin": ["published", "used"]}
+    }).count()
 
     return templates.TemplateResponse("admin.html", {
         "request": request, "total_users": total_users, "total_files": total_files, 
@@ -246,11 +249,69 @@ async def main_control(request: Request):
         "bots": bots, "pool_tokens": pool_tokens, "speed_result": None, "site": site,
         "pending_content_requests": pending_requests, "content_items": content_items,
         "tmdb_configured": tmdb_configured, "tmdb_status": tmdb_status,
-        "storage_suggestions": storage_suggestions,
         "published_groups": published_groups,
         "published_movies": published_movies,
         "published_series": published_series,
-        "suggestion_groups": suggestion_groups
+        "pending_storage": pending_storage
+    })
+
+@router.get("/dashboard/add-content")
+async def add_content(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    tmdb_configured = bool(getattr(settings, "TMDB_API_KEY", ""))
+    pending_storage = await FileSystemItem.find({
+        "source": "storage",
+        "is_folder": False,
+        "catalog_status": {"$nin": ["published", "used"]}
+    }).count()
+    published_movies = await FileSystemItem.find(
+        FileSystemItem.is_folder == False,
+        FileSystemItem.catalog_status == "published",
+        FileSystemItem.catalog_type == "movie"
+    ).count()
+    published_series = await FileSystemItem.find(
+        FileSystemItem.is_folder == False,
+        FileSystemItem.catalog_status == "published",
+        FileSystemItem.catalog_type == "series"
+    ).count()
+
+    storage_items = await FileSystemItem.find({
+        "source": "storage",
+        "is_folder": False,
+        "catalog_status": {"$nin": ["published", "used"]}
+    }).sort("-created_at").limit(500).to_list()
+
+    files = []
+    for item in storage_items:
+        info = _parse_name(item.name or "")
+        catalog_type = (getattr(item, "catalog_type", "") or ("series" if info["is_series"] else "movie")).lower()
+        files.append({
+            "id": str(item.id),
+            "name": item.name,
+            "size": item.size or 0,
+            "size_label": format_size(item.size or 0),
+            "quality": getattr(item, "quality", "") or info["quality"],
+            "season": getattr(item, "season", None) or info["season"],
+            "episode": getattr(item, "episode", None) or info["episode"],
+            "type": catalog_type,
+        })
+
+    site = await _site_settings()
+    return templates.TemplateResponse("admin_add_content.html", {
+        "request": request,
+        "user": user,
+        "is_admin": True,
+        "tmdb_configured": tmdb_configured,
+        "pending_storage": pending_storage,
+        "published_movies": published_movies,
+        "published_series": published_series,
+        "files": files,
+        "site": site
     })
 
 @router.get("/main-control/tmdb/lookup")
@@ -302,6 +363,83 @@ async def main_control_tmdb_lookup(q: str = "", content_type: str = "movie"):
             "actors": cast,
             "director": director,
             "trailer_url": trailer
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@router.get("/dashboard/tmdb/search")
+async def tmdb_search(q: str = "", content_type: str = "movie"):
+    if not settings.TMDB_API_KEY:
+        return {"ok": False, "error": "TMDB_API_KEY missing", "results": []}
+    q = (q or "").strip()
+    if not q:
+        return {"ok": False, "error": "Missing query", "results": []}
+    content_type = (content_type or "movie").strip().lower()
+    try:
+        from app.routes.content import _tmdb_search
+        search = await _tmdb_search(q, "", content_type == "series")
+        results = (search or {}).get("results") or []
+        poster_base = "https://image.tmdb.org/t/p/w185"
+        payload = []
+        for row in results[:20]:
+            title = row.get("name") if content_type == "series" else row.get("title")
+            year = (row.get("first_air_date") or row.get("release_date") or "")[:4]
+            poster_path = row.get("poster_path")
+            payload.append({
+                "id": row.get("id"),
+                "title": title,
+                "year": year,
+                "overview": row.get("overview") or "",
+                "poster": poster_base + poster_path if poster_path else ""
+            })
+        return {"ok": True, "results": payload}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "results": []}
+
+@router.get("/dashboard/tmdb/details")
+async def tmdb_details(tmdb_id: int, content_type: str = "movie"):
+    if not settings.TMDB_API_KEY:
+        return {"ok": False, "error": "TMDB_API_KEY missing"}
+    content_type = (content_type or "movie").strip().lower()
+    try:
+        from app.routes.content import _tmdb_details
+        details = await _tmdb_details(tmdb_id, content_type == "series")
+        if not details:
+            return {"ok": False, "error": "TMDB details not found"}
+        title = details.get("name") if content_type == "series" else details.get("title")
+        overview = details.get("overview") or ""
+        year = (details.get("release_date") or details.get("first_air_date") or "")[:4]
+        genres = [g.get("name") for g in details.get("genres", []) if g.get("name")]
+        credits = details.get("credits") or {}
+        cast = [c.get("name") for c in (credits.get("cast") or [])[:12] if c.get("name")]
+        director = ""
+        for crew in credits.get("crew") or []:
+            if crew.get("job") == "Director":
+                director = crew.get("name") or ""
+                break
+        trailer = ""
+        trailer_key = ""
+        for v in details.get("videos", {}).get("results", []):
+            if v.get("site") == "YouTube" and v.get("type") in ("Trailer", "Teaser"):
+                trailer_key = v.get("key") or ""
+                trailer = f"https://www.youtube.com/watch?v={trailer_key}" if trailer_key else ""
+                break
+        poster = details.get("poster_path") or ""
+        backdrop = details.get("backdrop_path") or ""
+        poster_url = f"https://image.tmdb.org/t/p/w780{poster}" if poster else ""
+        backdrop_url = f"https://image.tmdb.org/t/p/w1280{backdrop}" if backdrop else ""
+        return {
+            "ok": True,
+            "title": title,
+            "year": year,
+            "description": overview,
+            "genres": genres,
+            "actors": cast,
+            "director": director,
+            "trailer_url": trailer,
+            "trailer_key": trailer_key,
+            "poster": poster_url,
+            "backdrop": backdrop_url
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -659,7 +797,6 @@ async def admin_speed_test(request: Request):
     content_items = await FileSystemItem.find(FileSystemItem.is_folder == False).sort("-created_at").limit(120).to_list()
     tmdb_configured = bool(getattr(settings, "TMDB_API_KEY", ""))
     tmdb_status = (request.query_params.get("tmdb") or "").strip().lower()
-    storage_suggestions = await _group_storage_suggestions()
     published_groups = await _group_published_catalog()
     published_movies = await FileSystemItem.find(
         FileSystemItem.is_folder == False,
@@ -671,7 +808,11 @@ async def admin_speed_test(request: Request):
         FileSystemItem.catalog_status == "published",
         FileSystemItem.catalog_type == "series"
     ).count()
-    suggestion_groups = len(storage_suggestions)
+    pending_storage = await FileSystemItem.find({
+        "source": "storage",
+        "is_folder": False,
+        "catalog_status": {"$nin": ["published", "used"]}
+    }).count()
     return templates.TemplateResponse("admin.html", {
         "request": request, "total_users": total_users, "total_files": total_files, 
         "users": all_users, "user_email": user.phone_number, "pending_users": pending_users,
@@ -679,11 +820,10 @@ async def admin_speed_test(request: Request):
         "bots": bots, "pool_tokens": pool_tokens, "speed_result": result, "site": site,
         "pending_content_requests": pending_requests, "content_items": content_items,
         "tmdb_configured": tmdb_configured, "tmdb_status": tmdb_status,
-        "storage_suggestions": storage_suggestions,
         "published_groups": published_groups,
         "published_movies": published_movies,
         "published_series": published_series,
-        "suggestion_groups": suggestion_groups
+        "pending_storage": pending_storage
     })
 
 @router.post("/admin/tmdb/refresh")

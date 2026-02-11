@@ -51,7 +51,7 @@
                 <h3 class="text-sm font-semibold text-white mb-3">Cast</h3>
                 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                     {% for c in item.cast_profiles %}
-                    <div class="flex items-center gap-3 rounded-lg border border-gray-800 bg-gray-900/60 p-2">
+                    <a href="https://www.google.com/search?q={{ c.name | urlencode }}" target="_blank" rel="noopener" class="flex items-center gap-3 rounded-lg border border-gray-800 bg-gray-900/60 p-2 hover:border-yellow-500 transition">
                         <div class="h-12 w-12 rounded-full overflow-hidden border border-gray-700 bg-gray-800 flex items-center justify-center">
                             {% if c.image %}
                             <img src="{{ c.image }}" alt="{{ c.name }}" class="h-full w-full object-cover">
@@ -65,7 +65,7 @@
                             <div class="text-[11px] text-gray-400 truncate">{{ c.role }}</div>
                             {% endif %}
                         </div>
-                    </div>
+                    </a>
                     {% endfor %}
                 </div>
             </div>

@@ -1,0 +1,273 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="content-header">
+    <div class="container-fluid">
+        <div class="row mb-2">
+            <div class="col-sm-6">
+                <h1 class="m-0">Add Content</h1>
+                <div class="admin-section-note">Search TMDB, fill metadata, then attach storage files.</div>
+            </div>
+            <div class="col-sm-6">
+                <ol class="breadcrumb float-sm-right">
+                    <li class="breadcrumb-item"><a href="/dashboard">Dashboard</a></li>
+                    <li class="breadcrumb-item active">Add Content</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</div>
+
+<section class="content">
+    <div class="container-fluid">
+        <div class="card card-outline card-info">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-search"></i> TMDB Search</h3>
+            </div>
+            <div class="card-body">
+                {% if not tmdb_configured %}
+                    <div class="alert alert-danger">TMDB_API_KEY missing. Configure it before searching.</div>
+                {% endif %}
+                <div class="form-row align-items-end">
+                    <div class="form-group col-md-5">
+                        <label>Search Title</label>
+                        <input id="tmdb-query" class="form-control" placeholder="e.g. Border 2" {% if not tmdb_configured %}disabled{% endif %}>
+                    </div>
+                    <div class="form-group col-md-2">
+                        <label>Type</label>
+                        <select id="tmdb-type" class="custom-select" {% if not tmdb_configured %}disabled{% endif %}>
+                            <option value="movie">Movie</option>
+                            <option value="series">Series</option>
+                        </select>
+                    </div>
+                    <div class="form-group col-md-3">
+                        <button id="tmdb-search-btn" class="btn btn-info btn-block" type="button" {% if not tmdb_configured %}disabled{% endif %}>
+                            Search TMDB
+                        </button>
+                    </div>
+                    <div class="form-group col-md-2">
+                        <a id="google-search-link" class="btn btn-outline-light btn-block" target="_blank" rel="noopener">Google Search</a>
+                    </div>
+                </div>
+                <div id="tmdb-results" class="row"></div>
+            </div>
+        </div>
+
+        <form id="publishForm" action="/dashboard/publish" method="post">
+            <input type="hidden" name="item_ids" id="item_ids">
+            <div class="card card-outline card-secondary">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="fas fa-pen"></i> Metadata</h3>
+                    <div class="card-tools">
+                        <span class="badge badge-secondary">Manual edit allowed</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="form-row">
+                        <div class="form-group col-md-4">
+                            <label>Title</label>
+                            <input id="title-field" name="title" class="form-control" required>
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>Type</label>
+                            <select id="type-field" name="catalog_type" class="custom-select">
+                                <option value="movie">Movie</option>
+                                <option value="series">Series</option>
+                            </select>
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>Year</label>
+                            <input id="year-field" name="year" class="form-control">
+                        </div>
+                        <div class="form-group col-md-4">
+                            <label>Trailer URL</label>
+                            <input id="trailer-field" name="trailer_url" class="form-control">
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group col-md-6">
+                            <label>Description</label>
+                            <textarea id="desc-field" name="description" rows="3" class="form-control"></textarea>
+                        </div>
+                        <div class="form-group col-md-6">
+                            <div class="form-row">
+                                <div class="form-group col-md-6">
+                                    <label>Genres (comma)</label>
+                                    <input id="genres-field" name="genres" class="form-control">
+                                </div>
+                                <div class="form-group col-md-6">
+                                    <label>Director</label>
+                                    <input id="director-field" name="director" class="form-control">
+                                </div>
+                                <div class="form-group col-md-6">
+                                    <label>Actors (comma)</label>
+                                    <input id="actors-field" name="actors" class="form-control">
+                                </div>
+                                <div class="form-group col-md-6">
+                                    <label>Extra Notes</label>
+                                    <input id="notes-field" class="form-control" placeholder="Add notes if TMDB is missing data">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="admin-section-note">If TMDB data is missing, use the Google Search button and fill fields manually.</div>
+                </div>
+            </div>
+
+            <div class="card card-outline card-dark">
+                <div class="card-header">
+                    <h3 class="card-title"><i class="fas fa-file-video"></i> Attach Storage Files</h3>
+                    <div class="card-tools">
+                        <span class="badge badge-dark">Pending: {{ pending_storage or 0 }}</span>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div class="form-row align-items-end">
+                        <div class="form-group col-md-6">
+                            <label>Filter files</label>
+                            <input id="file-filter" class="form-control" placeholder="Search filenames">
+                        </div>
+                        <div class="form-group col-md-3">
+                            <label>Selected Files</label>
+                            <div id="selected-count" class="form-control-plaintext text-white">0</div>
+                        </div>
+                        <div class="form-group col-md-3">
+                            <label>Total Size</label>
+                            <div id="selected-size" class="form-control-plaintext text-white">0 MB</div>
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-dark mb-0" id="files-table">
+                            <thead>
+                                <tr>
+                                    <th>Select</th>
+                                    <th>File</th>
+                                    <th>Type</th>
+                                    <th>Quality</th>
+                                    <th>Season/Episode</th>
+                                    <th class="text-right">Size</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for f in files %}
+                                <tr data-name="{{ f.name|lower }}">
+                                    <td>
+                                        <input type="checkbox" class="file-check" value="{{ f.id }}" data-size="{{ f.size }}" data-type="{{ f.type }}">
+                                    </td>
+                                    <td class="text-truncate" style="max-width: 280px;" title="{{ f.name }}">{{ f.name }}</td>
+                                    <td>{{ f.type }}</td>
+                                    <td>{{ f.quality }}</td>
+                                    <td>
+                                        {% if f.type == 'series' %}
+                                            S{{ f.season or '?' }}E{{ f.episode or '?' }}
+                                        {% else %}
+                                            -
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-right">{{ f.size_label }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="mt-3">
+                        <button type="submit" class="btn btn-success">Publish Selected Files</button>
+                        <a href="/storage" class="btn btn-outline-light ml-2">Open Storage</a>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </div>
+</section>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+const tmdbQuery = document.getElementById("tmdb-query");
+const tmdbType = document.getElementById("tmdb-type");
+const tmdbResults = document.getElementById("tmdb-results");
+const googleLink = document.getElementById("google-search-link");
+
+function setGoogleLink() {
+    const q = (tmdbQuery.value || "").trim();
+    googleLink.href = q ? `https://www.google.com/search?q=${encodeURIComponent(q)}` : "https://www.google.com";
+}
+setGoogleLink();
+tmdbQuery.addEventListener("input", setGoogleLink);
+
+document.getElementById("tmdb-search-btn").addEventListener("click", async () => {
+    const q = (tmdbQuery.value || "").trim();
+    const type = tmdbType.value;
+    if (!q) return;
+    tmdbResults.innerHTML = "";
+    const res = await fetch(`/dashboard/tmdb/search?q=${encodeURIComponent(q)}&content_type=${encodeURIComponent(type)}`);
+    const data = await res.json();
+    if (!data.ok) {
+        tmdbResults.innerHTML = `<div class="col-12 text-danger">${data.error || "TMDB search failed"}</div>`;
+        return;
+    }
+    if (!data.results || data.results.length === 0) {
+        tmdbResults.innerHTML = `<div class="col-12 text-muted">No results found.</div>`;
+        return;
+    }
+    data.results.forEach((row) => {
+        const col = document.createElement("div");
+        col.className = "col-md-6 col-lg-4 mb-3";
+        col.innerHTML = `
+            <div class="card h-100 bg-dark border border-secondary">
+                ${row.poster ? `<img src="${row.poster}" class="card-img-top" alt="${row.title || ""}">` : ""}
+                <div class="card-body">
+                    <h5 class="card-title">${row.title || "Untitled"}</h5>
+                    <div class="text-muted text-sm">${row.year || ""}</div>
+                    <p class="card-text text-sm mt-2">${row.overview || ""}</p>
+                    <button class="btn btn-sm btn-info" data-id="${row.id}">Use This</button>
+                </div>
+            </div>`;
+        col.querySelector("button").addEventListener("click", async () => {
+            const detailRes = await fetch(`/dashboard/tmdb/details?tmdb_id=${row.id}&content_type=${encodeURIComponent(type)}`);
+            const detail = await detailRes.json();
+            if (!detail.ok) {
+                alert(detail.error || "TMDB details failed");
+                return;
+            }
+            document.getElementById("title-field").value = detail.title || "";
+            document.getElementById("year-field").value = detail.year || "";
+            document.getElementById("desc-field").value = detail.description || "";
+            document.getElementById("genres-field").value = (detail.genres || []).join(", ");
+            document.getElementById("actors-field").value = (detail.actors || []).join(", ");
+            document.getElementById("director-field").value = detail.director || "";
+            document.getElementById("trailer-field").value = detail.trailer_url || "";
+            document.getElementById("type-field").value = type;
+        });
+        tmdbResults.appendChild(col);
+    });
+});
+
+const checks = Array.from(document.querySelectorAll(".file-check"));
+const itemIdsInput = document.getElementById("item_ids");
+const selectedCount = document.getElementById("selected-count");
+const selectedSize = document.getElementById("selected-size");
+
+function updateSelected() {
+    const selected = checks.filter(c => c.checked);
+    itemIdsInput.value = selected.map(c => c.value).join(",");
+    selectedCount.textContent = selected.length;
+    const totalBytes = selected.reduce((sum, c) => sum + parseInt(c.dataset.size || "0", 10), 0);
+    const mb = (totalBytes / 1024 / 1024).toFixed(2);
+    selectedSize.textContent = `${mb} MB`;
+    const hasSeries = selected.some(c => (c.dataset.type || "") === "series");
+    if (selected.length > 0) {
+        document.getElementById("type-field").value = hasSeries ? "series" : "movie";
+    }
+}
+checks.forEach(c => c.addEventListener("change", updateSelected));
+updateSelected();
+
+document.getElementById("file-filter").addEventListener("input", (e) => {
+    const term = (e.target.value || "").toLowerCase();
+    document.querySelectorAll("#files-table tbody tr").forEach((row) => {
+        row.style.display = row.dataset.name.includes(term) ? "" : "none";
+    });
+});
+</script>
+{% endblock %}

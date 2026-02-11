@@ -111,7 +111,7 @@
                 <span class="admin-hero-badge">Series: {{ published_series or 0 }}</span>
             </li>
             <li class="nav-item d-none d-md-inline-flex align-items-center mr-3">
-                <span class="admin-hero-badge">Suggestions: {{ suggestion_groups or 0 }}</span>
+                <span class="admin-hero-badge">Pending: {{ pending_storage or 0 }}</span>
             </li>
             <li class="nav-item dropdown">
                 <a class="nav-link" data-toggle="dropdown" href="#">
@@ -146,9 +146,15 @@
             <nav class="mt-2">
                 <ul class="nav nav-pills nav-sidebar flex-column" data-widget="treeview" role="menu" data-accordion="false">
                     <li class="nav-item">
-                        <a href="/dashboard" class="nav-link {% if request.url.path.startswith('/dashboard') %}active{% endif %}">
+                        <a href="/dashboard" class="nav-link {% if request.url.path == '/dashboard' %}active{% endif %}">
                             <i class="nav-icon fas fa-tachometer-alt"></i>
                             <p>Dashboard</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="/dashboard/add-content" class="nav-link {% if request.url.path.startswith('/dashboard/add-content') %}active{% endif %}">
+                            <i class="nav-icon fas fa-plus-circle"></i>
+                            <p>Add Content</p>
                         </a>
                     </li>
                     <li class="nav-item">
