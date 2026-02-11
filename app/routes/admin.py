@@ -8,7 +8,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from beanie.operators import In
 from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting, SiteSettings, ContentRequest
-from app.routes.dashboard import get_current_user, _cast_ids, _clone_parts
+from app.routes.dashboard import get_current_user, _cast_ids, _clone_parts, _build_search_regex
 from app.routes.content import refresh_tmdb_metadata, _parse_name, _tmdb_get
 from app.core.config import settings
 from app.core.telegram_bot import pool_status, reload_bot_pool, speed_test, _get_pool_tokens
@@ -314,6 +314,46 @@ async def add_content(request: Request):
         "files": files,
         "site": site
     })
+
+@router.get("/dashboard/storage/search")
+async def admin_storage_search(request: Request, q: str = "", offset: int = 0, limit: int = 200):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    q = (q or "").strip()
+    try:
+        offset = max(int(offset), 0)
+    except Exception:
+        offset = 0
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 200
+    limit = max(20, min(limit, 500))
+
+    query: dict = {
+        "source": "storage",
+        "is_folder": False,
+        "catalog_status": {"$nin": ["published", "used"]},
+    }
+    if q:
+        search_regex = _build_search_regex(q)
+        if not search_regex:
+            return {"items": [], "has_more": False}
+        query["name"] = {"$regex": search_regex, "$options": "i"}
+
+    items = await FileSystemItem.find(query).sort("-created_at").skip(offset).limit(limit + 1).to_list()
+    has_more = len(items) > limit
+    if has_more:
+        items = items[:limit]
+    payload = [{
+        "id": str(item.id),
+        "name": item.name,
+        "size": item.size or 0,
+        "size_label": format_size(item.size or 0)
+    } for item in items]
+    return {"items": payload, "has_more": has_more}
 
 @router.get("/main-control/tmdb/lookup")
 @router.get("/dashboard/tmdb/lookup")
