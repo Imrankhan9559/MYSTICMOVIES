@@ -170,7 +170,12 @@
                         </div>
                         <div class="form-group col-md-9">
                             <label>File</label>
-                            <select class="custom-select custom-select-sm movie-file-select"></select>
+                            <div class="input-group input-group-sm">
+                                <select class="custom-select custom-select-sm movie-file-select"></select>
+                                <div class="input-group-append">
+                                    <button type="button" class="btn btn-outline-light file-browse">Browse</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="movie-quality-row form-row align-items-end mb-2">
@@ -180,7 +185,12 @@
                         </div>
                         <div class="form-group col-md-9">
                             <label>File</label>
-                            <select class="custom-select custom-select-sm movie-file-select"></select>
+                            <div class="input-group input-group-sm">
+                                <select class="custom-select custom-select-sm movie-file-select"></select>
+                                <div class="input-group-append">
+                                    <button type="button" class="btn btn-outline-light file-browse">Browse</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="movie-quality-row form-row align-items-end mb-2">
@@ -190,7 +200,12 @@
                         </div>
                         <div class="form-group col-md-9">
                             <label>File</label>
-                            <select class="custom-select custom-select-sm movie-file-select"></select>
+                            <div class="input-group input-group-sm">
+                                <select class="custom-select custom-select-sm movie-file-select"></select>
+                                <div class="input-group-append">
+                                    <button type="button" class="btn btn-outline-light file-browse">Browse</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="movie-quality-row form-row align-items-end mb-2">
@@ -200,7 +215,12 @@
                         </div>
                         <div class="form-group col-md-9">
                             <label>File</label>
-                            <select class="custom-select custom-select-sm movie-file-select"></select>
+                            <div class="input-group input-group-sm">
+                                <select class="custom-select custom-select-sm movie-file-select"></select>
+                                <div class="input-group-append">
+                                    <button type="button" class="btn btn-outline-light file-browse">Browse</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="mt-3">
@@ -212,6 +232,42 @@
         </form>
     </div>
 </section>
+
+<div id="file-picker-modal" class="d-none" style="position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 2000; overflow-y: auto;">
+    <div class="container-fluid" style="min-height: 100%; display: flex; align-items: center; justify-content: center; padding: 1.5rem;">
+        <div class="card card-outline card-dark w-100" style="max-width: 920px;">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-search"></i> Storage File Picker</h3>
+                <div class="card-tools">
+                    <button type="button" id="file-picker-close" class="btn btn-sm btn-outline-light">Close</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="form-row align-items-end">
+                    <div class="form-group col-md-8">
+                        <label>Search storage files</label>
+                        <input id="file-picker-search" class="form-control" placeholder="Search filename or size (e.g. 1080p, 1.4 GB)">
+                    </div>
+                    <div class="form-group col-md-4">
+                        <label>Results</label>
+                        <div id="file-picker-count" class="form-control-plaintext text-white">0 files</div>
+                    </div>
+                </div>
+                <div class="table-responsive" style="max-height: 420px; overflow-y: auto;">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>File</th>
+                                <th class="text-right">Size</th>
+                            </tr>
+                        </thead>
+                        <tbody id="file-picker-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block page_scripts %}
@@ -233,8 +289,14 @@ const seasonsCard = document.getElementById("tmdb-seasons-card");
 const episodeList = document.getElementById("episode-list");
 const episodeMapper = document.getElementById("episode-mapper");
 const movieMapper = document.getElementById("movie-mapper");
+const filePickerModal = document.getElementById("file-picker-modal");
+const filePickerClose = document.getElementById("file-picker-close");
+const filePickerSearch = document.getElementById("file-picker-search");
+const filePickerBody = document.getElementById("file-picker-body");
+const filePickerCount = document.getElementById("file-picker-count");
 let currentTmdbId = null;
 let currentSeasons = [];
+let activeFileSelect = null;
 
 function setModeFromType() {
     const type = document.getElementById("type-field").value;
@@ -270,6 +332,43 @@ function populateMovieSelects() {
     });
 }
 
+function renderFilePickerList(term) {
+    const q = (term || "").toLowerCase();
+    const matches = (storageFiles || []).filter(f => {
+        const name = (f.name || "").toLowerCase();
+        const size = (f.size_label || "").toLowerCase();
+        return !q || name.includes(q) || size.includes(q);
+    }).slice(0, 200);
+    filePickerBody.innerHTML = "";
+    matches.forEach(f => {
+        const row = document.createElement("tr");
+        row.innerHTML = `
+            <td class="text-truncate" style="max-width: 520px;" title="${f.name}">${f.name}</td>
+            <td class="text-right">${f.size_label}</td>
+        `;
+        row.addEventListener("click", () => {
+            if (activeFileSelect) {
+                activeFileSelect.value = f.id;
+            }
+            closeFilePicker();
+        });
+        filePickerBody.appendChild(row);
+    });
+    filePickerCount.textContent = `${matches.length} files`;
+}
+
+function openFilePicker(selectEl) {
+    activeFileSelect = selectEl;
+    renderFilePickerList(filePickerSearch.value || "");
+    filePickerModal.classList.remove("d-none");
+    filePickerSearch.focus();
+}
+
+function closeFilePicker() {
+    activeFileSelect = null;
+    filePickerModal.classList.add("d-none");
+}
+
 function addQualityRow(container, season, episode, episodeTitle) {
     const row = document.createElement("div");
     row.className = "form-row align-items-end quality-row mt-2";
@@ -283,15 +382,24 @@ function addQualityRow(container, season, episode, episodeTitle) {
         </div>
         <div class="form-group col-md-8">
             <label class="text-xs">File</label>
-            <select class="custom-select custom-select-sm file-select">
-                ${fileOptionsHtml()}
-            </select>
+            <div class="input-group input-group-sm">
+                <select class="custom-select custom-select-sm file-select">
+                    ${fileOptionsHtml()}
+                </select>
+                <div class="input-group-append">
+                    <button type="button" class="btn btn-outline-light file-browse">Browse</button>
+                </div>
+            </div>
         </div>
         <div class="form-group col-md-2">
             <button type="button" class="btn btn-sm btn-danger remove-quality">Remove</button>
         </div>
     `;
     row.querySelector(".remove-quality").addEventListener("click", () => row.remove());
+    row.querySelector(".file-browse").addEventListener("click", () => {
+        const select = row.querySelector(".file-select");
+        openFilePicker(select);
+    });
     container.appendChild(row);
 }
 
@@ -452,6 +560,19 @@ const overridesInput = document.getElementById("overrides");
 document.getElementById("type-field").addEventListener("change", setModeFromType);
 setModeFromType();
 populateMovieSelects();
+document.querySelectorAll(".movie-quality-row .file-browse").forEach(btn => {
+    btn.addEventListener("click", () => {
+        const select = btn.closest(".movie-quality-row").querySelector(".movie-file-select");
+        openFilePicker(select);
+    });
+});
+filePickerClose.addEventListener("click", closeFilePicker);
+filePickerModal.addEventListener("click", (e) => {
+    if (e.target === filePickerModal) closeFilePicker();
+});
+filePickerSearch.addEventListener("input", (e) => {
+    renderFilePickerList(e.target.value || "");
+});
 
 document.getElementById("add-manual-episode").addEventListener("click", () => {
     const seasonInput = prompt("Season number?");
