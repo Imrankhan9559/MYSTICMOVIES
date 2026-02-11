@@ -29,6 +29,22 @@ TRASH_RE = re.compile(
 )
 SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
 
+def _quality_rank(q: str) -> int:
+    order = {"2160P": 5, "1440P": 4, "1080P": 3, "720P": 2, "480P": 1, "380P": 0, "360P": 0}
+    return order.get((q or "").upper(), 0)
+
+def _viewer_name(user: User | None) -> str:
+    if not user:
+        return ""
+    return (user.requested_name or user.first_name or user.phone_number or "").strip()
+
+def _share_params(link_token: str, viewer_name: str) -> str:
+    params = f"t={link_token}" if link_token else ""
+    if viewer_name:
+        safe_name = urllib.parse.quote(viewer_name)
+        params = f"{params}&U={safe_name}" if params else f"U={safe_name}"
+    return params
+
 
 def _normalize_phone(phone: str) -> str:
     return (phone or "").replace(" ", "")
@@ -170,6 +186,68 @@ async def _enrich_group(group: dict) -> dict:
     group["trailer_url"] = trailer or group.get("trailer_url", "")
     return group
 
+async def _persist_group_metadata(group: dict):
+    update = {}
+    if group.get("poster"):
+        update["poster_url"] = group["poster"]
+    if group.get("backdrop"):
+        update["backdrop_url"] = group["backdrop"]
+    if group.get("description"):
+        update["description"] = group["description"]
+    if group.get("year"):
+        update["year"] = group["year"]
+    if group.get("genres"):
+        update["genres"] = group["genres"]
+    if group.get("actors"):
+        update["actors"] = group["actors"]
+    if group.get("director"):
+        update["director"] = group["director"]
+    if group.get("trailer_url"):
+        update["trailer_url"] = group["trailer_url"]
+    if not update:
+        return
+
+    for item in group.get("items", []):
+        db_item = await FileSystemItem.get(item["id"])
+        if not db_item:
+            continue
+        changed = False
+        if update.get("poster_url") and not getattr(db_item, "poster_url", ""):
+            db_item.poster_url = update["poster_url"]
+            changed = True
+        if update.get("backdrop_url") and not getattr(db_item, "backdrop_url", ""):
+            db_item.backdrop_url = update["backdrop_url"]
+            changed = True
+        if update.get("description") and not getattr(db_item, "description", ""):
+            db_item.description = update["description"]
+            changed = True
+        if update.get("year") and not getattr(db_item, "year", ""):
+            db_item.year = update["year"]
+            changed = True
+        if update.get("genres") and not getattr(db_item, "genres", []):
+            db_item.genres = update["genres"]
+            changed = True
+        if update.get("actors") and not getattr(db_item, "actors", []):
+            db_item.actors = update["actors"]
+            changed = True
+        if update.get("director") and not getattr(db_item, "director", ""):
+            db_item.director = update["director"]
+            changed = True
+        if update.get("trailer_url") and not getattr(db_item, "trailer_url", ""):
+            db_item.trailer_url = update["trailer_url"]
+            changed = True
+        if changed:
+            await db_item.save()
+
+async def _ensure_group_assets(group: dict) -> dict:
+    if not settings.TMDB_API_KEY:
+        return group
+    if group.get("description") or group.get("poster") or group.get("backdrop"):
+        return group
+    await _enrich_group(group)
+    await _persist_group_metadata(group)
+    return group
+
 
 def _series_key(name: str) -> str:
     t = _clean_title(name)
@@ -294,10 +372,6 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
             season_bucket = groups[key]["seasons"].setdefault(season, {})
             ep_bucket = season_bucket.setdefault(episode, {})
             ep_bucket[c["quality"]] = {"file_id": c["id"], "size": c["size"]}
-    def _quality_rank(q: str) -> int:
-        order = {"2160P": 5, "1440P": 4, "1080P": 3, "720P": 2, "480P": 1, "380P": 0, "360P": 0}
-        return order.get((q or "").upper(), 0)
-
     result = []
     for g in groups.values():
         if g["type"] == "movie":
@@ -309,16 +383,78 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
         result.append(g)
     return result
 
+async def _build_file_links(items: list[dict], link_token: str, viewer_name: str, limit: int = 3) -> list[dict]:
+    if not items:
+        return []
+    viewer_name = (viewer_name or "").strip()
+    params = _share_params(link_token, viewer_name) if viewer_name else ""
+    needs_links = bool(viewer_name)
+
+    def _sort_key(item: dict):
+        if item.get("type") == "series":
+            return (
+                int(item.get("season") or 0),
+                int(item.get("episode") or 0),
+                -_quality_rank(item.get("quality")),
+            )
+        return (-_quality_rank(item.get("quality")), (item.get("name") or "").lower())
+
+    ordered = sorted(items, key=_sort_key)
+    links: list[dict] = []
+    for item in ordered:
+        if len(links) >= limit:
+            break
+        token = ""
+        query = ""
+        if needs_links:
+            token = await _ensure_share_token(item["id"])
+            if not token:
+                continue
+            query = f"?{params}" if params else ""
+        links.append({
+            "name": item.get("name") or item.get("title") or "File",
+            "label": item.get("quality") or item.get("name") or "File",
+            "view_url": f"/s/{token}{query}" if needs_links else "",
+            "download_url": f"/d/{token}{query}" if needs_links else "",
+            "telegram_url": f"/t/{token}{query}" if needs_links else "",
+            "watch_url": f"/w/{token}{query}" if needs_links else "",
+        })
+    return links
+
+async def _warm_group_assets(groups: list[dict], limit: int = 16):
+    if not settings.TMDB_API_KEY:
+        return
+    warmed = 0
+    for g in groups:
+        if warmed >= limit:
+            break
+        if g.get("poster") or g.get("backdrop") or g.get("description"):
+            continue
+        await _ensure_group_assets(g)
+        warmed += 1
+
 
 @router.get("/")
 async def home_page(request: Request):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
+    link_token = await _get_link_token()
+    viewer_name = _viewer_name(user)
     catalog = await _build_catalog(user, is_admin, limit=400)
     movies = [c for c in catalog if c["type"] == "movie"][:24]
     series = [c for c in catalog if c["type"] == "series"][:24]
     trending = catalog[:18]
+    display_groups = trending + movies + series
+    await _warm_group_assets(display_groups, limit=len(display_groups))
+    seen = set()
+    for group in display_groups:
+        gid = group.get("id")
+        if gid in seen:
+            continue
+        seen.add(gid)
+        group["files"] = await _build_file_links(group.get("items", []), link_token, viewer_name, limit=3)
+        group["primary_link"] = group["files"][0]["view_url"] if group.get("files") else ""
     return templates.TemplateResponse("home.html", {
         "request": request,
         "user": user,
@@ -415,24 +551,26 @@ async def content_details(request: Request, item_id: str):
         raise HTTPException(status_code=404, detail="Content not found")
 
     site = await _site_settings()
-    group = await _enrich_group(group)
+    group = await _ensure_group_assets(group)
     link_token = await _get_link_token()
 
-    viewer_name = ""
-    if user:
-        viewer_name = user.first_name or user.phone_number
+    viewer_name = _viewer_name(user)
+    share_params = _share_params(link_token, viewer_name) if viewer_name else ""
 
     qualities = []
     if group["type"] == "movie":
         for q, v in group["qualities"].items():
             token = await _ensure_share_token(v["file_id"])
+            query = f"?{share_params}" if share_params else ""
             qualities.append({
                 "label": q,
                 "size": v["size"],
-                "stream_url": f"/player/{v['file_id']}",
-                "download_url": f"/s/stream/file/{v['file_id']}?download=true",
-                "telegram_url": f"/t/{token}?t={link_token}" if token else "",
-                "watch_url": f"/w/{token}?t={link_token}" if token else "",
+                "view_url": f"/s/{token}{query}" if token and share_params else "",
+                "download_url": f"/d/{token}{query}" if token and share_params else "",
+                "telegram_url": f"/t/{token}{query}" if token and share_params else "",
+                "watch_url": f"/w/{token}{query}" if token and share_params else "",
+                "admin_url": f"/player/{v['file_id']}",
+                "file_id": v["file_id"],
             })
 
     seasons = []
@@ -445,6 +583,12 @@ async def content_details(request: Request, item_id: str):
                     quality_totals[q] = quality_totals.get(q, 0) + (v["size"] or 0)
                     if "token" not in v:
                         v["token"] = await _ensure_share_token(v["file_id"])
+                    if v.get("token") and share_params:
+                        query = f"?{share_params}"
+                        v["view_url"] = f"/s/{v['token']}{query}"
+                        v["download_url"] = f"/d/{v['token']}{query}"
+                        v["telegram_url"] = f"/t/{v['token']}{query}"
+                        v["watch_url"] = f"/w/{v['token']}{query}"
             seasons.append({
                 "season": s_no,
                 "qualities": [

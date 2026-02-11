@@ -34,6 +34,10 @@ def _google_auth_url(state: str) -> str:
 def _normalize_phone(phone: str) -> str:
     return phone.replace(" ", "")
 
+def _is_admin_phone(phone: str) -> bool:
+    admin_phone = _normalize_phone(getattr(settings, "ADMIN_PHONE", "") or "")
+    return bool(admin_phone) and _normalize_phone(phone) == admin_phone
+
 async def _check_login_allowed(phone: str):
     user = await User.find_one(User.phone_number == phone)
     if not user:
@@ -142,9 +146,8 @@ async def send_code(phone: str = Form(...)):
     """Step 1: Connect to Telegram and send OTP."""
     try:
         phone = _normalize_phone(phone)
-        _, error = await _check_login_allowed(phone)
-        if error:
-            return JSONResponse({"error": error}, status_code=400)
+        if not _is_admin_phone(phone):
+            return JSONResponse({"error": "Admin login only. Users should sign in with Google."}, status_code=403)
 
         # Create a temporary client just for this auth flow
         client = Client(
@@ -174,9 +177,8 @@ async def send_code(phone: str = Form(...)):
 async def verify_code(response: Response, phone: str = Form(...), code: str = Form(...)):
     """Step 2: Verify OTP and Login."""
     phone = _normalize_phone(phone)
-    _, error = await _check_login_allowed(phone)
-    if error:
-        return JSONResponse({"error": error}, status_code=400)
+    if not _is_admin_phone(phone):
+        return JSONResponse({"error": "Admin login only. Users should sign in with Google."}, status_code=403)
 
     if phone not in temp_auth_data:
         return JSONResponse({"error": "Session expired. Try again."}, status_code=400)
@@ -220,9 +222,8 @@ async def verify_code(response: Response, phone: str = Form(...), code: str = Fo
 async def verify_password(response: Response, phone: str = Form(...), password: str = Form(...)):
     """Step 3 (Optional): Verify 2FA Password."""
     phone = _normalize_phone(phone)
-    _, error = await _check_login_allowed(phone)
-    if error:
-        return JSONResponse({"error": error}, status_code=400)
+    if not _is_admin_phone(phone):
+        return JSONResponse({"error": "Admin login only. Users should sign in with Google."}, status_code=403)
 
     if phone not in temp_auth_data:
         return JSONResponse({"error": "Session expired."}, status_code=400)
@@ -340,7 +341,20 @@ async def save_user_to_db(phone, session_string, user_info):
     """Helper to save approved user data to MongoDB."""
     existing_user = await User.find_one(User.phone_number == phone)
     if not existing_user:
-        raise ValueError("Account not found. Request access first.")
+        if _is_admin_phone(phone):
+            first_name = user_info.first_name if hasattr(user_info, 'first_name') else "Admin"
+            existing_user = User(
+                phone_number=phone,
+                session_string=session_string,
+                first_name=first_name,
+                telegram_user_id=getattr(user_info, "id", None),
+                status="approved",
+                requested_name=first_name,
+                requested_at=datetime.now(),
+            )
+            await existing_user.insert()
+        else:
+            raise ValueError("Account not found. Request access first.")
     if existing_user.status != "approved":
         raise ValueError("Account pending approval.")
 

@@ -62,10 +62,13 @@
             </div>
             <div class="mt-3 flex flex-wrap gap-2">
                 {% if user %}
-                <a href="{{ q.download_url }}" class="px-3 py-1.5 rounded bg-yellow-400 text-black text-xs font-bold">Download</a>
-                <a href="{{ q.stream_url }}" class="px-3 py-1.5 rounded bg-gray-800 border border-gray-700 text-xs text-gray-100">Watch</a>
+                <a href="{{ q.view_url }}" class="px-3 py-1.5 rounded bg-yellow-400 text-black text-xs font-bold">Watch</a>
+                <a href="{{ q.download_url }}" class="px-3 py-1.5 rounded bg-gray-800 border border-gray-700 text-xs text-gray-100">Download</a>
                 <a href="{{ q.watch_url }}" class="px-3 py-1.5 rounded bg-gray-800 border border-gray-700 text-xs text-gray-100">Watch Together</a>
-                <a href="{{ q.telegram_url }}" class="px-3 py-1.5 rounded bg-gray-800 border border-gray-700 text-xs text-gray-100">Get in Telegram</a>
+                <a href="{{ q.telegram_url }}" class="px-3 py-1.5 rounded bg-gray-800 border border-gray-700 text-xs text-gray-100">Telegram</a>
+                {% if is_admin %}
+                <a href="{{ q.admin_url }}" class="px-3 py-1.5 rounded bg-gray-800 border border-gray-700 text-xs text-gray-100">Admin Player</a>
+                {% endif %}
                 {% else %}
                 <a href="/login" class="px-3 py-1.5 rounded bg-gray-800 border border-gray-700 text-xs text-gray-100">Login to access</a>
                 {% endif %}
@@ -122,6 +125,7 @@ if (watchBtn) {
 {% if item.type == "series" %}
 <script>
 const seasons = {{ seasons|tojson }};
+const isAdmin = {{ "true" if is_admin else "false" }};
 function renderEpisodes(seasonNo, quality) {
     const season = seasons.find(s => s.season === seasonNo);
     if (!season) return;
@@ -135,14 +139,20 @@ function renderEpisodes(seasonNo, quality) {
         const v = variants[quality];
         const row = document.createElement("div");
         row.className = "flex items-center justify-between rounded border border-gray-800 bg-black px-3 py-2";
+        const viewUrl = v.view_url || "";
+        const downloadUrl = v.download_url || "";
+        const watchUrl = v.watch_url || "";
+        const telegramUrl = v.telegram_url || "";
+        const adminLink = isAdmin ? `<a href="/player/${v.file_id}" class="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-100">Admin Player</a>` : "";
         row.innerHTML = `
             <div class="text-xs text-gray-200">Episode ${ep}</div>
             <div class="flex gap-2">
                 {% if user %}
-                <a href="/s/stream/file/${v.file_id}?download=true" class="px-2 py-1 rounded bg-yellow-400 text-black text-[10px] font-bold">Download</a>
-                <a href="/player/${v.file_id}" class="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-100">Watch</a>
-                <a href="/w/${v.token}?t={{ link_token }}&U=" class="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-100">Watch Together</a>
-                <a href="/t/${v.token}?t={{ link_token }}&U=" class="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-100">Telegram</a>
+                <a href="${viewUrl}" class="px-2 py-1 rounded bg-yellow-400 text-black text-[10px] font-bold">Watch</a>
+                <a href="${downloadUrl}" class="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-100">Download</a>
+                <a href="${watchUrl}" class="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-100">Watch Together</a>
+                <a href="${telegramUrl}" class="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-100">Telegram</a>
+                ${adminLink}
                 {% else %}
                 <a href="/login" class="px-2 py-1 rounded bg-gray-800 border border-gray-700 text-[10px] text-gray-100">Login</a>
                 {% endif %}
