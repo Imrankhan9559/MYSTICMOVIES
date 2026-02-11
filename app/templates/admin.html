@@ -4,8 +4,8 @@
 <div class="container mx-auto mt-8">
     <div class="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3 mb-6 border-b border-gray-700 pb-4">
         <div>
-            <h1 class="text-3xl font-bold text-red-500">System Administration</h1>
-            <p class="text-gray-400 text-sm mt-1">Manage users and monitor storage node status.</p>
+            <h1 class="text-3xl font-bold text-red-500">Main Control</h1>
+            <p class="text-gray-400 text-sm mt-1">Publish catalog, manage storage, and admin settings.</p>
         </div>
         <div class="bg-gray-800 px-4 py-2 rounded text-xs text-gray-400 border border-gray-700 w-full sm:w-auto text-center">
             Server Status: <span class="text-green-500 font-bold">ONLINE</span>
@@ -23,7 +23,7 @@
                 <form action="/admin/token/regenerate" method="post">
                     <button type="submit" class="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-white text-xs font-bold" onclick="return confirm('Regenerate token? All share links need updated t= value.')">Regenerate</button>
                 </form>
-                <a href="/admin" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-xs font-bold">Refresh Status</a>
+                <a href="/main-control" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-xs font-bold">Refresh Status</a>
             </div>
         </div>
     </div>
@@ -52,6 +52,162 @@
                 </form>
             </div>
         </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-database mr-2"></i> Storage Suggestions</h3>
+            <div class="flex gap-2">
+                <a href="/upload_zone" class="text-xs bg-blue-600 text-white px-2 py-1 rounded border border-blue-500">Upload to Storage</a>
+                <a href="/dashboard" class="text-xs bg-gray-900 text-gray-300 px-2 py-1 rounded border border-gray-700">Open Storage</a>
+            </div>
+        </div>
+        {% if storage_suggestions and storage_suggestions|length > 0 %}
+            <div class="space-y-6">
+                {% for group in storage_suggestions %}
+                <form action="/main-control/publish" method="post" class="rounded-lg border border-gray-700 bg-gray-900 p-4">
+                    <input type="hidden" name="item_ids" value="{{ group.items | map(attribute='id') | join(',') }}">
+                    <div class="grid grid-cols-1 md:grid-cols-6 gap-3">
+                        <div class="md:col-span-2">
+                            <label class="text-xs text-gray-400">Title</label>
+                            <input id="title-{{ loop.index0 }}" name="title" value="{{ group.title }}" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white" />
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400">Type</label>
+                            <select id="type-{{ loop.index0 }}" name="catalog_type" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white">
+                                <option value="movie" {% if group.type == 'movie' %}selected{% endif %}>Movie</option>
+                                <option value="series" {% if group.type == 'series' %}selected{% endif %}>Series</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400">Year</label>
+                            <input id="year-{{ loop.index0 }}" name="year" value="{{ group.year }}" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white" />
+                        </div>
+                        <div class="md:col-span-2 flex items-end gap-2">
+                            <button type="button" data-group="{{ loop.index0 }}" class="tmdb-fetch bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded text-xs font-bold">
+                                Auto Fetch TMDB
+                            </button>
+                            <button type="submit" class="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded text-xs font-bold">
+                                Publish
+                            </button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
+                        <div>
+                            <label class="text-xs text-gray-400">Description</label>
+                            <textarea id="desc-{{ loop.index0 }}" name="description" rows="3" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white"></textarea>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-xs text-gray-400">Genres (comma)</label>
+                                <input id="genres-{{ loop.index0 }}" name="genres" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                            </div>
+                            <div>
+                                <label class="text-xs text-gray-400">Director</label>
+                                <input id="director-{{ loop.index0 }}" name="director" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                            </div>
+                            <div>
+                                <label class="text-xs text-gray-400">Actors (comma)</label>
+                                <input id="actors-{{ loop.index0 }}" name="actors" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                            </div>
+                            <div>
+                                <label class="text-xs text-gray-400">Trailer URL</label>
+                                <input id="trailer-{{ loop.index0 }}" name="trailer_url" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 text-xs text-gray-300">
+                        {% for item in group.items %}
+                        <div class="flex items-center justify-between bg-gray-800 border border-gray-700 rounded px-2 py-1">
+                            <div class="truncate max-w-[180px]" title="{{ item.name }}">{{ item.name }}</div>
+                            <div class="text-gray-400">{{ item.quality }}{% if group.type == 'series' %} | S{{ item.season }}E{{ item.episode }}{% endif %} | {{ item.size_label }}</div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </form>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="text-sm text-gray-500">No storage suggestions found.</div>
+        {% endif %}
+    </div>
+
+    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
+        <div class="flex items-center justify-between mb-4">
+            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-film mr-2"></i> Published Catalog</h3>
+            <span class="text-xs bg-gray-900 text-gray-300 px-2 py-1 rounded border border-gray-700">Visible on Home/Content</span>
+        </div>
+        {% if published_groups and published_groups|length > 0 %}
+            <div class="space-y-6">
+                {% for group in published_groups %}
+                <div class="rounded-lg border border-gray-700 bg-gray-900 p-4">
+                    <form id="update-form-{{ loop.index0 }}" action="/main-control/update-metadata" method="post" class="grid grid-cols-1 md:grid-cols-6 gap-3">
+                        <input type="hidden" name="group_title" value="{{ group.title }}">
+                        <input type="hidden" name="group_year" value="{{ group.year }}">
+                        <input type="hidden" name="group_type" value="{{ group.type }}">
+                        <div class="md:col-span-2">
+                            <label class="text-xs text-gray-400">Title</label>
+                            <input name="title" value="{{ group.title }}" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white" />
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400">Type</label>
+                            <input value="{{ group.type }}" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white" readonly />
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400">Year</label>
+                            <input name="year" value="{{ group.year }}" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white" />
+                        </div>
+                        <div class="md:col-span-2 flex items-end gap-2">
+                            <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded text-xs font-bold">
+                                Update Metadata
+                            </button>
+                            <button form="delete-form-{{ loop.index0 }}" type="submit" class="bg-red-600 hover:bg-red-500 text-white px-3 py-2 rounded text-xs font-bold" onclick="return confirm('Delete this catalog group?')">
+                                Delete
+                            </button>
+                        </div>
+                        <div class="md:col-span-6 grid grid-cols-1 md:grid-cols-2 gap-3">
+                            <div>
+                                <label class="text-xs text-gray-400">Description</label>
+                                <textarea name="description" rows="3" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white"></textarea>
+                            </div>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div>
+                                    <label class="text-xs text-gray-400">Genres (comma)</label>
+                                    <input name="genres" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                                </div>
+                                <div>
+                                    <label class="text-xs text-gray-400">Director</label>
+                                    <input name="director" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                                </div>
+                                <div>
+                                    <label class="text-xs text-gray-400">Actors (comma)</label>
+                                    <input name="actors" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                                </div>
+                                <div>
+                                    <label class="text-xs text-gray-400">Trailer URL</label>
+                                    <input name="trailer_url" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                    <form id="delete-form-{{ loop.index0 }}" action="/main-control/delete" method="post" class="hidden">
+                        <input type="hidden" name="group_title" value="{{ group.title }}">
+                        <input type="hidden" name="group_type" value="{{ group.type }}">
+                    </form>
+                    <div class="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 text-xs text-gray-300">
+                        {% for item in group.items %}
+                        <div class="flex items-center justify-between bg-gray-800 border border-gray-700 rounded px-2 py-1">
+                            <div class="truncate max-w-[180px]" title="{{ item.name }}">{{ item.name }}</div>
+                            <div class="text-gray-400">{{ item.quality }}{% if group.type == 'series' %} | S{{ item.season }}E{{ item.episode }}{% endif %} | {{ item.size_label }}</div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="text-sm text-gray-500">No published catalog yet.</div>
+        {% endif %}
     </div>
 
     <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
@@ -404,5 +560,47 @@
             </table>
         </div>
     </div>
-</div>
+    </div>
+
+    <script>
+    document.querySelectorAll(".tmdb-fetch").forEach(btn => {
+        btn.addEventListener("click", async () => {
+            const id = btn.dataset.group;
+            const titleEl = document.getElementById(`title-${id}`);
+            const typeEl = document.getElementById(`type-${id}`);
+            const yearEl = document.getElementById(`year-${id}`);
+            const descEl = document.getElementById(`desc-${id}`);
+            const genresEl = document.getElementById(`genres-${id}`);
+            const actorsEl = document.getElementById(`actors-${id}`);
+            const directorEl = document.getElementById(`director-${id}`);
+            const trailerEl = document.getElementById(`trailer-${id}`);
+            if (!titleEl || !typeEl) return;
+            const q = titleEl.value.trim();
+            const contentType = typeEl.value;
+            if (!q) return;
+            btn.disabled = true;
+            btn.textContent = "Fetching...";
+            try {
+                const res = await fetch(`/main-control/tmdb/lookup?q=${encodeURIComponent(q)}&content_type=${encodeURIComponent(contentType)}`);
+                const data = await res.json();
+                if (!data.ok) {
+                    alert(data.error || "TMDB fetch failed");
+                } else {
+                    if (data.title && titleEl) titleEl.value = data.title;
+                    if (data.year && yearEl) yearEl.value = data.year;
+                    if (data.description && descEl) descEl.value = data.description;
+                    if (data.genres && genresEl) genresEl.value = data.genres.join(", ");
+                    if (data.actors && actorsEl) actorsEl.value = data.actors.join(", ");
+                    if (data.director && directorEl) directorEl.value = data.director;
+                    if (data.trailer_url && trailerEl) trailerEl.value = data.trailer_url;
+                }
+            } catch (e) {
+                alert("TMDB fetch failed");
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "Auto Fetch TMDB";
+            }
+        });
+    });
+    </script>
 {% endblock %}

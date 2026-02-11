@@ -417,18 +417,19 @@ async def _site_settings() -> SiteSettings:
 
 
 def _content_query(user: User | None, is_admin: bool):
+    base = {"catalog_status": "published"}
     if is_admin:
-        return {}
+        return base
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     if user:
-        return {
-            "$or": [
-                {"owner_phone": admin_phone},
-                {"owner_phone": user.phone_number},
-                {"collaborators": user.phone_number},
-            ]
-        }
-    return {"owner_phone": admin_phone}
+        base["$or"] = [
+            {"owner_phone": admin_phone},
+            {"owner_phone": user.phone_number},
+            {"collaborators": user.phone_number},
+        ]
+        return base
+    base["owner_phone"] = admin_phone
+    return base
 
 
 async def _fetch_cards(user: User | None, is_admin: bool, limit: int = 300) -> list[dict]:
@@ -552,7 +553,7 @@ async def home_page(request: Request):
     settings_row = await _site_settings()
     link_token = await _get_link_token()
     viewer_name = _viewer_name(user)
-    catalog = await _build_catalog(user, is_admin, limit=400)
+    catalog = await _build_catalog(user, is_admin, limit=200)
     movies = [c for c in catalog if c["type"] == "movie"][:24]
     series = [c for c in catalog if c["type"] == "series"][:24]
     trending = catalog[:18]

@@ -290,6 +290,7 @@ async def _sync_storage_folder(folder: FileSystemItem, limit: int | None = 200) 
                 size=size,
                 mime_type=mime_type,
                 source="storage",
+                catalog_status="suggested",
                 catalog_type=catalog_type,
                 title=title,
                 series_title=title if catalog_type == "series" else "",
@@ -450,6 +451,7 @@ async def process_telegram_upload(job_id: str, file_path: str, filename: str, mi
                     size=msg.document.file_size,
                     mime_type=mime_type,
                     source="upload",
+                    catalog_status="draft",
                     parts=[FilePart(telegram_file_id=msg.document.file_id, message_id=msg.id, chat_id=None, part_number=1, size=msg.document.file_size)]
                 )
         else:
@@ -469,6 +471,7 @@ async def process_telegram_upload(job_id: str, file_path: str, filename: str, mi
                 size=msg_size,
                 mime_type=msg_mime,
                 source="upload",
+                catalog_status="draft",
                 parts=[FilePart(telegram_file_id=str(msg.id), message_id=msg.id, chat_id=storage_chat_id, part_number=1, size=msg_size)]
             )
         await new_file.insert()

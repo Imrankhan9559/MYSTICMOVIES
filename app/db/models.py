@@ -33,6 +33,23 @@ class FileSystemItem(Document):
     owner_phone: str 
     created_at: datetime = datetime.now()
     source: str = "upload"  # upload | bot | admin
+    catalog_status: str = "draft"  # draft | suggested | published | used
+    catalog_type: Optional[str] = None  # movie | series
+    title: Optional[str] = None
+    series_title: Optional[str] = None
+    year: Optional[str] = None
+    quality: Optional[str] = None
+    season: Optional[int] = None
+    episode: Optional[int] = None
+    poster_url: Optional[str] = None
+    backdrop_url: Optional[str] = None
+    description: Optional[str] = None
+    genres: List[str] = []
+    actors: List[str] = []
+    director: Optional[str] = None
+    trailer_url: Optional[str] = None
+    trailer_key: Optional[str] = None
+    cast_profiles: List[dict] = []
     
     share_token: Optional[str] = None
     collaborators: List[str] = [] 
