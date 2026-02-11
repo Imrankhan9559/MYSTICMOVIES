@@ -1,621 +1,763 @@
-{% extends "base.html" %}
+
+{% extends "admin_base.html" %}
 
 {% block content %}
-<div class="container mx-auto mt-8">
-    <div class="flex flex-col sm:flex-row sm:justify-between sm:items-end gap-3 mb-6 border-b border-gray-700 pb-4">
-        <div>
-            <h1 class="text-3xl font-bold text-red-500">Dashboard</h1>
-            <p class="text-gray-400 text-sm mt-1">Publish catalog, manage storage, and admin settings.</p>
-        </div>
-        <div class="bg-gray-800 px-4 py-2 rounded text-xs text-gray-400 border border-gray-700 w-full sm:w-auto text-center">
-            Server Status: <span class="text-green-500 font-bold">ONLINE</span>
-        </div>
-    </div>
-
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-        <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
-            <div class="text-xs uppercase text-gray-500 font-bold">Published Movies</div>
-            <div class="text-2xl font-bold text-white mt-2">{{ published_movies or 0 }}</div>
-        </div>
-        <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
-            <div class="text-xs uppercase text-gray-500 font-bold">Published Series</div>
-            <div class="text-2xl font-bold text-white mt-2">{{ published_series or 0 }}</div>
-        </div>
-        <div class="bg-gray-800 border border-gray-700 rounded-lg p-4">
-            <div class="text-xs uppercase text-gray-500 font-bold">Storage Suggestions</div>
-            <div class="text-2xl font-bold text-white mt-2">{{ suggestion_groups or 0 }}</div>
-        </div>
-    </div>
-
-    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div>
-                <div class="text-xs uppercase text-gray-500 font-bold">Link Token</div>
-                <div class="text-white font-mono break-all">{{ link_token or 'not-set' }}</div>
+<div class="content-header">
+    <div class="container-fluid">
+        <div class="row mb-2">
+            <div class="col-sm-6">
+                <h1 class="m-0">Main Control</h1>
+                <div class="admin-section-note">Manage movies and web series, publish catalog, and review activity.</div>
             </div>
-            <div class="flex flex-wrap gap-2">
-                <button type="button" onclick="navigator.clipboard.writeText('{{ link_token }}')" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded text-white text-xs font-bold">Copy</button>
-                <form action="/admin/token/regenerate" method="post">
-                    <button type="submit" class="px-4 py-2 bg-red-600 hover:bg-red-500 rounded text-white text-xs font-bold" onclick="return confirm('Regenerate token? All share links need updated t= value.')">Regenerate</button>
-                </form>
-                <a href="/dashboard" class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-white text-xs font-bold">Refresh Status</a>
+            <div class="col-sm-6">
+                <ol class="breadcrumb float-sm-right">
+                    <li class="breadcrumb-item"><a href="/dashboard">Home</a></li>
+                    <li class="breadcrumb-item active">Dashboard</li>
+                </ol>
             </div>
         </div>
     </div>
+</div>
 
-    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
-        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-            <div>
-                <div class="text-xs uppercase text-gray-500 font-bold">TMDB Metadata</div>
-                {% if tmdb_configured %}
-                    <div class="text-green-400 font-semibold">TMDB_API_KEY configured</div>
+<section class="content">
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-lg-3 col-6">
+                <div class="small-box bg-dark">
+                    <div class="inner">
+                        <h3>{{ published_movies or 0 }}</h3>
+                        <p>Published Movies</p>
+                    </div>
+                    <div class="icon"><i class="fas fa-film"></i></div>
+                    <a href="/content/movies" class="small-box-footer">View <i class="fas fa-arrow-circle-right"></i></a>
+                </div>
+            </div>
+            <div class="col-lg-3 col-6">
+                <div class="small-box bg-dark">
+                    <div class="inner">
+                        <h3>{{ published_series or 0 }}</h3>
+                        <p>Published Series</p>
+                    </div>
+                    <div class="icon"><i class="fas fa-tv"></i></div>
+                    <a href="/content/web-series" class="small-box-footer">View <i class="fas fa-arrow-circle-right"></i></a>
+                </div>
+            </div>
+            <div class="col-lg-3 col-6">
+                <div class="small-box bg-dark">
+                    <div class="inner">
+                        <h3>{{ suggestion_groups or 0 }}</h3>
+                        <p>Storage Suggestions</p>
+                    </div>
+                    <div class="icon"><i class="fas fa-magic"></i></div>
+                    <a href="#storage-suggestions" class="small-box-footer">Review <i class="fas fa-arrow-circle-right"></i></a>
+                </div>
+            </div>
+            <div class="col-lg-3 col-6">
+                <div class="small-box bg-dark">
+                    <div class="inner">
+                        <h3>{{ total_files or 0 }}</h3>
+                        <p>Total Files</p>
+                    </div>
+                    <div class="icon"><i class="fas fa-database"></i></div>
+                    <a href="/storage" class="small-box-footer">Open Storage <i class="fas fa-arrow-circle-right"></i></a>
+                </div>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-lg-6">
+                <div class="card card-outline card-info">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-key"></i> Link Token</h3>
+                        <div class="card-tools">
+                            <button type="button" onclick="navigator.clipboard.writeText('{{ link_token }}')" class="btn btn-sm btn-primary">Copy</button>
+                            <form action="/admin/token/regenerate" method="post" class="d-inline">
+                                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Regenerate token? All share links need updated t= value.')">Regenerate</button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="text-muted text-sm">Current token</div>
+                        <div class="font-weight-bold text-monospace">{{ link_token or 'not-set' }}</div>
+                        <div class="admin-section-note mt-2">Copy this value when creating share links.</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="card card-outline card-warning">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-database"></i> TMDB Metadata</h3>
+                        <div class="card-tools">
+                            <form action="/admin/tmdb/refresh" method="post" class="d-inline">
+                                <button type="submit" class="btn btn-sm btn-warning" {% if not tmdb_configured %}disabled{% endif %}>
+                                    Refresh TMDB Metadata
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        {% if tmdb_configured %}
+                            <span class="badge badge-success">TMDB_API_KEY configured</span>
+                        {% else %}
+                            <span class="badge badge-danger">TMDB_API_KEY missing</span>
+                            <div class="admin-section-note mt-2">Set it in `.env` (local) or Render Environment Variables.</div>
+                        {% endif %}
+                        {% if tmdb_status == "refresh_started" %}
+                            <div class="admin-section-note mt-2 text-warning">Refresh started. Check a content page in 1-2 minutes.</div>
+                        {% elif tmdb_status == "missing" %}
+                            <div class="admin-section-note mt-2 text-danger">Cannot refresh without TMDB_API_KEY.</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="card card-outline card-secondary" id="storage-suggestions">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-database"></i> Storage Suggestions</h3>
+                <div class="card-tools">
+                    <a href="/upload_zone" class="btn btn-sm btn-primary">Upload to Storage</a>
+                    <a href="/storage" class="btn btn-sm btn-outline-light">Open Storage</a>
+                </div>
+            </div>
+            <div class="card-body">
+                {% if storage_suggestions and storage_suggestions|length > 0 %}
+                    {% for group in storage_suggestions %}
+                    <form action="/dashboard/publish" method="post" class="card card-outline card-dark mb-4">
+                        <input type="hidden" name="item_ids" value="{{ group['items'] | map(attribute='id') | join(',') }}">
+                        <div class="card-header">
+                            <h3 class="card-title">
+                                <i class="fas fa-folder-open"></i> {{ group.title }}
+                                <span class="badge badge-secondary ml-2">{{ group.type|title }}</span>
+                                {% if group.year %}<span class="badge badge-light ml-1">{{ group.year }}</span>{% endif %}
+                            </h3>
+                            <div class="card-tools">
+                                <button type="button" data-group="{{ loop.index0 }}" class="btn btn-sm btn-info tmdb-fetch">Auto Fetch TMDB</button>
+                                <button type="submit" class="btn btn-sm btn-success">Publish</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div class="form-row">
+                                <div class="form-group col-md-4">
+                                    <label>Title</label>
+                                    <input id="title-{{ loop.index0 }}" name="title" value="{{ group.title }}" class="form-control" />
+                                </div>
+                                <div class="form-group col-md-2">
+                                    <label>Type</label>
+                                    <select id="type-{{ loop.index0 }}" name="catalog_type" class="custom-select">
+                                        <option value="movie" {% if group.type == 'movie' %}selected{% endif %}>Movie</option>
+                                        <option value="series" {% if group.type == 'series' %}selected{% endif %}>Series</option>
+                                    </select>
+                                </div>
+                                <div class="form-group col-md-2">
+                                    <label>Year</label>
+                                    <input id="year-{{ loop.index0 }}" name="year" value="{{ group.year }}" class="form-control" />
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group col-md-6">
+                                    <label>Description</label>
+                                    <textarea id="desc-{{ loop.index0 }}" name="description" rows="3" class="form-control"></textarea>
+                                </div>
+                                <div class="form-group col-md-6">
+                                    <div class="form-row">
+                                        <div class="form-group col-md-6">
+                                            <label>Genres (comma)</label>
+                                            <input id="genres-{{ loop.index0 }}" name="genres" class="form-control" />
+                                        </div>
+                                        <div class="form-group col-md-6">
+                                            <label>Director</label>
+                                            <input id="director-{{ loop.index0 }}" name="director" class="form-control" />
+                                        </div>
+                                        <div class="form-group col-md-6">
+                                            <label>Actors (comma)</label>
+                                            <input id="actors-{{ loop.index0 }}" name="actors" class="form-control" />
+                                        </div>
+                                        <div class="form-group col-md-6">
+                                            <label>Trailer URL</label>
+                                            <input id="trailer-{{ loop.index0 }}" name="trailer_url" class="form-control" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-dark mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>File</th>
+                                            <th>Quality</th>
+                                            <th>Season/Episode</th>
+                                            <th class="text-right">Size</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for item in group['items'] %}
+                                        <tr>
+                                            <td class="text-truncate" style="max-width: 260px;" title="{{ item.name }}">{{ item.name }}</td>
+                                            <td>{{ item.quality or '-' }}</td>
+                                            <td>
+                                                {% if group.type == 'series' %}
+                                                    S{{ item.season or '?' }}E{{ item.episode or '?' }}
+                                                {% else %}
+                                                    -
+                                                {% endif %}
+                                            </td>
+                                            <td class="text-right">{{ item.size_label }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </form>
+                    {% endfor %}
                 {% else %}
-                    <div class="text-red-400 font-semibold">TMDB_API_KEY missing</div>
-                    <div class="text-xs text-gray-500 mt-1">Set it in `.env` (local) or Render Environment Variables.</div>
-                {% endif %}
-                {% if tmdb_status == "refresh_started" %}
-                    <div class="text-xs text-yellow-300 mt-1">Refresh started. Check a content page in 1-2 minutes.</div>
-                {% elif tmdb_status == "missing" %}
-                    <div class="text-xs text-red-300 mt-1">Cannot refresh without TMDB_API_KEY.</div>
+                    <div class="admin-section-note">No storage suggestions found.</div>
                 {% endif %}
             </div>
-            <div class="flex flex-wrap gap-2">
-                <form action="/admin/tmdb/refresh" method="post">
-                    <button type="submit" class="px-4 py-2 bg-yellow-500 hover:bg-yellow-400 rounded text-black text-xs font-bold" {% if not tmdb_configured %}disabled{% endif %}>
-                        Refresh TMDB Metadata
-                    </button>
-                </form>
-            </div>
         </div>
-    </div>
-
-    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
-        <div class="flex items-center justify-between mb-4">
-            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-database mr-2"></i> Storage Suggestions</h3>
-            <div class="flex gap-2">
-                <a href="/upload_zone" class="text-xs bg-blue-600 text-white px-2 py-1 rounded border border-blue-500">Upload to Storage</a>
-                <a href="/storage" class="text-xs bg-gray-900 text-gray-300 px-2 py-1 rounded border border-gray-700">Open Storage</a>
+        <div class="card card-outline card-primary">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-film"></i> Published Catalog</h3>
+                <div class="card-tools">
+                    <span class="badge badge-info">Visible on Home and Content pages</span>
+                </div>
             </div>
-        </div>
-        {% if storage_suggestions and storage_suggestions|length > 0 %}
-            <div class="space-y-6">
-                {% for group in storage_suggestions %}
-                <form action="/dashboard/publish" method="post" class="rounded-lg border border-gray-700 bg-gray-900 p-4">
-                    <input type="hidden" name="item_ids" value="{{ group['items'] | map(attribute='id') | join(',') }}">
-                    <div class="grid grid-cols-1 md:grid-cols-6 gap-3">
-                        <div class="md:col-span-2">
-                            <label class="text-xs text-gray-400">Title</label>
-                            <input id="title-{{ loop.index0 }}" name="title" value="{{ group.title }}" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white" />
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400">Type</label>
-                            <select id="type-{{ loop.index0 }}" name="catalog_type" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white">
-                                <option value="movie" {% if group.type == 'movie' %}selected{% endif %}>Movie</option>
-                                <option value="series" {% if group.type == 'series' %}selected{% endif %}>Series</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400">Year</label>
-                            <input id="year-{{ loop.index0 }}" name="year" value="{{ group.year }}" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white" />
-                        </div>
-                        <div class="md:col-span-2 flex items-end gap-2">
-                            <button type="button" data-group="{{ loop.index0 }}" class="tmdb-fetch bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded text-xs font-bold">
-                                Auto Fetch TMDB
-                            </button>
-                            <button type="submit" class="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded text-xs font-bold">
-                                Publish
-                            </button>
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
-                        <div>
-                            <label class="text-xs text-gray-400">Description</label>
-                            <textarea id="desc-{{ loop.index0 }}" name="description" rows="3" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white"></textarea>
-                        </div>
-                        <div class="grid grid-cols-2 gap-3">
-                            <div>
-                                <label class="text-xs text-gray-400">Genres (comma)</label>
-                                <input id="genres-{{ loop.index0 }}" name="genres" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
-                            </div>
-                            <div>
-                                <label class="text-xs text-gray-400">Director</label>
-                                <input id="director-{{ loop.index0 }}" name="director" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
-                            </div>
-                            <div>
-                                <label class="text-xs text-gray-400">Actors (comma)</label>
-                                <input id="actors-{{ loop.index0 }}" name="actors" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
-                            </div>
-                            <div>
-                                <label class="text-xs text-gray-400">Trailer URL</label>
-                                <input id="trailer-{{ loop.index0 }}" name="trailer_url" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
-                            </div>
-                        </div>
-                    </div>
-                    <div class="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 text-xs text-gray-300">
-                        {% for item in group['items'] %}
-                        <div class="flex items-center justify-between bg-gray-800 border border-gray-700 rounded px-2 py-1">
-                            <div class="truncate max-w-[180px]" title="{{ item.name }}">{{ item.name }}</div>
-                            <div class="text-gray-400">{{ item.quality }}{% if group.type == 'series' %} | S{{ item.season }}E{{ item.episode }}{% endif %} | {{ item.size_label }}</div>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </form>
-                {% endfor %}
-            </div>
-        {% else %}
-            <div class="text-sm text-gray-500">No storage suggestions found.</div>
-        {% endif %}
-    </div>
-
-    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
-        <div class="flex items-center justify-between mb-4">
-            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-film mr-2"></i> Published Catalog</h3>
-            <span class="text-xs bg-gray-900 text-gray-300 px-2 py-1 rounded border border-gray-700">Visible on Home/Content</span>
-        </div>
-        {% if published_groups and published_groups|length > 0 %}
-            <div class="space-y-6">
-                {% for group in published_groups %}
-                <div class="rounded-lg border border-gray-700 bg-gray-900 p-4">
-                    <form id="update-form-{{ loop.index0 }}" action="/dashboard/update-metadata" method="post" class="grid grid-cols-1 md:grid-cols-6 gap-3">
+            <div class="card-body">
+                {% if published_groups and published_groups|length > 0 %}
+                    {% for group in published_groups %}
+                    <form id="update-form-{{ loop.index0 }}" action="/dashboard/update-metadata" method="post" class="card card-outline card-dark mb-4">
                         <input type="hidden" name="group_title" value="{{ group.title }}">
                         <input type="hidden" name="group_year" value="{{ group.year }}">
                         <input type="hidden" name="group_type" value="{{ group.type }}">
-                        <div class="md:col-span-2">
-                            <label class="text-xs text-gray-400">Title</label>
-                            <input name="title" value="{{ group.title }}" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white" />
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400">Type</label>
-                            <input value="{{ group.type }}" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white" readonly />
-                        </div>
-                        <div>
-                            <label class="text-xs text-gray-400">Year</label>
-                            <input name="year" value="{{ group.year }}" class="w-full bg-black border border-gray-700 rounded p-2 text-sm text-white" />
-                        </div>
-                        <div class="md:col-span-2 flex items-end gap-2">
-                            <button type="submit" class="bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded text-xs font-bold">
-                                Update Metadata
-                            </button>
-                            <button form="delete-form-{{ loop.index0 }}" type="submit" class="bg-red-600 hover:bg-red-500 text-white px-3 py-2 rounded text-xs font-bold" onclick="return confirm('Delete this catalog group?')">
-                                Delete
-                            </button>
-                        </div>
-                        <div class="md:col-span-6 grid grid-cols-1 md:grid-cols-2 gap-3">
-                            <div>
-                                <label class="text-xs text-gray-400">Description</label>
-                                <textarea name="description" rows="3" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white"></textarea>
+                        <div class="card-header">
+                            <h3 class="card-title">
+                                <i class="fas fa-folder"></i> {{ group.title }}
+                                <span class="badge badge-secondary ml-2">{{ group.type|title }}</span>
+                                {% if group.year %}<span class="badge badge-light ml-1">{{ group.year }}</span>{% endif %}
+                            </h3>
+                            <div class="card-tools">
+                                <button type="submit" class="btn btn-sm btn-primary">Update Metadata</button>
+                                <button form="delete-form-{{ loop.index0 }}" type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this catalog group?')">Delete</button>
                             </div>
-                            <div class="grid grid-cols-2 gap-3">
-                                <div>
-                                    <label class="text-xs text-gray-400">Genres (comma)</label>
-                                    <input name="genres" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                        </div>
+                        <div class="card-body">
+                            <div class="form-row">
+                                <div class="form-group col-md-4">
+                                    <label>Title</label>
+                                    <input name="title" value="{{ group.title }}" class="form-control" />
                                 </div>
-                                <div>
-                                    <label class="text-xs text-gray-400">Director</label>
-                                    <input name="director" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                                <div class="form-group col-md-2">
+                                    <label>Type</label>
+                                    <input value="{{ group.type }}" class="form-control" readonly />
                                 </div>
-                                <div>
-                                    <label class="text-xs text-gray-400">Actors (comma)</label>
-                                    <input name="actors" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                                <div class="form-group col-md-2">
+                                    <label>Year</label>
+                                    <input name="year" value="{{ group.year }}" class="form-control" />
                                 </div>
-                                <div>
-                                    <label class="text-xs text-gray-400">Trailer URL</label>
-                                    <input name="trailer_url" class="w-full bg-black border border-gray-700 rounded p-2 text-xs text-white" />
+                            </div>
+                            <div class="form-row">
+                                <div class="form-group col-md-6">
+                                    <label>Description</label>
+                                    <textarea name="description" rows="3" class="form-control"></textarea>
                                 </div>
+                                <div class="form-group col-md-6">
+                                    <div class="form-row">
+                                        <div class="form-group col-md-6">
+                                            <label>Genres (comma)</label>
+                                            <input name="genres" class="form-control" />
+                                        </div>
+                                        <div class="form-group col-md-6">
+                                            <label>Director</label>
+                                            <input name="director" class="form-control" />
+                                        </div>
+                                        <div class="form-group col-md-6">
+                                            <label>Actors (comma)</label>
+                                            <input name="actors" class="form-control" />
+                                        </div>
+                                        <div class="form-group col-md-6">
+                                            <label>Trailer URL</label>
+                                            <input name="trailer_url" class="form-control" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-sm table-dark mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th>File</th>
+                                            <th>Quality</th>
+                                            <th>Season/Episode</th>
+                                            <th class="text-right">Size</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for item in group['items'] %}
+                                        <tr>
+                                            <td class="text-truncate" style="max-width: 260px;" title="{{ item.name }}">{{ item.name }}</td>
+                                            <td>{{ item.quality or '-' }}</td>
+                                            <td>
+                                                {% if group.type == 'series' %}
+                                                    S{{ item.season or '?' }}E{{ item.episode or '?' }}
+                                                {% else %}
+                                                    -
+                                                {% endif %}
+                                            </td>
+                                            <td class="text-right">{{ item.size_label }}</td>
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
                             </div>
                         </div>
                     </form>
-                    <form id="delete-form-{{ loop.index0 }}" action="/dashboard/delete" method="post" class="hidden">
+                    <form id="delete-form-{{ loop.index0 }}" action="/dashboard/delete" method="post" class="d-none">
                         <input type="hidden" name="group_title" value="{{ group.title }}">
                         <input type="hidden" name="group_type" value="{{ group.type }}">
                     </form>
-                    <div class="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 text-xs text-gray-300">
-                        {% for item in group['items'] %}
-                        <div class="flex items-center justify-between bg-gray-800 border border-gray-700 rounded px-2 py-1">
-                            <div class="truncate max-w-[180px]" title="{{ item.name }}">{{ item.name }}</div>
-                            <div class="text-gray-400">{{ item.quality }}{% if group.type == 'series' %} | S{{ item.season }}E{{ item.episode }}{% endif %} | {{ item.size_label }}</div>
+                    {% endfor %}
+                {% else %}
+                    <div class="admin-section-note">No published catalog yet.</div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-lg-7">
+                <div class="card card-outline card-secondary">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-robot"></i> Bot Pool Health</h3>
+                        <div class="card-tools">
+                            <span class="badge badge-info">Live check</span>
                         </div>
-                        {% endfor %}
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-sm table-dark mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Bot</th>
+                                        <th>Status</th>
+                                        <th>Detail</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for b in bots %}
+                                    <tr>
+                                        <td class="text-monospace">{{ b.label }}</td>
+                                        <td>
+                                            {% if b.ok %}
+                                                <span class="badge badge-success">OK</span>
+                                            {% else %}
+                                                <span class="badge badge-danger">FAIL</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-muted">{{ b.detail }}</td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="3" class="text-center text-muted">No bots configured</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
-                {% endfor %}
             </div>
-        {% else %}
-            <div class="text-sm text-gray-500">No published catalog yet.</div>
-        {% endif %}
-    </div>
-
-    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
-        <div class="flex flex-col lg:flex-row lg:items-start gap-6">
-            <div class="flex-1">
-                <div class="flex items-center justify-between mb-3">
-                    <h3 class="font-bold text-lg text-gray-200 flex items-center gap-2">
-                        <i class="fas fa-robot"></i> Bot Pool Health
-                    </h3>
-                    <span class="text-xs bg-gray-900 text-gray-300 px-2 py-1 rounded border border-gray-700">Live check</span>
+            <div class="col-lg-5">
+                <div class="card card-outline card-info">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-sliders-h"></i> Bot Controls</h3>
+                    </div>
+                    <div class="card-body">
+                        <form action="/admin/bots/update_tokens" method="post">
+                            <div class="form-group">
+                                <label>Pool Tokens (comma or newline)</label>
+                                <textarea name="bot_tokens" rows="3" class="form-control" placeholder="123:ABC, 456:DEF">{{ pool_tokens }}</textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary btn-block">Save & Reload Pool</button>
+                        </form>
+                        <hr />
+                        <form action="/admin/bots/speedtest" method="post">
+                            <div class="form-group">
+                                <label><i class="fas fa-tachometer-alt"></i> Speed Test (downloads ~1MB)</label>
+                            </div>
+                            <button type="submit" class="btn btn-success btn-block">Run Speed Test</button>
+                            {% if speed_result %}
+                                {% if speed_result.ok %}
+                                    <div class="admin-section-note mt-2">~{{ (speed_result.mb_per_s or 0)|round(2) }} MB/s ({{ (speed_result.bytes/1024/1024)|round(2) }} MB in {{ speed_result.seconds|round(2) }}s)</div>
+                                {% else %}
+                                    <div class="admin-section-note mt-2 text-danger">Failed: {{ speed_result.error }}</div>
+                                {% endif %}
+                            {% endif %}
+                        </form>
+                    </div>
                 </div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left text-gray-300 text-sm">
-                        <thead class="bg-gray-900 text-gray-400 uppercase text-xs">
+            </div>
+        </div>
+        <div class="card card-outline card-warning">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-palette"></i> Site Settings</h3>
+                <div class="card-tools">
+                    <span class="badge badge-warning">Theme & Hero</span>
+                </div>
+            </div>
+            <div class="card-body">
+                <form action="/admin/site/save" method="post">
+                    <div class="form-row">
+                        <div class="form-group col-md-6">
+                            <label>Site Name</label>
+                            <input name="site_name" value="{{ site.site_name if site else 'mysticmovies' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Accent Color</label>
+                            <input name="accent_color" value="{{ site.accent_color if site else '#facc15' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Background Color</label>
+                            <input name="bg_color" value="{{ site.bg_color if site else '#070b12' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Card Color</label>
+                            <input name="card_color" value="{{ site.card_color if site else '#111827' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-12">
+                            <label>Hero Title</label>
+                            <input name="hero_title" value="{{ site.hero_title if site else '' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-12">
+                            <label>Hero Subtitle</label>
+                            <input name="hero_subtitle" value="{{ site.hero_subtitle if site else '' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Hero CTA Text</label>
+                            <input name="hero_cta_text" value="{{ site.hero_cta_text if site else 'Browse Content' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Hero CTA Link</label>
+                            <input name="hero_cta_link" value="{{ site.hero_cta_link if site else '/content' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-12">
+                            <label>Footer Text</label>
+                            <input name="footer_text" value="{{ site.footer_text if site else 'MysticMovies' }}" class="form-control" />
+                        </div>
+                    </div>
+                    <button class="btn btn-warning">Save Site Settings</button>
+                </form>
+            </div>
+        </div>
+        <div class="card card-outline card-info">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-inbox"></i> Content Requests</h3>
+                <div class="card-tools">
+                    <span class="badge badge-info">User Requests</span>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
                             <tr>
-                                <th class="p-2 border-b border-gray-700">Bot</th>
-                                <th class="p-2 border-b border-gray-700">Status</th>
-                                <th class="p-2 border-b border-gray-700">Detail</th>
+                                <th>User</th>
+                                <th>Type</th>
+                                <th>Title</th>
+                                <th>Note</th>
+                                <th class="text-right">Action</th>
                             </tr>
                         </thead>
-                        <tbody class="divide-y divide-gray-700">
-                            {% for b in bots %}
-                            <tr class="hover:bg-gray-750">
-                                <td class="p-2 font-mono">{{ b.label }}</td>
-                                <td class="p-2">
-                                    {% if b.ok %}
-                                        <span class="text-green-400 font-bold">OK</span>
-                                    {% else %}
-                                        <span class="text-red-400 font-bold">FAIL</span>
-                                    {% endif %}
+                        <tbody>
+                            {% for r in pending_content_requests %}
+                            <tr>
+                                <td class="text-xs">{{ r.user_phone }}</td>
+                                <td class="text-uppercase">{{ r.request_type }}</td>
+                                <td>{{ r.title }}</td>
+                                <td class="text-muted">{{ r.note or '-' }}</td>
+                                <td class="text-right">
+                                    <form action="/admin/request/{{ r.id }}/fulfilled" method="post" class="d-inline">
+                                        <button class="btn btn-sm btn-success">Fulfilled</button>
+                                    </form>
+                                    <form action="/admin/request/{{ r.id }}/rejected" method="post" class="d-inline">
+                                        <button class="btn btn-sm btn-danger">Reject</button>
+                                    </form>
                                 </td>
-                                <td class="p-2 text-xs text-gray-400 break-all">{{ b.detail }}</td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="3" class="p-3 text-center text-gray-500 text-sm">No bots configured</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted">No pending requests</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
                 </div>
             </div>
-            <div class="w-full lg:w-80 space-y-4">
-                <form action="/admin/bots/update_tokens" method="post" class="space-y-2">
-                    <label class="text-xs text-gray-400 font-semibold">Pool Tokens (comma or newline)</label>
-                    <textarea name="bot_tokens" rows="3" class="w-full bg-gray-900 border border-gray-700 rounded p-2 text-xs text-white" placeholder="123:ABC, 456:DEF">{{ pool_tokens }}</textarea>
-                    <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs py-2 rounded">Save & Reload Pool</button>
-                </form>
-                <form action="/admin/bots/speedtest" method="post" class="space-y-2">
-                    <label class="text-xs text-gray-400 font-semibold flex items-center gap-1"><i class="fas fa-tachometer-alt"></i> Speed Test (downloads ~1MB from storage)</label>
-                    <button type="submit" class="w-full bg-green-600 hover:bg-green-500 text-white font-bold text-xs py-2 rounded">Run Speed Test</button>
-                    {% if speed_result %}
-                        {% if speed_result.ok %}
-                        <div class="text-xs text-green-400">~{{ (speed_result.mb_per_s or 0)|round(2) }} MB/s ({{ (speed_result.bytes/1024/1024)|round(2) }} MB in {{ speed_result.seconds|round(2) }}s)</div>
-                        {% else %}
-                        <div class="text-xs text-red-400">Failed: {{ speed_result.error }}</div>
-                        {% endif %}
-                    {% endif %}
-                </form>
+        </div>
+        <div class="card card-outline card-secondary">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-tags"></i> Catalog Metadata</h3>
+                <div class="card-tools">
+                    <span class="badge badge-secondary">Tag Movies or Series</span>
+                </div>
             </div>
-        </div>
-    </div>
-
-    <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 mb-8">
-        <div class="flex items-center justify-between mb-4">
-            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-sliders-h mr-2"></i> Site Settings (Admin Only)</h3>
-            <span class="text-xs bg-yellow-900 text-yellow-200 px-2 py-1 rounded">Theme & Hero</span>
-        </div>
-        <form action="/admin/site/save" method="post" class="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <input name="site_name" value="{{ site.site_name if site else 'mysticmovies' }}" placeholder="Site Name" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
-            <input name="accent_color" value="{{ site.accent_color if site else '#facc15' }}" placeholder="#facc15" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
-            <input name="bg_color" value="{{ site.bg_color if site else '#070b12' }}" placeholder="#070b12" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
-            <input name="card_color" value="{{ site.card_color if site else '#111827' }}" placeholder="#111827" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
-            <input name="hero_title" value="{{ site.hero_title if site else '' }}" placeholder="Hero title" class="md:col-span-2 bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
-            <input name="hero_subtitle" value="{{ site.hero_subtitle if site else '' }}" placeholder="Hero subtitle" class="md:col-span-2 bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
-            <input name="hero_cta_text" value="{{ site.hero_cta_text if site else 'Browse Content' }}" placeholder="Hero CTA text" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
-            <input name="hero_cta_link" value="{{ site.hero_cta_link if site else '/content' }}" placeholder="/content" class="bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
-            <input name="footer_text" value="{{ site.footer_text if site else 'MysticMovies' }}" placeholder="Footer text" class="md:col-span-2 bg-gray-900 border border-gray-700 rounded p-2 text-sm text-white" />
-            <button class="md:col-span-2 bg-yellow-500 hover:bg-yellow-400 text-black font-bold rounded p-2 text-sm">Save Site Settings</button>
-        </form>
-    </div>
-
-    <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden shadow-xl mb-10">
-        <div class="p-4 bg-gray-900 border-b border-gray-700 flex justify-between items-center">
-            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-inbox mr-2"></i> Content Requests</h3>
-            <span class="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded">User Requests</span>
-        </div>
-        <div class="overflow-x-auto">
-            <table class="w-full text-left text-gray-400">
-                <thead class="bg-gray-750 text-gray-300 uppercase text-xs font-semibold tracking-wider">
-                    <tr>
-                        <th class="p-4 border-b border-gray-700">User</th>
-                        <th class="p-4 border-b border-gray-700">Type</th>
-                        <th class="p-4 border-b border-gray-700">Title</th>
-                        <th class="p-4 border-b border-gray-700">Note</th>
-                        <th class="p-4 border-b border-gray-700 text-right">Action</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-700">
-                    {% for r in pending_content_requests %}
-                    <tr class="hover:bg-gray-700 transition">
-                        <td class="p-4 text-xs">{{ r.user_phone }}</td>
-                        <td class="p-4 text-xs uppercase">{{ r.request_type }}</td>
-                        <td class="p-4 text-sm text-white">{{ r.title }}</td>
-                        <td class="p-4 text-xs text-gray-400">{{ r.note or '-' }}</td>
-                        <td class="p-4 text-right">
-                            <form action="/admin/request/{{ r.id }}/fulfilled" method="post" class="inline">
-                                <button class="bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-xs font-bold">Fulfilled</button>
-                            </form>
-                            <form action="/admin/request/{{ r.id }}/rejected" method="post" class="inline">
-                                <button class="bg-red-600 hover:bg-red-500 text-white px-3 py-1 rounded text-xs font-bold">Reject</button>
-                            </form>
-                        </td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="5" class="p-4 text-center text-gray-500 text-sm">No pending requests</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden shadow-xl mb-10">
-        <div class="p-4 bg-gray-900 border-b border-gray-700 flex justify-between items-center">
-            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-film mr-2"></i> Catalog Metadata</h3>
-            <span class="text-xs bg-purple-900 text-purple-200 px-2 py-1 rounded">Tag Movies/Series</span>
-        </div>
-        <div class="overflow-x-auto">
-            <table class="w-full text-left text-gray-400">
-                <thead class="bg-gray-750 text-gray-300 uppercase text-xs font-semibold tracking-wider">
-                    <tr>
-                        <th class="p-4 border-b border-gray-700">File</th>
-                        <th class="p-4 border-b border-gray-700">Type</th>
-                        <th class="p-4 border-b border-gray-700">Series/Season/Episode</th>
-                        <th class="p-4 border-b border-gray-700">Quality</th>
-                        <th class="p-4 border-b border-gray-700 text-right">Save</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-700">
-                    {% for item in content_items %}
-                    <tr class="hover:bg-gray-700 transition">
-                        <form action="/admin/content/update" method="post">
-                            <input type="hidden" name="item_id" value="{{ item.id }}">
-                            <td class="p-4 text-xs text-white max-w-[260px] truncate" title="{{ item.name }}">{{ item.name }}</td>
-                            <td class="p-4">
-                                <select name="catalog_type" class="bg-gray-900 border border-gray-700 rounded p-1 text-xs text-white">
-                                    <option value="movie" {% if item.catalog_type == "movie" %}selected{% endif %}>Movie</option>
-                                    <option value="series" {% if item.catalog_type == "series" %}selected{% endif %}>Series</option>
-                                </select>
-                            </td>
-                            <td class="p-4">
-                                <input name="series_title" value="{{ item.series_title or '' }}" placeholder="Series title" class="bg-gray-900 border border-gray-700 rounded p-1 text-xs text-white w-32 mb-1">
-                                <div class="flex gap-1">
-                                    <input name="season" value="{{ item.season or '' }}" placeholder="S" class="bg-gray-900 border border-gray-700 rounded p-1 text-xs text-white w-10">
-                                    <input name="episode" value="{{ item.episode or '' }}" placeholder="E" class="bg-gray-900 border border-gray-700 rounded p-1 text-xs text-white w-10">
-                                </div>
-                            </td>
-                            <td class="p-4">
-                                <input name="quality" value="{{ item.quality or '' }}" placeholder="1080P" class="bg-gray-900 border border-gray-700 rounded p-1 text-xs text-white w-20">
-                            </td>
-                            <td class="p-4 text-right">
-                                <button class="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-xs font-bold">Save</button>
-                            </td>
-                            <input type="hidden" name="title" value="{{ item.title or '' }}">
-                            <input type="hidden" name="description" value="{{ item.description or '' }}">
-                            <input type="hidden" name="year" value="{{ item.year or '' }}">
-                            <input type="hidden" name="genres" value="{{ (item.genres or [])|join(',') }}">
-                            <input type="hidden" name="actors" value="{{ (item.actors or [])|join(',') }}">
-                            <input type="hidden" name="director" value="{{ item.director or '' }}">
-                            <input type="hidden" name="trailer_url" value="{{ item.trailer_url or '' }}">
-                        </form>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="5" class="p-4 text-center text-gray-500 text-sm">No files found</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
-        <div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg relative overflow-hidden group">
-            <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition">
-                <i class="fas fa-users text-6xl text-blue-500"></i>
-            </div>
-            <div class="text-gray-400 text-xs uppercase tracking-widest font-semibold">Total Users</div>
-            <div class="text-4xl font-bold text-white mt-2">{{ total_users }}</div>
-        </div>
-
-        <div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg relative overflow-hidden group">
-            <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition">
-                <i class="fas fa-file-archive text-6xl text-yellow-500"></i>
-            </div>
-            <div class="text-gray-400 text-xs uppercase tracking-widest font-semibold">Total Files</div>
-            <div class="text-4xl font-bold text-white mt-2">{{ total_files }}</div>
-        </div>
-
-        <div class="bg-gray-800 p-6 rounded-lg border border-gray-700 shadow-lg relative overflow-hidden group">
-            <div class="absolute right-0 top-0 p-4 opacity-10 group-hover:opacity-20 transition">
-                <i class="fas fa-server text-6xl text-red-500"></i>
-            </div>
-            <div class="text-gray-400 text-xs uppercase tracking-widest font-semibold">Database</div>
-            <div class="text-4xl font-bold text-white mt-2">MongoDB</div>
-        </div>
-    </div>
-
-    <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden shadow-xl mb-10">
-        <div class="p-4 bg-gray-900 border-b border-gray-700 flex justify-between items-center">
-            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-user-check mr-2"></i> Pending Requests</h3>
-            <span class="text-xs bg-yellow-900 text-yellow-200 px-2 py-1 rounded">Approval Needed</span>
-        </div>
-        
-        <div class="overflow-x-auto">
-            <table class="w-full text-left text-gray-400">
-                <thead class="bg-gray-750 text-gray-300 uppercase text-xs font-semibold tracking-wider">
-                    <tr>
-                        <th class="p-4 border-b border-gray-700">Phone Number</th>
-                        <th class="p-4 border-b border-gray-700">Requested Name</th>
-                        <th class="p-4 border-b border-gray-700">Requested At</th>
-                        <th class="p-4 border-b border-gray-700 text-right">Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-700">
-                    {% for user in pending_users %}
-                    <tr class="hover:bg-gray-700 transition">
-                        <td class="p-4 text-white font-medium">
-                            <div class="flex items-center">
-                                <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-600 to-gray-800 flex items-center justify-center mr-3 text-xs">
-                                    <i class="fas fa-user"></i>
-                                </div>
-                                {{ user.phone_number }}
-                            </div>
-                        </td>
-                        <td class="p-4 text-sm text-gray-300">
-                            {{ user.requested_name or user.first_name or "User" }}
-                        </td>
-                        <td class="p-4 text-sm font-mono text-gray-500">
-                            {{ user.requested_at.strftime('%Y-%m-%d') if user.requested_at else '-' }}
-                        </td>
-                        <td class="p-4 text-right">
-                            <form action="/admin/approve_user" method="post" class="inline">
-                                <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
-                                <button type="submit" class="bg-green-600 hover:bg-green-500 text-white px-3 py-1 rounded text-xs font-bold">Approve</button>
-                            </form>
-                            <form action="/admin/block_user" method="post" class="inline">
-                                <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
-                                <button type="submit" class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-1 rounded text-xs font-bold">Block</button>
-                            </form>
-                        </td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="4" class="p-4 text-center text-gray-500 text-sm">No pending requests</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden shadow-xl">
-        <div class="p-4 bg-gray-900 border-b border-gray-700 flex justify-between items-center">
-            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-database mr-2"></i> User Database</h3>
-            <span class="text-xs bg-red-900 text-red-200 px-2 py-1 rounded">Restricted Access</span>
-        </div>
-        
-        <div class="overflow-x-auto">
-            <table class="w-full text-left text-gray-400">
-                <thead class="bg-gray-750 text-gray-300 uppercase text-xs font-semibold tracking-wider">
-                    <tr>
-                        <th class="p-4 border-b border-gray-700">Phone Number</th>
-                        <th class="p-4 border-b border-gray-700">Status</th>
-                        <th class="p-4 border-b border-gray-700">Joined Date</th>
-                        <th class="p-4 border-b border-gray-700 text-right">Actions</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-700">
-                    {% for user in users %}
-                    <tr class="hover:bg-gray-700 transition">
-                        <td class="p-4 text-white font-medium">
-                            <div class="flex items-center">
-                                <div class="w-8 h-8 rounded-full bg-gradient-to-br from-gray-600 to-gray-800 flex items-center justify-center mr-3 text-xs">
-                                    <i class="fas fa-user"></i>
-                                </div>
-                                {{ user.phone_number }}
-                            </div>
-                        </td>
-                        <td class="p-4">
-                            {% if user.status == "approved" %}
-                                <span class="bg-green-900 text-green-200 px-2 py-1 rounded text-xs font-bold border border-green-800">APPROVED</span>
-                            {% elif user.status == "pending" %}
-                                <span class="bg-yellow-900 text-yellow-200 px-2 py-1 rounded text-xs font-bold border border-yellow-800">PENDING</span>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>File</th>
+                                <th>Type</th>
+                                <th>Series/Season/Episode</th>
+                                <th>Quality</th>
+                                <th class="text-right">Save</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in content_items %}
+                            <tr>
+                                <form action="/admin/content/update" method="post">
+                                    <input type="hidden" name="item_id" value="{{ item.id }}">
+                                    <td class="text-truncate" style="max-width: 240px;" title="{{ item.name }}">{{ item.name }}</td>
+                                    <td>
+                                        <select name="catalog_type" class="custom-select custom-select-sm">
+                                            <option value="movie" {% if item.catalog_type == "movie" %}selected{% endif %}>Movie</option>
+                                            <option value="series" {% if item.catalog_type == "series" %}selected{% endif %}>Series</option>
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <input name="series_title" value="{{ item.series_title or '' }}" placeholder="Series title" class="form-control form-control-sm mb-1">
+                                        <div class="form-row">
+                                            <div class="col">
+                                                <input name="season" value="{{ item.season or '' }}" placeholder="S" class="form-control form-control-sm">
+                                            </div>
+                                            <div class="col">
+                                                <input name="episode" value="{{ item.episode or '' }}" placeholder="E" class="form-control form-control-sm">
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td>
+                                        <input name="quality" value="{{ item.quality or '' }}" placeholder="1080P" class="form-control form-control-sm">
+                                    </td>
+                                    <td class="text-right">
+                                        <button class="btn btn-sm btn-primary">Save</button>
+                                    </td>
+                                    <input type="hidden" name="title" value="{{ item.title or '' }}">
+                                    <input type="hidden" name="description" value="{{ item.description or '' }}">
+                                    <input type="hidden" name="year" value="{{ item.year or '' }}">
+                                    <input type="hidden" name="genres" value="{{ (item.genres or [])|join(',') }}">
+                                    <input type="hidden" name="actors" value="{{ (item.actors or [])|join(',') }}">
+                                    <input type="hidden" name="director" value="{{ item.director or '' }}">
+                                    <input type="hidden" name="trailer_url" value="{{ item.trailer_url or '' }}">
+                                </form>
+                            </tr>
                             {% else %}
-                                <span class="bg-gray-800 text-gray-300 px-2 py-1 rounded text-xs font-bold border border-gray-700">BLOCKED</span>
-                            {% endif %}
-                        </td>
-                        <td class="p-4 text-sm font-mono text-gray-500">
-                            {{ user.created_at.strftime('%Y-%m-%d') }}
-                        </td>
-                        <td class="p-4 text-right">
-                            <form action="/admin/block_user" method="post" class="inline">
-                                <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
-                                <button type="submit" class="text-gray-500 hover:text-white transition text-xs">Block</button>
-                            </form>
-                            <form action="/admin/delete_user" method="post" class="inline">
-                                <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
-                                <button type="submit" class="text-red-400 hover:text-red-300 transition text-xs ml-3">Delete</button>
-                            </form>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+                            <tr><td colspan="5" class="text-center text-muted">No files found</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
-    </div>
-
-    <div class="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden shadow-xl mt-10">
-        <div class="p-4 bg-gray-900 border-b border-gray-700 flex justify-between items-center">
-            <h3 class="font-bold text-lg text-gray-200"><i class="fas fa-chart-line mr-2"></i> Recent Playback Analytics</h3>
-            <span class="text-xs bg-blue-900 text-blue-200 px-2 py-1 rounded">Last 50 Events</span>
+        <div class="row">
+            <div class="col-md-4">
+                <div class="info-box bg-dark">
+                    <span class="info-box-icon bg-info"><i class="fas fa-users"></i></span>
+                    <div class="info-box-content">
+                        <span class="info-box-text">Total Users</span>
+                        <span class="info-box-number">{{ total_users }}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="info-box bg-dark">
+                    <span class="info-box-icon bg-warning"><i class="fas fa-file-archive"></i></span>
+                    <div class="info-box-content">
+                        <span class="info-box-text">Total Files</span>
+                        <span class="info-box-number">{{ total_files }}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="info-box bg-dark">
+                    <span class="info-box-icon bg-danger"><i class="fas fa-server"></i></span>
+                    <div class="info-box-content">
+                        <span class="info-box-text">Database</span>
+                        <span class="info-box-number">MongoDB</span>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div class="overflow-x-auto">
-            <table class="w-full text-left text-gray-400">
-                <thead class="bg-gray-750 text-gray-300 uppercase text-xs font-semibold tracking-wider">
-                    <tr>
-                        <th class="p-4 border-b border-gray-700">User</th>
-                        <th class="p-4 border-b border-gray-700">Type</th>
-                        <th class="p-4 border-b border-gray-700">Item</th>
-                        <th class="p-4 border-b border-gray-700">Progress</th>
-                        <th class="p-4 border-b border-gray-700">Updated</th>
-                    </tr>
-                </thead>
-                <tbody class="divide-y divide-gray-700">
-                    {% for p in recent_progress %}
-                    <tr class="hover:bg-gray-700 transition">
-                        <td class="p-4 text-white font-medium">{{ p.user_key }}</td>
-                        <td class="p-4 text-xs uppercase">{{ p.user_type }}</td>
-                        <td class="p-4 text-sm text-gray-200">{{ items_map.get(p.item_id, p.item_id) }}</td>
-                        <td class="p-4 text-sm">
-                            {% if p.duration > 0 %}
-                                {{ ((p.position / p.duration) * 100) | round(1) }}%
+        <div class="card card-outline card-warning">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-user-check"></i> Pending Requests</h3>
+                <div class="card-tools">
+                    <span class="badge badge-warning">Approval Needed</span>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>Phone Number</th>
+                                <th>Requested Name</th>
+                                <th>Requested At</th>
+                                <th class="text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for user in pending_users %}
+                            <tr>
+                                <td>{{ user.phone_number }}</td>
+                                <td>{{ user.requested_name or user.first_name or "User" }}</td>
+                                <td>{{ user.requested_at.strftime('%Y-%m-%d') if user.requested_at else '-' }}</td>
+                                <td class="text-right">
+                                    <form action="/admin/approve_user" method="post" class="d-inline">
+                                        <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
+                                        <button type="submit" class="btn btn-sm btn-success">Approve</button>
+                                    </form>
+                                    <form action="/admin/block_user" method="post" class="d-inline">
+                                        <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
+                                        <button type="submit" class="btn btn-sm btn-secondary">Block</button>
+                                    </form>
+                                </td>
+                            </tr>
                             {% else %}
-                                0%
-                            {% endif %}
-                        </td>
-                        <td class="p-4 text-xs text-gray-500">
-                            {{ p.updated_at.strftime('%Y-%m-%d %H:%M') }}
-                        </td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="5" class="p-4 text-center text-gray-500 text-sm">No analytics yet</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+                            <tr><td colspan="4" class="text-center text-muted">No pending requests</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <div class="card card-outline card-danger">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-database"></i> User Database</h3>
+                <div class="card-tools">
+                    <span class="badge badge-danger">Restricted Access</span>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>Phone Number</th>
+                                <th>Status</th>
+                                <th>Joined Date</th>
+                                <th class="text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for user in users %}
+                            <tr>
+                                <td>{{ user.phone_number }}</td>
+                                <td>
+                                    {% if user.status == "approved" %}
+                                        <span class="badge badge-success">APPROVED</span>
+                                    {% elif user.status == "pending" %}
+                                        <span class="badge badge-warning">PENDING</span>
+                                    {% else %}
+                                        <span class="badge badge-secondary">BLOCKED</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>
+                                <td class="text-right">
+                                    <form action="/admin/block_user" method="post" class="d-inline">
+                                        <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
+                                        <button type="submit" class="btn btn-sm btn-secondary">Block</button>
+                                    </form>
+                                    <form action="/admin/delete_user" method="post" class="d-inline">
+                                        <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
+                                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <div class="card card-outline card-info">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-chart-line"></i> Recent Playback Analytics</h3>
+                <div class="card-tools">
+                    <span class="badge badge-info">Last 50 Events</span>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Type</th>
+                                <th>Item</th>
+                                <th>Progress</th>
+                                <th>Updated</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for p in recent_progress %}
+                            <tr>
+                                <td>{{ p.user_key }}</td>
+                                <td class="text-uppercase">{{ p.user_type }}</td>
+                                <td>{{ items_map.get(p.item_id, p.item_id) }}</td>
+                                <td>
+                                    {% if p.duration > 0 %}
+                                        {{ ((p.position / p.duration) * 100) | round(1) }}%
+                                    {% else %}
+                                        0%
+                                    {% endif %}
+                                </td>
+                                <td>{{ p.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="5" class="text-center text-muted">No analytics yet</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </div>
-    </div>
+</section>
+{% endblock %}
 
-    <script>
-    document.querySelectorAll(".tmdb-fetch").forEach(btn => {
-        btn.addEventListener("click", async () => {
-            const id = btn.dataset.group;
-            const titleEl = document.getElementById(`title-${id}`);
-            const typeEl = document.getElementById(`type-${id}`);
-            const yearEl = document.getElementById(`year-${id}`);
-            const descEl = document.getElementById(`desc-${id}`);
-            const genresEl = document.getElementById(`genres-${id}`);
-            const actorsEl = document.getElementById(`actors-${id}`);
-            const directorEl = document.getElementById(`director-${id}`);
-            const trailerEl = document.getElementById(`trailer-${id}`);
-            if (!titleEl || !typeEl) return;
-            const q = titleEl.value.trim();
-            const contentType = typeEl.value;
-            if (!q) return;
-            btn.disabled = true;
-            btn.textContent = "Fetching...";
-            try {
-                const res = await fetch(`/dashboard/tmdb/lookup?q=${encodeURIComponent(q)}&content_type=${encodeURIComponent(contentType)}`);
-                const data = await res.json();
-                if (!data.ok) {
-                    alert(data.error || "TMDB fetch failed");
-                } else {
-                    if (data.title && titleEl) titleEl.value = data.title;
-                    if (data.year && yearEl) yearEl.value = data.year;
-                    if (data.description && descEl) descEl.value = data.description;
-                    if (data.genres && genresEl) genresEl.value = data.genres.join(", ");
-                    if (data.actors && actorsEl) actorsEl.value = data.actors.join(", ");
-                    if (data.director && directorEl) directorEl.value = data.director;
-                    if (data.trailer_url && trailerEl) trailerEl.value = data.trailer_url;
-                }
-            } catch (e) {
-                alert("TMDB fetch failed");
-            } finally {
-                btn.disabled = false;
-                btn.textContent = "Auto Fetch TMDB";
+{% block page_scripts %}
+<script>
+document.querySelectorAll(".tmdb-fetch").forEach(function (btn) {
+    btn.addEventListener("click", async function () {
+        var id = btn.dataset.group;
+        var titleEl = document.getElementById("title-" + id);
+        var typeEl = document.getElementById("type-" + id);
+        var yearEl = document.getElementById("year-" + id);
+        var descEl = document.getElementById("desc-" + id);
+        var genresEl = document.getElementById("genres-" + id);
+        var actorsEl = document.getElementById("actors-" + id);
+        var directorEl = document.getElementById("director-" + id);
+        var trailerEl = document.getElementById("trailer-" + id);
+        if (!titleEl || !typeEl) return;
+        var q = titleEl.value.trim();
+        var contentType = typeEl.value;
+        if (!q) return;
+        btn.disabled = true;
+        btn.textContent = "Fetching...";
+        try {
+            var res = await fetch("/dashboard/tmdb/lookup?q=" + encodeURIComponent(q) + "&content_type=" + encodeURIComponent(contentType));
+            var data = await res.json();
+            if (!data.ok) {
+                alert(data.error || "TMDB fetch failed");
+            } else {
+                if (data.title && titleEl) titleEl.value = data.title;
+                if (data.year && yearEl) yearEl.value = data.year;
+                if (data.description && descEl) descEl.value = data.description;
+                if (data.genres && genresEl) genresEl.value = data.genres.join(", ");
+                if (data.actors && actorsEl) actorsEl.value = data.actors.join(", ");
+                if (data.director && directorEl) directorEl.value = data.director;
+                if (data.trailer_url && trailerEl) trailerEl.value = data.trailer_url;
             }
-        });
+        } catch (e) {
+            alert("TMDB fetch failed");
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Auto Fetch TMDB";
+        }
     });
-    </script>
+});
+</script>
 {% endblock %}
