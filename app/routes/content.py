@@ -28,6 +28,7 @@ TRASH_RE = re.compile(
     re.I,
 )
 SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
+SEASON_TAG_RE = re.compile(r"\bS\d{1,2}E\d{1,3}\b|\bS\d{1,2}\b|\bE\d{1,3}\b|\bSeason\s?\d{1,2}\b|\bEpisode\s?\d{1,3}\b", re.I)
 
 def _quality_rank(q: str) -> int:
     order = {"2160P": 5, "1440P": 4, "1080P": 3, "720P": 2, "480P": 1, "380P": 0, "360P": 0}
@@ -97,6 +98,7 @@ def _parse_name(name: str) -> dict:
     quality = _infer_quality(raw)
     cleaned = QUALITY_RE.sub("", cleaned)
     cleaned = TRASH_RE.sub("", cleaned)
+    cleaned = SEASON_TAG_RE.sub("", cleaned)
     cleaned = re.sub(r"[\[\]\(\)\-]+", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     season, episode = _season_episode(raw)

@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 import asyncio
 import uuid
 from fastapi import APIRouter, Request, HTTPException, Form
@@ -49,6 +50,64 @@ async def _ensure_folder(owner_phone: str, name: str, parent_id: str | None, sou
     await folder.insert()
     return folder
 
+def _quality_rank(q: str) -> int:
+    order = {"2160P": 5, "1440P": 4, "1080P": 3, "720P": 2, "480P": 1, "380P": 0, "360P": 0, "HD": 0}
+    return order.get((q or "").upper(), 0)
+
+def _title_key(text: str) -> str:
+    info = _parse_name(text or "")
+    raw = info.get("title") or text or ""
+    tokens = [t for t in (raw or "").split() if t]
+    if len(tokens) > 1 and len(tokens[-1]) <= 2:
+        tokens = tokens[:-1]
+    key = " ".join(tokens) if tokens else raw
+    return (key or "").strip().lower()
+
+def _build_title_regex(title: str) -> str | None:
+    tokens = [t for t in re.split(r"[^a-zA-Z0-9]+", (title or "").lower()) if t]
+    if not tokens:
+        return None
+    return ".*".join(re.escape(token) for token in tokens)
+
+def _clean_display_title(title: str) -> str:
+    tokens = [t for t in (title or "").split() if t]
+    if len(tokens) > 1 and len(tokens[-1]) <= 2:
+        return " ".join(tokens[:-1])
+    return title
+
+def _summarize_group(group: dict) -> dict:
+    items = group.get("items", [])
+    total_size = sum(int(i.get("size") or 0) for i in items)
+    qualities_set = {str(i.get("quality") or "").upper() for i in items if i.get("quality")}
+    qualities = sorted(qualities_set, key=lambda q: (-_quality_rank(q), q))
+    seasons_map: dict[int, dict] = {}
+    if group.get("type") == "series":
+        for item in items:
+            season = int(item.get("season") or 1)
+            episode = int(item.get("episode") or 0)
+            entry = seasons_map.setdefault(season, {"episodes": set(), "qualities": set()})
+            if episode:
+                entry["episodes"].add(episode)
+            quality = (item.get("quality") or "").upper()
+            if quality:
+                entry["qualities"].add(quality)
+    seasons = []
+    for season_num, entry in seasons_map.items():
+        season_qualities = sorted(entry["qualities"], key=lambda q: (-_quality_rank(q), q))
+        seasons.append({
+            "season": season_num,
+            "episode_count": len(entry["episodes"]),
+            "qualities": season_qualities,
+        })
+    seasons.sort(key=lambda s: s["season"])
+
+    group["file_count"] = len(items)
+    group["total_size"] = total_size
+    group["total_size_label"] = format_size(total_size)
+    group["qualities"] = qualities
+    group["seasons"] = seasons
+    return group
+
 async def _group_storage_suggestions() -> list[dict]:
     rows = await FileSystemItem.find(
         FileSystemItem.is_folder == False,
@@ -60,14 +119,14 @@ async def _group_storage_suggestions() -> list[dict]:
         if status in ("published", "used"):
             continue
         info = _parse_name(item.name or "")
-        title = (getattr(item, "title", "") or info["title"] or "").strip()
-        if not title:
+        display_title = _clean_display_title((getattr(item, "title", "") or info["title"] or "").strip())
+        if not display_title:
             continue
         ctype = (getattr(item, "catalog_type", "") or ("series" if info["is_series"] else "movie")).lower()
         year = (getattr(item, "year", "") or info["year"] or "").strip()
-        key = (title.lower(), year, ctype)
+        key = (_title_key(getattr(item, "title", "") or item.name or ""), year, ctype)
         group = groups.setdefault(key, {
-            "title": title,
+            "title": display_title,
             "year": year,
             "type": ctype,
             "items": []
@@ -87,6 +146,7 @@ async def _group_storage_suggestions() -> list[dict]:
     # sort items by quality/episode
     for g in groups.values():
         g["items"].sort(key=lambda x: (x.get("season") or 0, x.get("episode") or 0, x.get("quality") or ""))
+        _summarize_group(g)
     return sorted(groups.values(), key=lambda g: g["title"].lower())
 
 async def _group_published_catalog() -> list[dict]:
@@ -97,14 +157,14 @@ async def _group_published_catalog() -> list[dict]:
     groups: dict[tuple, dict] = {}
     for item in rows:
         info = _parse_name(item.name or "")
-        title = (getattr(item, "series_title", "") or getattr(item, "title", "") or info["title"] or "").strip()
-        if not title:
+        display_title = _clean_display_title((getattr(item, "series_title", "") or getattr(item, "title", "") or info["title"] or "").strip())
+        if not display_title:
             continue
         ctype = (getattr(item, "catalog_type", "") or ("series" if info["is_series"] else "movie")).lower()
         year = (getattr(item, "year", "") or info["year"] or "").strip()
-        key = (title.lower(), year, ctype)
+        key = (_title_key(getattr(item, "title", "") or item.name or ""), year, ctype)
         group = groups.setdefault(key, {
-            "title": title,
+            "title": display_title,
             "year": year,
             "type": ctype,
             "items": []
@@ -123,6 +183,7 @@ async def _group_published_catalog() -> list[dict]:
         })
     for g in groups.values():
         g["items"].sort(key=lambda x: (x.get("season") or 0, x.get("episode") or 0, x.get("quality") or ""))
+        _summarize_group(g)
     return sorted(groups.values(), key=lambda g: g["title"].lower())
 
 @router.get("/admin")
@@ -245,44 +306,21 @@ async def main_control_tmdb_lookup(q: str = "", content_type: str = "movie"):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
-@router.post("/main-control/publish")
-@router.post("/dashboard/publish")
-async def main_control_publish(
-    request: Request,
-    item_ids: str = Form(""),
-    catalog_type: str = Form("movie"),
-    title: str = Form(""),
-    year: str = Form(""),
-    description: str = Form(""),
-    genres: str = Form(""),
-    actors: str = Form(""),
-    director: str = Form(""),
-    trailer_url: str = Form("")
-):
-    user = await get_current_user(request)
-    if not _is_admin(user):
-        raise HTTPException(403)
-    raw_ids = [i.strip() for i in (item_ids or "").split(",") if i.strip()]
-    if not raw_ids:
-        return RedirectResponse("/dashboard", status_code=303)
-    items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(raw_ids))).to_list()
-    if not items:
-        return RedirectResponse("/dashboard", status_code=303)
-
-    catalog_type = (catalog_type or "movie").strip().lower()
-    title = (title or "").strip()
-    if not title:
-        title = _parse_name(items[0].name or "").get("title") or "Untitled"
-    year = (year or "").strip()
-    desc = (description or "").strip()
-    genres_list = [g.strip() for g in (genres or "").split(",") if g.strip()]
-    actors_list = [a.strip() for a in (actors or "").split(",") if a.strip()]
-    director = (director or "").strip()
-    trailer_url = (trailer_url or "").strip()
-
+async def _publish_items(
+    items: list[FileSystemItem],
+    catalog_type: str,
+    title: str,
+    year: str,
+    desc: str,
+    genres_list: list[str],
+    actors_list: list[str],
+    director: str,
+    trailer_url: str
+) -> None:
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     if not admin_phone:
-        return RedirectResponse("/dashboard", status_code=303)
+        return
+    catalog_type = (catalog_type or "movie").strip().lower()
 
     if catalog_type == "movie":
         root = await _ensure_folder(admin_phone, "Movies", None)
@@ -362,7 +400,6 @@ async def main_control_publish(
             )
             await new_file.insert()
 
-    # Mark storage items as used
     for item in items:
         try:
             item.catalog_status = "used"
@@ -370,7 +407,125 @@ async def main_control_publish(
         except Exception:
             pass
 
+@router.post("/main-control/publish")
+@router.post("/dashboard/publish")
+async def main_control_publish(
+    request: Request,
+    item_ids: str = Form(""),
+    catalog_type: str = Form("movie"),
+    title: str = Form(""),
+    year: str = Form(""),
+    description: str = Form(""),
+    genres: str = Form(""),
+    actors: str = Form(""),
+    director: str = Form(""),
+    trailer_url: str = Form("")
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    raw_ids = [i.strip() for i in (item_ids or "").split(",") if i.strip()]
+    if not raw_ids:
+        return RedirectResponse("/dashboard", status_code=303)
+    items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(raw_ids))).to_list()
+    if not items:
+        return RedirectResponse("/dashboard", status_code=303)
+
+    catalog_type = (catalog_type or "movie").strip().lower()
+    title = (title or "").strip()
+    if not title:
+        title = _parse_name(items[0].name or "").get("title") or "Untitled"
+    year = (year or "").strip()
+    desc = (description or "").strip()
+    genres_list = [g.strip() for g in (genres or "").split(",") if g.strip()]
+    actors_list = [a.strip() for a in (actors or "").split(",") if a.strip()]
+    director = (director or "").strip()
+    trailer_url = (trailer_url or "").strip()
+
+    admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
+    if not admin_phone:
+        return RedirectResponse("/dashboard", status_code=303)
+    await _publish_items(
+        items=items,
+        catalog_type=catalog_type,
+        title=title,
+        year=year,
+        desc=desc,
+        genres_list=genres_list,
+        actors_list=actors_list,
+        director=director,
+        trailer_url=trailer_url
+    )
+
     return RedirectResponse("/dashboard", status_code=303)
+
+@router.post("/dashboard/publish_by_title")
+async def publish_by_title(
+    request: Request,
+    title: str = Form(""),
+    catalog_type: str = Form("movie"),
+    year: str = Form(""),
+    description: str = Form(""),
+    genres: str = Form(""),
+    actors: str = Form(""),
+    director: str = Form(""),
+    trailer_url: str = Form("")
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    title = (title or "").strip()
+    if not title:
+        return RedirectResponse("/dashboard", status_code=303)
+
+    catalog_type = (catalog_type or "movie").strip().lower()
+    year = (year or "").strip()
+    desc = (description or "").strip()
+    genres_list = [g.strip() for g in (genres or "").split(",") if g.strip()]
+    actors_list = [a.strip() for a in (actors or "").split(",") if a.strip()]
+    director = (director or "").strip()
+    trailer_url = (trailer_url or "").strip()
+
+    title_key = _title_key(title)
+    pattern = _build_title_regex(title) or ""
+    query: dict = {
+        "source": "storage",
+        "is_folder": False,
+        "catalog_status": {"$nin": ["published", "used"]}
+    }
+    if pattern:
+        query["name"] = {"$regex": pattern, "$options": "i"}
+
+    candidates = await FileSystemItem.find(query).to_list()
+    matched: list[FileSystemItem] = []
+    for item in candidates:
+        info = _parse_name(item.name or "")
+        if _title_key(item.name or "") != title_key:
+            continue
+        item_type = (getattr(item, "catalog_type", "") or ("series" if info["is_series"] else "movie")).lower()
+        if item_type != catalog_type:
+            continue
+        if year:
+            item_year = (getattr(item, "year", "") or info.get("year") or "").strip()
+            if item_year and item_year != year:
+                continue
+        matched.append(item)
+
+    if not matched:
+        return RedirectResponse("/dashboard?publish=not_found", status_code=303)
+
+    await _publish_items(
+        items=matched,
+        catalog_type=catalog_type,
+        title=title,
+        year=year,
+        desc=desc,
+        genres_list=genres_list,
+        actors_list=actors_list,
+        director=director,
+        trailer_url=trailer_url
+    )
+    return RedirectResponse("/dashboard?publish=ok", status_code=303)
 
 @router.post("/main-control/update-metadata")
 @router.post("/dashboard/update-metadata")
