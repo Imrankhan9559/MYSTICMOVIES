@@ -6,6 +6,7 @@ import urllib.parse
 import json
 import asyncio
 import re
+import html
 from datetime import datetime
 from difflib import SequenceMatcher
 from itertools import cycle
@@ -13,6 +14,7 @@ from pyrogram import Client, filters
 from pyrogram.handlers import MessageHandler
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.core.config import settings
+from app.core.content_store import build_content_groups
 from app.db.models import FileSystemItem, FilePart, User, SharedCollection
 from beanie import PydanticObjectId
 from beanie.operators import In
@@ -84,6 +86,22 @@ _bot_status_cache: list[dict] = []
 _catalog_cache_data: list[dict] = []
 _catalog_cache_ts: float = 0.0
 _catalog_cache_ttl_sec = 45.0
+
+AUTO_DELETE_SECONDS = 120
+AUTO_DELETE_NOTE = "⏳ This message will auto-delete in 120 seconds."
+DEFAULT_REACTION_EMOJI = "✨"
+WELCOME_GIF_URL = os.getenv(
+    "BOT_WELCOME_GIF_URL",
+    "https://media.giphy.com/media/3o7aD2saalBwwftBIY/giphy.gif",
+)
+NOT_FOUND_GIF_URL = os.getenv(
+    "BOT_NOT_FOUND_GIF_URL",
+    "https://media.giphy.com/media/l2JehQ2GitHGdVG9y/giphy.gif",
+)
+SEARCH_GIF_URL = os.getenv(
+    "BOT_SEARCH_GIF_URL",
+    "https://media.giphy.com/media/26n6WywJyh39n1pBu/giphy.gif",
+)
 
 QUALITY_RE = re.compile(r"(2160p|1440p|1080p|720p|480p|380p|360p)", re.I)
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
@@ -175,6 +193,174 @@ def _parse_season(name: str, season_value: int | None) -> int | None:
         return int(match.group(1))
     except Exception:
         return None
+
+
+def _safe_html(value: str) -> str:
+    return html.escape((value or "").strip())
+
+
+def _with_auto_delete_footer(text: str) -> str:
+    body = (text or "").strip()
+    if not body:
+        body = "Message"
+    if AUTO_DELETE_NOTE in body:
+        return body
+    return f"{body}\n\n<i>{_safe_html(AUTO_DELETE_NOTE)}</i>"
+
+
+def _embed_message(
+    title: str,
+    lines: list[str],
+    icon: str = "🎬",
+    reaction: str = DEFAULT_REACTION_EMOJI,
+) -> str:
+    safe_title = _safe_html(title)
+    safe_lines = [f"• {_safe_html(line)}" for line in lines if (line or "").strip()]
+    body = "\n".join(safe_lines)
+    message = f"<b>{icon} {safe_title}</b>\n{body}"
+    message += f"\n\n{reaction} <i>Powered by MysticMovies</i>"
+    return _with_auto_delete_footer(message)
+
+
+async def _delete_later_pyro(client: Client, chat_id: int | str, message_id: int, delay_sec: int = AUTO_DELETE_SECONDS):
+    try:
+        await asyncio.sleep(delay_sec)
+        await client.delete_messages(chat_id, message_id)
+    except Exception:
+        pass
+
+
+async def _send_message_pyro(
+    client: Client,
+    chat_id: int | str,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    disable_web_page_preview: bool = True,
+):
+    msg = await client.send_message(
+        chat_id,
+        _with_auto_delete_footer(text),
+        parse_mode="html",
+        reply_markup=reply_markup,
+        disable_web_page_preview=disable_web_page_preview,
+    )
+    if msg:
+        asyncio.create_task(_delete_later_pyro(client, chat_id, msg.id))
+    return msg
+
+
+async def _send_photo_pyro(
+    client: Client,
+    chat_id: int | str,
+    photo: str,
+    caption: str,
+    reply_markup: InlineKeyboardMarkup | None = None,
+):
+    msg = await client.send_photo(
+        chat_id,
+        photo,
+        caption=_with_auto_delete_footer(caption),
+        parse_mode="html",
+        reply_markup=reply_markup,
+    )
+    if msg:
+        asyncio.create_task(_delete_later_pyro(client, chat_id, msg.id))
+    return msg
+
+
+async def _send_animation_pyro(
+    client: Client,
+    chat_id: int | str,
+    animation: str,
+    caption: str = "",
+    reply_markup: InlineKeyboardMarkup | None = None,
+):
+    msg = await client.send_animation(
+        chat_id,
+        animation,
+        caption=_with_auto_delete_footer(caption) if caption else _with_auto_delete_footer("🎞️"),
+        parse_mode="html",
+        reply_markup=reply_markup,
+    )
+    if msg:
+        asyncio.create_task(_delete_later_pyro(client, chat_id, msg.id))
+    return msg
+
+
+async def _delete_later_api(chat_id: int | str, message_id: int, delay_sec: int = AUTO_DELETE_SECONDS):
+    try:
+        await asyncio.sleep(delay_sec)
+        await _bot_api_call(
+            settings.BOT_TOKEN,
+            "deleteMessage",
+            {"chat_id": chat_id, "message_id": message_id},
+        )
+    except Exception:
+        pass
+
+
+async def _send_message_api(
+    chat_id: int | str,
+    text: str,
+    reply_markup: str = "",
+    disable_web_page_preview: bool = True,
+):
+    params = {
+        "chat_id": chat_id,
+        "text": _with_auto_delete_footer(text),
+        "parse_mode": "HTML",
+    }
+    if disable_web_page_preview:
+        params["disable_web_page_preview"] = "true"
+    if reply_markup:
+        params["reply_markup"] = reply_markup
+    resp = await _bot_api_call(settings.BOT_TOKEN, "sendMessage", params)
+    msg_id = ((resp.get("result") or {}).get("message_id")) if isinstance(resp, dict) else None
+    if msg_id:
+        asyncio.create_task(_delete_later_api(chat_id, int(msg_id)))
+    return resp
+
+
+async def _send_photo_api(
+    chat_id: int | str,
+    photo: str,
+    caption: str,
+    reply_markup: str = "",
+):
+    params = {
+        "chat_id": chat_id,
+        "photo": photo,
+        "caption": _with_auto_delete_footer(caption),
+        "parse_mode": "HTML",
+    }
+    if reply_markup:
+        params["reply_markup"] = reply_markup
+    resp = await _bot_api_call(settings.BOT_TOKEN, "sendPhoto", params)
+    msg_id = ((resp.get("result") or {}).get("message_id")) if isinstance(resp, dict) else None
+    if msg_id:
+        asyncio.create_task(_delete_later_api(chat_id, int(msg_id)))
+    return resp
+
+
+async def _send_animation_api(
+    chat_id: int | str,
+    animation: str,
+    caption: str = "",
+    reply_markup: str = "",
+):
+    params = {
+        "chat_id": chat_id,
+        "animation": animation,
+        "caption": _with_auto_delete_footer(caption) if caption else _with_auto_delete_footer("🎞️"),
+        "parse_mode": "HTML",
+    }
+    if reply_markup:
+        params["reply_markup"] = reply_markup
+    resp = await _bot_api_call(settings.BOT_TOKEN, "sendAnimation", params)
+    msg_id = ((resp.get("result") or {}).get("message_id")) if isinstance(resp, dict) else None
+    if msg_id:
+        asyncio.create_task(_delete_later_api(chat_id, int(msg_id)))
+    return resp
 
 
 def _display_title(item: FileSystemItem) -> str:
@@ -269,61 +455,36 @@ async def _build_published_catalog(limit: int = 5000) -> list[dict]:
     if _catalog_cache_data and (now - _catalog_cache_ts) <= _catalog_cache_ttl_sec:
         return _catalog_cache_data
 
-    rows = await FileSystemItem.find(
-        FileSystemItem.is_folder == False,
-        FileSystemItem.catalog_status == "published",
-    ).sort("-created_at").limit(limit).to_list()
-
-    grouped: dict[tuple[str, str, str], dict] = {}
-    for item in rows:
-        if not _is_video_item(item):
-            continue
-        title = _display_title(item)
-        if not title:
-            continue
-        year = (getattr(item, "year", "") or _parse_year(item.name or "") or "").strip()
-        ctype = _content_type(item)
-        key = (_norm_text(title), year, ctype)
-        if key not in grouped:
-            slug = _slugify(title)
-            if year:
-                slug = f"{slug}-{year}" if slug else year
-            grouped[key] = {
-                "id": str(item.id),
-                "title": title,
-                "title_norm": key[0],
-                "year": year,
-                "type": ctype,
-                "release_date": (getattr(item, "release_date", "") or "").strip(),
-                "poster": (getattr(item, "poster_url", "") or "").strip(),
-                "slug": slug,
-                "qualities": set(),
-                "seasons": set(),
-            }
-        group = grouped[key]
-        quality = (getattr(item, "quality", "") or _extract_quality(item.name or "") or "HD").upper()
-        group["qualities"].add(quality)
-        if not group["release_date"] and getattr(item, "release_date", ""):
-            group["release_date"] = (getattr(item, "release_date", "") or "").strip()
-        if not group["poster"] and getattr(item, "poster_url", ""):
-            group["poster"] = (getattr(item, "poster_url", "") or "").strip()
-        season_no = _parse_season(item.name or "", getattr(item, "season", None))
-        if ctype == "series" and season_no:
-            group["seasons"].add(season_no)
-
+    groups = await build_content_groups(None, True, limit=limit, ensure_sync=True)
     catalog = []
-    for row in grouped.values():
-        qualities = sorted(row["qualities"], key=lambda q: (-_quality_rank(q), q))
-        seasons = sorted(row["seasons"])
+    for group in groups:
+        quality_set: set[str] = set()
+        for row in group.get("qualities", {}).keys():
+            quality_set.add((row or "HD").upper())
+        for item in group.get("items", []) or []:
+            quality = (item.get("quality") or "").strip().upper()
+            if quality:
+                quality_set.add(quality)
+        qualities = sorted(quality_set or {"HD"}, key=lambda q: (-_quality_rank(q), q))
+
+        season_values: set[int] = set()
+        for season_key in (group.get("seasons") or {}).keys():
+            try:
+                season_values.add(int(season_key))
+            except Exception:
+                continue
+        seasons = sorted(season_values)
+
+        title = (group.get("title") or "").strip()
         catalog.append({
-            "id": row["id"],
-            "title": row["title"],
-            "title_norm": row["title_norm"],
-            "year": row["year"],
-            "type": row["type"],
-            "release_date": row["release_date"],
-            "poster": row["poster"],
-            "slug": row["slug"],
+            "id": str(group.get("id") or ""),
+            "title": title,
+            "title_norm": _norm_text(title),
+            "year": (group.get("year") or "").strip(),
+            "type": (group.get("type") or "movie").strip().lower(),
+            "release_date": (group.get("release_date") or "").strip(),
+            "poster": (group.get("poster") or "").strip(),
+            "slug": (group.get("slug") or "").strip(),
             "qualities": qualities,
             "seasons": seasons,
         })
@@ -338,7 +499,10 @@ def _rank_catalog_matches(query: str, catalog: list[dict], limit: int = 5) -> li
     q_norm = _norm_text(q_raw)
     if not q_norm:
         return []
+    generic_tokens = {"movie", "movies", "series", "webseries", "telegram", "bot", "download", "watch", "file", "files"}
     q_tokens = set(q_norm.split())
+    if q_tokens and all(token in generic_tokens for token in q_tokens):
+        return []
 
     scored = []
     for item in catalog:
@@ -350,6 +514,13 @@ def _rank_catalog_matches(query: str, catalog: list[dict], limit: int = 5) -> li
         overlap = len(q_tokens & t_tokens)
         contains = q_norm in t_norm
         reverse_contains = t_norm in q_norm
+
+        # Guardrail: no lexical relationship means no result.
+        if not contains and not reverse_contains and overlap == 0 and ratio < 0.83:
+            continue
+        if overlap == 0 and ratio < 0.66 and not contains:
+            continue
+
         score = ratio * 100.0
         if q_norm == t_norm:
             score += 80
@@ -362,7 +533,7 @@ def _rank_catalog_matches(query: str, catalog: list[dict], limit: int = 5) -> li
         q_year = _parse_year(q_raw)
         if q_year and q_year == (item.get("year", "") or ""):
             score += 8
-        if score < 40:
+        if score < 58:
             continue
         scored.append((score, item))
 
@@ -376,39 +547,47 @@ def _content_caption(item: dict, corrected_query: str = "") -> str:
     qualities = ", ".join(item.get("qualities") or ["HD"])
     lines = []
     if corrected_query:
-        lines.append(f"Showing results for: {corrected_query}")
-        lines.append("")
+        lines.append(f"Web corrected query: {corrected_query}")
     lines.append(f"Name: {title}")
     lines.append(f"Release Date: {release_label}")
     lines.append(f"Quality: {qualities}")
     if item.get("type") == "series":
         lines.append(f"Available Seasons: {_format_seasons(item.get('seasons') or [])}")
     lines.append(f"Type: {(item.get('type') or 'movie').title()}")
-    return "\n".join(lines)
+    return _embed_message("Content Found", lines, icon="🎬", reaction="✅")
 
 
 def _welcome_text(display_name: str, is_admin: bool) -> str:
     name = (display_name or "there").strip()
     lines = [
         f"Hi {name}, welcome to MysticMovies.",
-        "Here you can watch, download, watch together, and get files in Telegram of your movies and series for free.",
-        "Just send the file name.",
+        "Watch, download, watch together, and get files in Telegram.",
+        "Send a movie or series name to search instantly.",
     ]
     if is_admin:
         lines.append("Admin upload mode is enabled for your account.")
-    return "\n\n".join(lines)
+    return _embed_message("Welcome", lines, icon="🎉", reaction="🔥")
 
 
 async def _send_welcome_message(client: Client, chat_id: int, display_name: str, is_admin: bool):
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton("Visit Site", url=_site_url("/"))]]
     )
-    await client.send_message(
-        chat_id,
-        _welcome_text(display_name, is_admin),
-        reply_markup=keyboard,
-        disable_web_page_preview=True,
-    )
+    try:
+        await _send_animation_pyro(
+            client,
+            chat_id,
+            WELCOME_GIF_URL,
+            caption=_embed_message(
+                "MysticMovies Bot",
+                ["Your movie assistant is ready."],
+                icon="🤖",
+                reaction="✨",
+            ),
+        )
+    except Exception:
+        pass
+    await _send_message_pyro(client, chat_id, _welcome_text(display_name, is_admin), reply_markup=keyboard)
 
 
 def _bot_api_keyboard(buttons: list[list[dict]]) -> str:
@@ -416,16 +595,23 @@ def _bot_api_keyboard(buttons: list[list[dict]]) -> str:
 
 
 async def _send_welcome_message_api(chat_id: int, display_name: str, is_admin: bool):
-    await _bot_api_call(
-        settings.BOT_TOKEN,
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": _welcome_text(display_name, is_admin),
-            "disable_web_page_preview": "true",
-            "reply_markup": _bot_api_keyboard(
-                [[{"text": "Visit Site", "url": _site_url("/")}]])
-        },
+    try:
+        await _send_animation_api(
+            chat_id,
+            WELCOME_GIF_URL,
+            caption=_embed_message(
+                "MysticMovies Bot",
+                ["Your movie assistant is ready."],
+                icon="🤖",
+                reaction="✨",
+            ),
+        )
+    except Exception:
+        pass
+    await _send_message_api(
+        chat_id,
+        _welcome_text(display_name, is_admin),
+        reply_markup=_bot_api_keyboard([[{"text": "Visit Site", "url": _site_url("/")}]]),
     )
 
 
@@ -439,22 +625,42 @@ async def _send_content_result(client: Client, chat_id: int, item: dict, correct
     poster = (item.get("poster") or "").strip()
     if poster:
         try:
-            await client.send_photo(chat_id, poster, caption=caption, reply_markup=keyboard)
+            await _send_photo_pyro(client, chat_id, poster, caption=caption, reply_markup=keyboard)
             return
         except Exception:
             pass
-    await client.send_message(chat_id, caption, reply_markup=keyboard, disable_web_page_preview=True)
+    await _send_message_pyro(client, chat_id, caption, reply_markup=keyboard)
 
 
 async def _send_not_found(client: Client, chat_id: int, query: str):
-    text = (
-        f"'{query}' is not uploaded yet.\n"
-        "You can request it on the website."
+    text = _embed_message(
+        "Content Not Found",
+        [
+            f"Search query: {query}",
+            "This content is not uploaded yet.",
+            "Please request it from the website.",
+        ],
+        icon="❌",
+        reaction="💡",
     )
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton("Request on Website", url=_site_url("/request-content"))]]
     )
-    await client.send_message(chat_id, text, reply_markup=keyboard, disable_web_page_preview=True)
+    try:
+        await _send_animation_pyro(
+            client,
+            chat_id,
+            NOT_FOUND_GIF_URL,
+            caption=_embed_message(
+                "Checking Catalog",
+                ["No exact match was found."],
+                icon="🔍",
+                reaction="🧠",
+            ),
+        )
+    except Exception:
+        pass
+    await _send_message_pyro(client, chat_id, text, reply_markup=keyboard)
 
 
 async def _send_content_result_api(chat_id: int, item: dict, corrected_query: str = ""):
@@ -464,42 +670,41 @@ async def _send_content_result_api(chat_id: int, item: dict, corrected_query: st
     reply_markup = _bot_api_keyboard([[{"text": f"View {title[:40]}", "url": _site_url(view_path)}]])
     poster = (item.get("poster") or "").strip()
     if poster:
-        resp = await _bot_api_call(
-            settings.BOT_TOKEN,
-            "sendPhoto",
-            {
-                "chat_id": chat_id,
-                "photo": poster,
-                "caption": caption,
-                "reply_markup": reply_markup,
-            },
-        )
+        resp = await _send_photo_api(chat_id, poster, caption, reply_markup=reply_markup)
         if resp.get("ok"):
             return
-    await _bot_api_call(
-        settings.BOT_TOKEN,
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": caption,
-            "disable_web_page_preview": "true",
-            "reply_markup": reply_markup,
-        },
-    )
+    await _send_message_api(chat_id, caption, reply_markup=reply_markup)
 
 
 async def _send_not_found_api(chat_id: int, query: str):
-    await _bot_api_call(
-        settings.BOT_TOKEN,
-        "sendMessage",
-        {
-            "chat_id": chat_id,
-            "text": f"'{query}' is not uploaded yet.\nYou can request it on the website.",
-            "disable_web_page_preview": "true",
-            "reply_markup": _bot_api_keyboard(
-                [[{"text": "Request on Website", "url": _site_url("/request-content")}]]
+    try:
+        await _send_animation_api(
+            chat_id,
+            NOT_FOUND_GIF_URL,
+            caption=_embed_message(
+                "Checking Catalog",
+                ["No exact match was found."],
+                icon="🔍",
+                reaction="🧠",
             ),
-        },
+        )
+    except Exception:
+        pass
+    await _send_message_api(
+        chat_id,
+        _embed_message(
+            "Content Not Found",
+            [
+                f"Search query: {query}",
+                "This content is not uploaded yet.",
+                "Please request it from the website.",
+            ],
+            icon="❌",
+            reaction="💡",
+        ),
+        reply_markup=_bot_api_keyboard(
+            [[{"text": "Request on Website", "url": _site_url("/request-content")}]]
+        ),
     )
 
 
@@ -943,15 +1148,30 @@ async def handle_private_upload(client: Client, message):
         storage_target = get_storage_chat_id()
         storage_chat_id = normalize_chat_id(storage_target)
         if not storage_chat_id or storage_chat_id == "me":
-            await client.send_message(
+            await _send_message_pyro(
+                client,
                 message.chat.id,
-                "Storage channel not configured. Please set STORAGE_CHANNEL_ID/USERNAME and try again."
+                _embed_message(
+                    "Upload Unavailable",
+                    ["Storage channel is not configured.", "Set STORAGE_CHANNEL_ID/USERNAME and try again."],
+                    icon="⚠️",
+                    reaction="🛠️",
+                ),
             )
             return
 
         # Quick ack so user knows the bot received the file
         try:
-            await client.send_message(message.chat.id, "Got it! Uploading to storage...")
+            await _send_message_pyro(
+                client,
+                message.chat.id,
+                _embed_message(
+                    "Uploading",
+                    ["Got your file.", "Uploading to storage now..."],
+                    icon="📤",
+                    reaction="🚀",
+                ),
+            )
         except Exception:
             pass
 
@@ -964,18 +1184,33 @@ async def handle_private_upload(client: Client, message):
         if not owner:
             logger.warning("Telegram upload blocked: user is not linked.")
             try:
-                await client.send_message(
+                await _send_message_pyro(
+                    client,
                     message.chat.id,
-                    "Please login on the website first to link your Telegram, then send the file again."
+                    _embed_message(
+                        "Account Link Required",
+                        [
+                            "Please login on the website first.",
+                            "Link your Telegram account, then send the file again.",
+                        ],
+                        icon="🔐",
+                        reaction="🧩",
+                    ),
                 )
             except Exception:
                 pass
             return
         if not _is_admin_user(owner):
             try:
-                await client.send_message(
+                await _send_message_pyro(
+                    client,
                     message.chat.id,
-                    "Only admins can upload files via Telegram bot. Send a content name to search instead."
+                    _embed_message(
+                        "Upload Restricted",
+                        ["Only approved admins can upload files.", "Send a content name to search instead."],
+                        icon="🚫",
+                        reaction="👤",
+                    ),
                 )
             except Exception:
                 pass
@@ -1015,9 +1250,15 @@ async def handle_private_upload(client: Client, message):
                     pass
 
         if not forwarded:
-            await client.send_message(
+            await _send_message_pyro(
+                client,
                 message.chat.id,
-                "Upload failed: storage channel is not reachable by the bot."
+                _embed_message(
+                    "Upload Failed",
+                    ["Storage channel is not reachable by the bot."],
+                    icon="❌",
+                    reaction="⚙️",
+                ),
             )
             return
 
@@ -1110,13 +1351,31 @@ async def handle_private_upload(client: Client, message):
         await new_file.insert()
         logger.info(f"Bot-ingested file for {owner_phone}: {name}")
         try:
-            await client.send_message(message.chat.id, "File added to Bot Uploads folder.")
+            await _send_message_pyro(
+                client,
+                message.chat.id,
+                _embed_message(
+                    "Upload Complete",
+                    ["File added to your Bot Uploads folder."],
+                    icon="✅",
+                    reaction="🎉",
+                ),
+            )
         except Exception:
             pass
     except Exception as e:
         logger.exception(f"Bot ingestion failed: {e}")
         try:
-            await client.send_message(message.chat.id, f"Upload failed: {e}")
+            await _send_message_pyro(
+                client,
+                message.chat.id,
+                _embed_message(
+                    "Upload Failed",
+                    [str(e)],
+                    icon="❌",
+                    reaction="⚠️",
+                ),
+            )
         except Exception:
             pass
 
@@ -1148,12 +1407,30 @@ async def handle_start_command(client: Client, message):
             token = payload.replace("share_", "", 1)
             items = await _resolve_shared_items(token)
             if not items:
-                await client.send_message(message.chat.id, "File not found or expired.")
+                await _send_message_pyro(
+                    client,
+                    message.chat.id,
+                    _embed_message(
+                        "Shared Link",
+                        ["File not found or expired."],
+                        icon="📦",
+                        reaction="⛔",
+                    ),
+                )
                 return
 
             items = [i for i in items if _is_video_item(i)]
             if not items:
-                await client.send_message(message.chat.id, "No video files found.")
+                await _send_message_pyro(
+                    client,
+                    message.chat.id,
+                    _embed_message(
+                        "Shared Link",
+                        ["No video files found in this shared item."],
+                        icon="📦",
+                        reaction="⚠️",
+                    ),
+                )
                 return
 
             unavailable = 0
@@ -1172,9 +1449,27 @@ async def handle_start_command(client: Client, message):
                 await asyncio.sleep(0.35)
 
             if sent:
-                await client.send_message(message.chat.id, f"Sent {sent} file(s).")
+                await _send_message_pyro(
+                    client,
+                    message.chat.id,
+                    _embed_message(
+                        "Shared Files Sent",
+                        [f"Sent {sent} file(s)."],
+                        icon="📨",
+                        reaction="✅",
+                    ),
+                )
             if unavailable:
-                await client.send_message(message.chat.id, "Some files were not available from storage.")
+                await _send_message_pyro(
+                    client,
+                    message.chat.id,
+                    _embed_message(
+                        "Partial Delivery",
+                        ["Some files were not available from storage."],
+                        icon="⚠️",
+                        reaction="📁",
+                    ),
+                )
             return
 
         linked_user = await _linked_user_from_tg_id(
@@ -1206,11 +1501,44 @@ async def handle_text_query(client: Client, message):
     corrected = ""
 
     if not results:
-        await client.send_message(message.chat.id, "Searching on the web for spelling correction...")
+        try:
+            await _send_animation_pyro(
+                client,
+                message.chat.id,
+                SEARCH_GIF_URL,
+                caption=_embed_message(
+                    "Web Spell Check",
+                    ["No exact database match.", "Searching Google for spelling correction..."],
+                    icon="🌐",
+                    reaction="🔎",
+                ),
+            )
+        except Exception:
+            await _send_message_pyro(
+                client,
+                message.chat.id,
+                _embed_message(
+                    "Web Spell Check",
+                    ["No exact database match.", "Searching Google for spelling correction..."],
+                    icon="🌐",
+                    reaction="🔎",
+                ),
+            )
         suggestion = await _google_spelling_suggestion(query)
         if suggestion:
             corrected = suggestion
             results = _rank_catalog_matches(suggestion, catalog, limit=5)
+            if results and _norm_text(corrected) != _norm_text(query):
+                await _send_message_pyro(
+                    client,
+                    message.chat.id,
+                    _embed_message(
+                        "Web Correction Applied",
+                        [f"Google suggested: {corrected}", "Re-scanning database with corrected name."],
+                        icon="🧠",
+                        reaction="✅",
+                    ),
+                )
 
     if not results:
         await _send_not_found(client, message.chat.id, query)
@@ -1228,7 +1556,8 @@ async def handle_text_query(client: Client, message):
 async def handle_bot_message(client: Client, message):
     """Single entrypoint for bot messages to avoid filter mismatches."""
     try:
-        if getattr(getattr(message, "chat", None), "type", "") != "private":
+        chat_type = getattr(getattr(message, "chat", None), "type", "")
+        if chat_type not in ("private", "group", "supergroup", "channel"):
             return
         if message.text and message.text.strip().startswith("/start"):
             await handle_start_command(client, message)
@@ -1258,7 +1587,11 @@ async def handle_bot_message(client: Client, message):
     except Exception as e:
         logger.exception(f"Bot message handler failed: {e}")
         try:
-            await client.send_message(message.chat.id, f"Upload failed: {e}")
+            await _send_message_pyro(
+                client,
+                message.chat.id,
+                _embed_message("Bot Error", [str(e)], icon="❌", reaction="⚠️"),
+            )
         except Exception:
             pass
 
@@ -1304,7 +1637,8 @@ async def _bot_api_call(token: str, method: str, params: dict | None = None) -> 
 async def _handle_bot_api_message(message: dict):
     try:
         chat = message.get("chat") or {}
-        if (chat.get("type") or "") != "private":
+        chat_type = (chat.get("type") or "")
+        if chat_type not in ("private", "group", "supergroup", "channel"):
             return
 
         chat_id = chat.get("id")
@@ -1326,19 +1660,27 @@ async def _handle_bot_api_message(message: dict):
                     token = payload.replace("share_", "", 1)
                     items = await _resolve_shared_items(token)
                     if not items:
-                        await _bot_api_call(
-                            settings.BOT_TOKEN,
-                            "sendMessage",
-                            {"chat_id": chat_id, "text": "File not found or expired."}
+                        await _send_message_api(
+                            chat_id,
+                            _embed_message(
+                                "Shared Link",
+                                ["File not found or expired."],
+                                icon="📦",
+                                reaction="⛔",
+                            ),
                         )
                         return
 
                     items = [i for i in items if _is_video_item(i)]
                     if not items:
-                        await _bot_api_call(
-                            settings.BOT_TOKEN,
-                            "sendMessage",
-                            {"chat_id": chat_id, "text": "No video files found."}
+                        await _send_message_api(
+                            chat_id,
+                            _embed_message(
+                                "Shared Link",
+                                ["No video files found in this shared item."],
+                                icon="📦",
+                                reaction="⚠️",
+                            ),
                         )
                         return
 
@@ -1362,26 +1704,44 @@ async def _handle_bot_api_message(message: dict):
                             }
                         )
                         if not copy_resp.get("ok"):
-                            await _bot_api_call(
-                                settings.BOT_TOKEN,
-                                "sendMessage",
-                                {"chat_id": chat_id, "text": f"Failed to send file: {copy_resp.get('description', 'unknown error')}"}
+                            await _send_message_api(
+                                chat_id,
+                                _embed_message(
+                                    "Shared Link Error",
+                                    [f"Failed to send file: {copy_resp.get('description', 'unknown error')}"],
+                                    icon="❌",
+                                    reaction="⚠️",
+                                ),
                             )
                             continue
+                        try:
+                            copied_msg_id = int((copy_resp.get("result") or {}).get("message_id") or 0)
+                            if copied_msg_id:
+                                asyncio.create_task(_delete_later_api(chat_id, copied_msg_id))
+                        except Exception:
+                            pass
                         sent += 1
                         await asyncio.sleep(0.35)
 
                     if sent:
-                        await _bot_api_call(
-                            settings.BOT_TOKEN,
-                            "sendMessage",
-                            {"chat_id": chat_id, "text": f"Sent {sent} file(s)."}
+                        await _send_message_api(
+                            chat_id,
+                            _embed_message(
+                                "Shared Files Sent",
+                                [f"Sent {sent} file(s)."],
+                                icon="📨",
+                                reaction="✅",
+                            ),
                         )
                     if unavailable:
-                        await _bot_api_call(
-                            settings.BOT_TOKEN,
-                            "sendMessage",
-                            {"chat_id": chat_id, "text": "Some files were not available from storage."}
+                        await _send_message_api(
+                            chat_id,
+                            _embed_message(
+                                "Partial Delivery",
+                                ["Some files were not available from storage."],
+                                icon="⚠️",
+                                reaction="📁",
+                            ),
                         )
                     return
 
@@ -1399,15 +1759,41 @@ async def _handle_bot_api_message(message: dict):
             corrected = ""
 
             if not results:
-                await _bot_api_call(
-                    settings.BOT_TOKEN,
-                    "sendMessage",
-                    {"chat_id": chat_id, "text": "Searching on the web for spelling correction..."}
-                )
+                try:
+                    await _send_animation_api(
+                        chat_id,
+                        SEARCH_GIF_URL,
+                        caption=_embed_message(
+                            "Web Spell Check",
+                            ["No exact database match.", "Searching Google for spelling correction..."],
+                            icon="🌐",
+                            reaction="🔎",
+                        ),
+                    )
+                except Exception:
+                    await _send_message_api(
+                        chat_id,
+                        _embed_message(
+                            "Web Spell Check",
+                            ["No exact database match.", "Searching Google for spelling correction..."],
+                            icon="🌐",
+                            reaction="🔎",
+                        ),
+                    )
                 suggestion = await _google_spelling_suggestion(query)
                 if suggestion:
                     corrected = suggestion
                     results = _rank_catalog_matches(suggestion, catalog, limit=5)
+                    if results and _norm_text(corrected) != _norm_text(query):
+                        await _send_message_api(
+                            chat_id,
+                            _embed_message(
+                                "Web Correction Applied",
+                                [f"Google suggested: {corrected}", "Re-scanning database with corrected name."],
+                                icon="🧠",
+                                reaction="✅",
+                            ),
+                        )
 
             if not results:
                 await _send_not_found_api(chat_id, query)
@@ -1439,34 +1825,50 @@ async def _handle_bot_api_message(message: dict):
             return
 
         if not linked_user:
-            await _bot_api_call(
-                settings.BOT_TOKEN,
-                "sendMessage",
-                {"chat_id": chat_id, "text": "Please login on the website first so I can link your Telegram account."}
+            await _send_message_api(
+                chat_id,
+                _embed_message(
+                    "Account Link Required",
+                    ["Please login on the website first to link your Telegram account."],
+                    icon="🔐",
+                    reaction="🧩",
+                ),
             )
             return
 
         if not _is_admin_user(linked_user):
-            await _bot_api_call(
-                settings.BOT_TOKEN,
-                "sendMessage",
-                {"chat_id": chat_id, "text": "Only admins can upload files via Telegram bot. Send a content name to search instead."}
+            await _send_message_api(
+                chat_id,
+                _embed_message(
+                    "Upload Restricted",
+                    ["Only approved admins can upload files.", "Send a content name to search instead."],
+                    icon="🚫",
+                    reaction="👤",
+                ),
             )
             return
 
         storage_chat_id = normalize_chat_id(get_storage_chat_id())
         if not storage_chat_id or storage_chat_id == "me":
-            await _bot_api_call(
-                settings.BOT_TOKEN,
-                "sendMessage",
-                {"chat_id": chat_id, "text": "Storage channel not configured. Please set STORAGE_CHANNEL_ID/USERNAME."}
+            await _send_message_api(
+                chat_id,
+                _embed_message(
+                    "Upload Unavailable",
+                    ["Storage channel is not configured.", "Please set STORAGE_CHANNEL_ID/USERNAME."],
+                    icon="⚠️",
+                    reaction="🛠️",
+                ),
             )
             return
 
-        await _bot_api_call(
-            settings.BOT_TOKEN,
-            "sendMessage",
-            {"chat_id": chat_id, "text": "Got it! Uploading to storage..."}
+        await _send_message_api(
+            chat_id,
+            _embed_message(
+                "Uploading",
+                ["Got your file.", "Uploading to storage now..."],
+                icon="📤",
+                reaction="🚀",
+            ),
         )
 
         copy_resp = await _bot_api_call(
@@ -1475,10 +1877,14 @@ async def _handle_bot_api_message(message: dict):
             {"chat_id": storage_chat_id, "from_chat_id": chat_id, "message_id": msg_id}
         )
         if not copy_resp.get("ok"):
-            await _bot_api_call(
-                settings.BOT_TOKEN,
-                "sendMessage",
-                {"chat_id": chat_id, "text": f"Upload failed: {copy_resp.get('description', 'unknown error')}"}
+            await _send_message_api(
+                chat_id,
+                _embed_message(
+                    "Upload Failed",
+                    [copy_resp.get("description", "unknown error")],
+                    icon="❌",
+                    reaction="⚠️",
+                ),
             )
             return
 
@@ -1546,20 +1952,23 @@ async def _handle_bot_api_message(message: dict):
         )
         await new_file.insert()
 
-        await _bot_api_call(
-            settings.BOT_TOKEN,
-            "sendMessage",
-            {"chat_id": chat_id, "text": "File added to Bot Uploads folder."}
+        await _send_message_api(
+            chat_id,
+            _embed_message(
+                "Upload Complete",
+                ["File added to your Bot Uploads folder."],
+                icon="✅",
+                reaction="🎉",
+            ),
         )
     except Exception as e:
         logger.exception(f"Bot API handler failed: {e}")
         try:
             chat_id = (message.get("chat") or {}).get("id")
             if chat_id:
-                await _bot_api_call(
-                    settings.BOT_TOKEN,
-                    "sendMessage",
-                    {"chat_id": chat_id, "text": f"Upload failed: {e}"}
+                await _send_message_api(
+                    chat_id,
+                    _embed_message("Bot Error", [str(e)], icon="❌", reaction="⚠️"),
                 )
         except Exception:
             pass

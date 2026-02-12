@@ -28,6 +28,18 @@ class FilePart(BaseModel):
     part_number: int
     size: int
 
+
+class ContentFileRef(BaseModel):
+    file_id: str
+    name: str = ""
+    quality: str = "HD"
+    season: Optional[int] = None
+    episode: Optional[int] = None
+    episode_title: Optional[str] = None
+    size: int = 0
+    mime_type: Optional[str] = None
+
+
 class FileSystemItem(Document):
     name: str
     is_folder: bool
@@ -66,6 +78,39 @@ class FileSystemItem(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "filesystem"
+
+
+class ContentItem(Document):
+    slug: str
+    title: str
+    search_title: str = ""
+    content_type: str = "movie"  # movie | series
+    status: str = "published"    # published | archived
+
+    year: Optional[str] = None
+    release_date: Optional[str] = None
+    poster_url: Optional[str] = None
+    backdrop_url: Optional[str] = None
+    description: Optional[str] = None
+    genres: List[str] = []
+    actors: List[str] = []
+    director: Optional[str] = None
+    trailer_url: Optional[str] = None
+    trailer_key: Optional[str] = None
+    cast_profiles: List[dict] = []
+    tmdb_id: Optional[int] = None
+
+    owner_phone: str = ""
+    collaborators: List[str] = []
+    file_ids: List[str] = []
+    files: List[ContentFileRef] = []
+    created_at: datetime = datetime.now()
+    updated_at: datetime = datetime.now()
+
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "content"
+
 
 class SharedCollection(Document):
     token: str = Field(unique=True)
@@ -196,6 +241,7 @@ async def init_db():
         document_models=[
             User,
             FileSystemItem,
+            ContentItem,
             SharedCollection,
             TokenSetting,
             PlaybackProgress,

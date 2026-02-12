@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from beanie.operators import In, Or
+from app.core.content_store import build_content_groups, sync_content_catalog
 from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting, SiteSettings, ContentRequest, UserActivityEvent
 from app.routes.dashboard import get_current_user, _cast_ids, _clone_parts, _build_search_regex
 from app.routes.content import refresh_tmdb_metadata, _parse_name, _tmdb_get, _ensure_group_assets
@@ -262,54 +263,14 @@ async def _group_storage_suggestions() -> list[dict]:
     return sorted(groups.values(), key=lambda g: g["title"].lower())
 
 async def _group_published_catalog() -> list[dict]:
-    rows = await FileSystemItem.find(
-        FileSystemItem.is_folder == False,
-        FileSystemItem.catalog_status == "published"
-    ).sort("-created_at").to_list()
-    groups: dict[tuple, dict] = {}
-    for item in rows:
-        info = _parse_name(item.name or "")
-        display_title = _clean_display_title((getattr(item, "series_title", "") or getattr(item, "title", "") or info["title"] or "").strip())
-        if not display_title:
-            continue
-        ctype = (getattr(item, "catalog_type", "") or ("series" if info["is_series"] else "movie")).lower()
-        year = (getattr(item, "year", "") or info["year"] or "").strip()
-        key = (_title_key(getattr(item, "title", "") or item.name or ""), year, ctype)
-        group = groups.setdefault(key, {
-            "id": str(item.id),
-            "title": display_title,
-            "year": year,
-            "type": ctype,
-            "poster": getattr(item, "poster_url", "") or "",
-            "backdrop": getattr(item, "backdrop_url", "") or "",
-            "description": getattr(item, "description", "") or "",
-            "genres": getattr(item, "genres", []) or [],
-            "actors": getattr(item, "actors", []) or [],
-            "director": getattr(item, "director", "") or "",
-            "trailer_url": getattr(item, "trailer_url", "") or "",
-            "trailer_key": getattr(item, "trailer_key", "") or "",
-            "release_date": getattr(item, "release_date", "") or "",
-            "items": []
-        })
-        quality = getattr(item, "quality", "") or info["quality"]
-        season = getattr(item, "season", None) or info["season"]
-        episode = getattr(item, "episode", None) or info["episode"]
-        group["items"].append({
-            "id": str(item.id),
-            "name": item.name,
-            "size": item.size or 0,
-            "size_label": format_size(item.size or 0),
-            "quality": quality,
-            "season": season,
-            "episode": episode,
-            "episode_title": getattr(item, "episode_title", "") or ""
-        })
-    for g in groups.values():
+    await sync_content_catalog(force=False)
+    groups = await build_content_groups(None, True, limit=5000, ensure_sync=False)
+    for g in groups:
         g["items"].sort(key=lambda x: (x.get("season") or 0, x.get("episode") or 0, x.get("quality") or ""))
         _summarize_group(g)
         g["release_date_label"] = _format_release_date(g.get("release_date", ""))
         g["content_path"] = _content_path(g.get("title", ""), g.get("year", ""))
-    return sorted(groups.values(), key=lambda g: g["title"].lower())
+    return sorted(groups, key=lambda g: (g.get("title") or "").lower())
 
 
 async def _find_group_by_item_id(item_id: str) -> dict | None:
@@ -920,6 +881,7 @@ async def publish_content_update(
                 target_folder.name = new_title
                 await target_folder.save()
 
+    await sync_content_catalog(force=True)
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.post("/dashboard/publish-content/add-files")
@@ -937,9 +899,6 @@ async def publish_content_add_files(
     group = await _find_group_by_item_id(group_id)
     if not group:
         return RedirectResponse("/dashboard/publish-content", status_code=303)
-    base_item = await FileSystemItem.get(group["id"])
-    if not base_item:
-        return RedirectResponse("/dashboard/publish-content", status_code=303)
 
     raw_ids = [i.strip() for i in (item_ids or "").split(",") if i.strip()]
     if not raw_ids:
@@ -955,20 +914,20 @@ async def publish_content_add_files(
         except Exception:
             override_map = {}
 
-    catalog_type = (getattr(base_item, "catalog_type", "") or "movie").strip().lower()
-    title = (base_item.title or base_item.series_title or "").strip()
-    year = base_item.year or ""
-    desc = base_item.description or ""
-    genres_list = base_item.genres or []
-    actors_list = base_item.actors or []
-    director = base_item.director or ""
-    trailer_url = base_item.trailer_url or ""
-    poster_url = base_item.poster_url or ""
-    backdrop_url = base_item.backdrop_url or ""
-    trailer_key = base_item.trailer_key or ""
-    release_date = base_item.release_date or ""
-    cast_profiles_list = base_item.cast_profiles or []
-    tmdb_id_val = getattr(base_item, "tmdb_id", None)
+    catalog_type = (group.get("type") or "movie").strip().lower()
+    title = (group.get("title") or "").strip()
+    year = (group.get("year") or "").strip()
+    desc = (group.get("description") or "").strip()
+    genres_list = group.get("genres") or []
+    actors_list = group.get("actors") or []
+    director = (group.get("director") or "").strip()
+    trailer_url = (group.get("trailer_url") or "").strip()
+    poster_url = (group.get("poster") or "").strip()
+    backdrop_url = (group.get("backdrop") or "").strip()
+    trailer_key = (group.get("trailer_key") or "").strip()
+    release_date = (group.get("release_date") or "").strip()
+    cast_profiles_list = group.get("cast_profiles") or []
+    tmdb_id_val = group.get("tmdb_id")
 
     await _publish_items(
         items=items,
@@ -1052,6 +1011,7 @@ async def publish_content_delete(
                 except Exception:
                     pass
 
+    await sync_content_catalog(force=True)
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.post("/dashboard/publish-content/delete-file")
@@ -1071,6 +1031,7 @@ async def publish_content_delete_file(
     parent_id = item.parent_id
     await item.delete()
     await _cleanup_parents(parent_id)
+    await sync_content_catalog(force=True)
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.post("/dashboard/publish-content/update-file")
@@ -1139,6 +1100,7 @@ async def publish_content_update_file(
     await item.save()
     if old_parent_id and old_parent_id != item.parent_id:
         await _cleanup_parents(old_parent_id)
+    await sync_content_catalog(force=True)
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.get("/dashboard/storage/search")
@@ -1504,6 +1466,8 @@ async def _publish_items(
         except Exception:
             pass
 
+    await sync_content_catalog(force=True)
+
 @router.post("/main-control/publish")
 @router.post("/dashboard/publish")
 async def main_control_publish(
@@ -1733,6 +1697,7 @@ async def main_control_update_metadata(
             item.trailer_url = trailer_url
         await item.save()
 
+    await sync_content_catalog(force=True)
     return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/main-control/delete")
@@ -1754,6 +1719,7 @@ async def main_control_delete_group(
         FileSystemItem.catalog_type == group_type,
         FileSystemItem.title == group_title
     ).delete()
+    await sync_content_catalog(force=True)
     return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/token/regenerate")
@@ -1876,6 +1842,7 @@ async def update_content_metadata(
     item.episode = int(episode) if (episode or "").isdigit() else None
     item.quality = (quality or "").strip()
     await item.save()
+    await sync_content_catalog(force=True)
     return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/request/{request_id}/{action}")

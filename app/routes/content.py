@@ -14,7 +14,8 @@ from fastapi.templating import Jinja2Templates
 from beanie.operators import In
 
 from app.core.config import settings
-from app.db.models import FileSystemItem, User, TokenSetting, WatchlistEntry, ContentRequest, SiteSettings
+from app.core.content_store import build_content_groups, sync_content_catalog
+from app.db.models import ContentItem, FileSystemItem, User, TokenSetting, WatchlistEntry, ContentRequest, SiteSettings
 from app.routes.dashboard import get_current_user
 from app.utils.file_utils import format_size
 
@@ -239,93 +240,86 @@ async def _enrich_group(group: dict) -> dict:
     return group
 
 async def _persist_group_metadata(group: dict):
-    update = {}
-    if group.get("poster"):
-        update["poster_url"] = group["poster"]
-    if group.get("backdrop"):
-        update["backdrop_url"] = group["backdrop"]
-    if group.get("description"):
-        update["description"] = group["description"]
-    if group.get("year"):
-        update["year"] = group["year"]
-    if group.get("release_date"):
-        update["release_date"] = group["release_date"]
-    if group.get("genres"):
-        update["genres"] = group["genres"]
-    if group.get("actors"):
-        update["actors"] = group["actors"]
-    if group.get("director"):
-        update["director"] = group["director"]
-    if group.get("trailer_url"):
-        update["trailer_url"] = group["trailer_url"]
-    if group.get("trailer_key"):
-        update["trailer_key"] = group["trailer_key"]
-    if group.get("cast_profiles"):
-        update["cast_profiles"] = group["cast_profiles"]
-    title_value = (group.get("title") or "").strip()
-    group_type = (group.get("type") or "").strip().lower()
-    if not update and not title_value and not group_type:
+    doc = None
+    raw_id = (group.get("id") or "").strip()
+    if raw_id and re.fullmatch(r"[0-9a-fA-F]{24}", raw_id):
+        try:
+            doc = await ContentItem.get(raw_id)
+        except Exception:
+            doc = None
+    if not doc:
+        slug = (group.get("slug") or _group_slug(group.get("title", ""), group.get("year", ""))).strip()
+        ctype = (group.get("type") or "movie").strip().lower()
+        if slug:
+            doc = await ContentItem.find_one(ContentItem.slug == slug, ContentItem.content_type == ctype)
+    if not doc:
+        # Keep the dedicated content collection in sync before a final lookup.
+        await sync_content_catalog(force=True)
+        raw_id = (group.get("id") or "").strip()
+        if raw_id and re.fullmatch(r"[0-9a-fA-F]{24}", raw_id):
+            try:
+                doc = await ContentItem.get(raw_id)
+            except Exception:
+                doc = None
+    if not doc:
         return
 
-    for item in group.get("items", []):
-        db_item = await FileSystemItem.get(item["id"])
-        if not db_item:
-            continue
-        changed = False
-        if group_type in ("movie", "series") and not getattr(db_item, "catalog_type", ""):
-            db_item.catalog_type = group_type
+    changed = False
+    title = (group.get("title") or "").strip()
+    year = (group.get("year") or "").strip()
+    slug = (group.get("slug") or _group_slug(title, year)).strip()
+    ctype = (group.get("type") or doc.content_type or "movie").strip().lower()
+
+    if title and title != (doc.title or ""):
+        doc.title = title
+        changed = True
+    if year and year != (doc.year or ""):
+        doc.year = year
+        changed = True
+    if slug and slug != (doc.slug or ""):
+        doc.slug = slug
+        changed = True
+    if ctype in ("movie", "series") and ctype != (doc.content_type or ""):
+        doc.content_type = ctype
+        changed = True
+
+    str_updates = {
+        "poster_url": group.get("poster", ""),
+        "backdrop_url": group.get("backdrop", ""),
+        "description": group.get("description", ""),
+        "release_date": group.get("release_date", ""),
+        "director": group.get("director", ""),
+        "trailer_url": group.get("trailer_url", ""),
+        "trailer_key": group.get("trailer_key", ""),
+    }
+    for field_name, value in str_updates.items():
+        clean = (value or "").strip()
+        if clean and clean != (getattr(doc, field_name, "") or ""):
+            setattr(doc, field_name, clean)
             changed = True
-        if title_value:
-            if group_type == "series":
-                if not getattr(db_item, "series_title", ""):
-                    db_item.series_title = title_value
-                    changed = True
-                current_title = getattr(db_item, "title", "") or ""
-                parsed_title = _parse_name(db_item.name or "").get("title", "")
-                if not current_title or current_title.strip().lower() == parsed_title.strip().lower():
-                    db_item.title = title_value
-                    changed = True
-            else:
-                current_title = getattr(db_item, "title", "") or ""
-                parsed_title = _parse_name(db_item.name or "").get("title", "")
-                if not current_title or current_title.strip().lower() == parsed_title.strip().lower():
-                    db_item.title = title_value
-                    changed = True
-        if update.get("poster_url") and not getattr(db_item, "poster_url", ""):
-            db_item.poster_url = update["poster_url"]
+
+    list_updates = {
+        "genres": group.get("genres", []),
+        "actors": group.get("actors", []),
+        "cast_profiles": group.get("cast_profiles", []),
+    }
+    for field_name, value in list_updates.items():
+        normalized = list(value or [])
+        if normalized and normalized != (getattr(doc, field_name, []) or []):
+            setattr(doc, field_name, normalized)
             changed = True
-        if update.get("backdrop_url") and not getattr(db_item, "backdrop_url", ""):
-            db_item.backdrop_url = update["backdrop_url"]
+
+    if group.get("tmdb_id") and not getattr(doc, "tmdb_id", None):
+        try:
+            doc.tmdb_id = int(group.get("tmdb_id"))
             changed = True
-        if update.get("description") and not getattr(db_item, "description", ""):
-            db_item.description = update["description"]
-            changed = True
-        if update.get("year") and not getattr(db_item, "year", ""):
-            db_item.year = update["year"]
-            changed = True
-        if update.get("release_date") and not getattr(db_item, "release_date", ""):
-            db_item.release_date = update["release_date"]
-            changed = True
-        if update.get("genres") and not getattr(db_item, "genres", []):
-            db_item.genres = update["genres"]
-            changed = True
-        if update.get("actors") and not getattr(db_item, "actors", []):
-            db_item.actors = update["actors"]
-            changed = True
-        if update.get("director") and not getattr(db_item, "director", ""):
-            db_item.director = update["director"]
-            changed = True
-        if update.get("trailer_url") and not getattr(db_item, "trailer_url", ""):
-            db_item.trailer_url = update["trailer_url"]
-            changed = True
-        if update.get("trailer_key") and not getattr(db_item, "trailer_key", ""):
-            db_item.trailer_key = update["trailer_key"]
-            changed = True
-        if update.get("cast_profiles") and not getattr(db_item, "cast_profiles", []):
-            db_item.cast_profiles = update["cast_profiles"]
-            changed = True
-        if changed:
-            await db_item.save()
+        except Exception:
+            pass
+
+    if changed:
+        doc.search_title = (doc.title or "").strip().lower()
+        doc.updated_at = datetime.now()
+        await doc.save()
 
 async def _ensure_group_assets(group: dict) -> dict:
     if not settings.TMDB_API_KEY:
@@ -856,72 +850,18 @@ def _content_query(user: User | None, is_admin: bool):
 
 
 async def _fetch_cards(user: User | None, is_admin: bool, limit: int = 300) -> list[dict]:
-    query = _content_query(user, is_admin)
-    items = await FileSystemItem.find(
-        FileSystemItem.is_folder == False,
-        query
-    ).sort("-created_at").limit(limit).to_list()
-    cards = [_item_card(i) for i in items if _is_video(i)]
+    groups = await build_content_groups(user, is_admin, limit=max(limit, 200), ensure_sync=True)
+    cards = []
+    for group in groups:
+        cards.extend(group.get("items") or [])
+        if len(cards) >= limit:
+            break
+    cards = cards[:limit]
     return cards
 
 
 async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -> list[dict]:
-    cards = await _fetch_cards(user, is_admin, limit=limit)
-    groups = {}
-    for c in cards:
-        key = (c["title"].lower(), c["year"], c["type"])
-        if key not in groups:
-            groups[key] = {
-                "id": c["id"],
-                "title": c["title"],
-                "year": c["year"],
-                "slug": _group_slug(c["title"], c["year"]),
-                "release_date": c.get("release_date", ""),
-                "type": c["type"],
-                "poster": c["poster"],
-                "backdrop": c["backdrop"],
-                "description": c["description"],
-                "genres": c["genres"],
-                "actors": c["actors"],
-                "director": c["director"],
-                "trailer_url": c["trailer_url"],
-                "trailer_key": c.get("trailer_key", ""),
-                "cast_profiles": c.get("cast_profiles", []),
-                "qualities": {},
-                "seasons": {},
-                "episode_titles": {},
-                "items": [],
-            }
-        groups[key]["items"].append(c)
-        if c["type"] == "movie":
-            groups[key]["qualities"][c["quality"]] = {"file_id": c["id"], "size": c["size"]}
-        else:
-            season = c["season"]
-            episode = c["episode"]
-            season_bucket = groups[key]["seasons"].setdefault(season, {})
-            ep_bucket = season_bucket.setdefault(episode, {})
-            ep_bucket[c["quality"]] = {"file_id": c["id"], "size": c["size"]}
-            title_map = groups[key]["episode_titles"].setdefault(season, {})
-            if c.get("episode_title"):
-                title_map[episode] = c.get("episode_title")
-    result = []
-    for g in groups.values():
-        if g["type"] == "movie":
-            qualities = sorted(g["qualities"].keys(), key=_quality_rank, reverse=True)
-            g["primary_quality"] = qualities[0] if qualities else "HD"
-            g["quality"] = g["primary_quality"]
-            g["card_labels"] = qualities[:3] if qualities else ["HD"]
-        else:
-            season_numbers = sorted(int(s) for s in g["seasons"].keys())
-            g["season_count"] = len(season_numbers)
-            g["primary_quality"] = f"S{season_numbers[0]:02d}" if season_numbers else "Series"
-            g["quality"] = g["primary_quality"]
-            labels = [f"Season {s}" for s in season_numbers[:3]]
-            if g["season_count"] > 3:
-                labels.append(f"+{g['season_count'] - 3} more")
-            g["card_labels"] = labels or ["Series"]
-        result.append(g)
-    return result
+    return await build_content_groups(user, is_admin, limit=limit, ensure_sync=True)
 
 async def _build_file_links(items: list[dict], link_token: str, viewer_name: str, limit: int = 3) -> list[dict]:
     if not items:
@@ -1198,6 +1138,10 @@ async def content_details(request: Request, content_key: str):
         keys = [group.get("id", "")]
         if slug_key:
             keys.append(f"slug:{slug_key}")
+        for item in group.get("items", []) or []:
+            item_id = (item.get("id") or "").strip()
+            if item_id:
+                keys.append(item_id)
         keys = [k for k in keys if k]
         found = await WatchlistEntry.find_one(
             WatchlistEntry.user_phone == user.phone_number,
@@ -1236,38 +1180,29 @@ async def content_cast_profile(
     if not cast_name:
         raise HTTPException(status_code=400, detail="Cast name is required")
 
-    base_query = _content_query(user, is_admin)
-    exact_regex = f"^{re.escape(cast_name)}$"
-    cast_filter = {
-        "$or": [
-            {"actors": {"$elemMatch": {"$regex": exact_regex, "$options": "i"}}},
-            {"cast_profiles.name": {"$regex": exact_regex, "$options": "i"}},
-        ]
-    }
-    rows = await FileSystemItem.find(
-        {"$and": [base_query, {"is_folder": False}, cast_filter]}
-    ).sort("-created_at").limit(420).to_list()
+    catalog = await _build_catalog(user, is_admin, limit=3500)
+    matched_groups = []
+    for group in catalog:
+        names = _group_cast_names(group)
+        if any(_same_person_name(candidate, cast_name) for candidate in names):
+            matched_groups.append(group)
 
-    if not rows:
+    if not matched_groups:
         fuzzy_regex = _build_search_regex(cast_name)
         if fuzzy_regex:
-            fuzzy_filter = {
-                "$or": [
-                    {"actors": {"$elemMatch": {"$regex": fuzzy_regex, "$options": "i"}}},
-                    {"cast_profiles.name": {"$regex": fuzzy_regex, "$options": "i"}},
-                ]
-            }
-            rows = await FileSystemItem.find(
-                {"$and": [base_query, {"is_folder": False}, fuzzy_filter]}
-            ).sort("-created_at").limit(420).to_list()
+            fuzzy_pattern = re.compile(fuzzy_regex, re.I)
+            for group in catalog:
+                names_blob = " ".join(_group_cast_names(group))
+                if names_blob and fuzzy_pattern.search(names_blob):
+                    matched_groups.append(group)
 
     cards_by_key: dict[tuple[str, str, str], dict] = {}
     local_image = ""
     local_roles: set[str] = set()
     local_tmdb_id: int | None = None
 
-    for row in rows:
-        for cast_row in getattr(row, "cast_profiles", []) or []:
+    for group in matched_groups:
+        for cast_row in group.get("cast_profiles", []) or []:
             cast_row_name = (cast_row.get("name") or "").strip()
             if not cast_row_name or not _same_person_name(cast_row_name, cast_name):
                 continue
@@ -1284,20 +1219,21 @@ async def content_cast_profile(
                 except Exception:
                     pass
 
-        if not _is_video(row):
-            continue
-        card = _item_card(row)
-        key = (card["title"].lower(), card["year"], card["type"])
+        key = (
+            (group.get("title") or "").lower(),
+            group.get("year", ""),
+            group.get("type", ""),
+        )
         if key in cards_by_key:
             continue
         cards_by_key[key] = {
-            "id": card["id"],
-            "title": card["title"],
-            "year": card["year"],
-            "type": card["type"],
-            "poster": card["poster"],
-            "slug": _group_slug(card["title"], card["year"]),
-            "quality": card["quality"],
+            "id": group.get("id", ""),
+            "title": group.get("title", ""),
+            "year": group.get("year", ""),
+            "type": group.get("type", ""),
+            "poster": group.get("poster", ""),
+            "slug": group.get("slug", "") or _group_slug(group.get("title", ""), group.get("year", "")),
+            "quality": group.get("quality", "") or group.get("primary_quality", "HD"),
         }
         if len(cards_by_key) >= 84:
             break
@@ -1382,39 +1318,35 @@ async def content_search_suggestions(request: Request, q: str = ""):
     if not search_regex:
         return {"items": []}
 
-    base_query = _content_query(user, is_admin)
-    query = {
-        "$and": [
-            base_query,
-            {"is_folder": False},
-            {
-                "$or": [
-                    {"title": {"$regex": search_regex, "$options": "i"}},
-                    {"series_title": {"$regex": search_regex, "$options": "i"}},
-                    {"name": {"$regex": search_regex, "$options": "i"}},
-                ]
-            },
-        ]
-    }
-    rows = await FileSystemItem.find(query).sort("-created_at").limit(220).to_list()
+    pattern = re.compile(search_regex, re.I)
+    catalog = await _build_catalog(user, is_admin, limit=1600)
     grouped: dict[tuple[str, str, str], dict] = {}
-    for row in rows:
-        if not _is_video(row):
+    for group in catalog:
+        searchable = [
+            group.get("title", ""),
+            group.get("year", ""),
+            group.get("type", ""),
+            " ".join((itm.get("name") or "") for itm in (group.get("items") or [])[:12]),
+        ]
+        if not any(pattern.search(text or "") for text in searchable):
             continue
-        card = _item_card(row)
-        key = (card["title"].lower(), card["year"], card["type"])
+        key = (
+            (group.get("title") or "").lower(),
+            group.get("year", ""),
+            group.get("type", ""),
+        )
         if key in grouped:
             continue
         grouped[key] = {
-            "title": card["title"],
-            "year": card["year"],
-            "type": card["type"],
-            "poster": card["poster"],
-            "slug": _group_slug(card["title"], card["year"]),
+            "title": group.get("title", ""),
+            "year": group.get("year", ""),
+            "type": group.get("type", ""),
+            "poster": group.get("poster", ""),
+            "slug": group.get("slug", "") or _group_slug(group.get("title", ""), group.get("year", "")),
         }
         if len(grouped) >= 12:
             break
-    items = sorted(grouped.values(), key=lambda x: (x["title"] or "").lower())
+    items = sorted(grouped.values(), key=lambda x: (x.get("title") or "").lower())
     return {"items": items[:10]}
 
 
@@ -1434,10 +1366,11 @@ async def toggle_watchlist(request: Request, item_id: str):
         legacy_id = raw_key
         primary_key = raw_key
         # Prefer stable slug key when possible.
-        db_item = await FileSystemItem.get(raw_key)
+        db_item = await ContentItem.get(raw_key)
         if db_item:
-            card = _item_card(db_item)
-            slug_val = _group_slug(card.get("title", ""), card.get("year", ""))
+            slug_val = (getattr(db_item, "slug", "") or "").strip()
+            if not slug_val:
+                slug_val = _group_slug(getattr(db_item, "title", ""), getattr(db_item, "year", ""))
             if slug_val:
                 primary_key = f"slug:{slug_val}"
     else:
@@ -1479,7 +1412,17 @@ async def content_watchlist(request: Request):
         elif re.fullmatch(r"[0-9a-fA-F]{24}", key):
             object_ids.add(key)
     cards = await _build_catalog(user, is_admin, limit=1200)
-    cards = [c for c in cards if c["id"] in object_ids or (c.get("slug") or "") in slug_ids]
+    filtered_cards = []
+    for card in cards:
+        if card.get("id") in object_ids:
+            filtered_cards.append(card)
+            continue
+        if (card.get("slug") or "") in slug_ids:
+            filtered_cards.append(card)
+            continue
+        if any((itm.get("id") or "") in object_ids for itm in (card.get("items") or [])):
+            filtered_cards.append(card)
+    cards = filtered_cards
     return templates.TemplateResponse("content_list.html", {
         "request": request,
         "user": user,
@@ -1531,11 +1474,17 @@ async def request_content_page(request: Request):
     my_requests = await ContentRequest.find(ContentRequest.user_phone == user.phone_number).sort("-created_at").limit(40).to_list()
     catalog = await _build_catalog(user, is_admin, limit=3000)
     by_id = {str(c.get("id")): c for c in catalog}
+    by_file_id: dict[str, dict] = {}
+    for card in catalog:
+        for item in card.get("items", []) or []:
+            file_id = str(item.get("id") or "").strip()
+            if file_id and file_id not in by_file_id:
+                by_file_id[file_id] = card
     for row in my_requests:
         raw_path = str(getattr(row, "fulfilled_content_path", "") or "").strip()
         if not raw_path:
             ref_id = str(getattr(row, "fulfilled_content_id", "") or "").strip()
-            match = by_id.get(ref_id)
+            match = by_id.get(ref_id) or by_file_id.get(ref_id)
             if match:
                 raw_path = f"/content/details/{match.get('slug') or match.get('id')}"
                 if not getattr(row, "fulfilled_content_title", ""):

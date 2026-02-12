@@ -18,6 +18,7 @@ from beanie import PydanticObjectId
 from beanie.operators import Or, In
 from app.db.models import FileSystemItem, FilePart, User, SharedCollection, TokenSetting, WatchlistEntry, PlaybackProgress
 from app.core.config import settings
+from app.core.content_store import build_content_groups
 from app.core.telegram_bot import tg_client, user_client, get_pool_client, get_storage_chat_id, ensure_peer_access, get_storage_client, pick_storage_client, normalize_chat_id
 from app.core.telethon_storage import send_file as tl_send_file, get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media, delete_message as tl_delete_message
 from app.utils.file_utils import format_size, get_icon_for_mime
@@ -1269,45 +1270,29 @@ async def profile_page(request: Request):
         return RedirectResponse("/login")
     is_admin = _is_admin(user)
 
-    admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
-    catalog_query: dict[str, Any] = {
-        "catalog_status": "published",
-        "is_folder": False,
-    }
-    if not is_admin:
-        catalog_query["$or"] = [
-            {"owner_phone": admin_phone},
-            {"owner_phone": user.phone_number},
-            {"collaborators": user.phone_number},
-        ]
-    published_rows = await FileSystemItem.find(catalog_query).sort("-created_at").limit(5000).to_list()
-
+    catalog = await build_content_groups(user, is_admin, limit=5000, ensure_sync=True)
     grouped_by_slug: dict[str, dict[str, str]] = {}
     grouped_by_item_id: dict[str, dict[str, str]] = {}
-    for item in published_rows:
-        if not _is_video_name(item.name or "", item.mime_type):
-            continue
-        parsed = _parse_catalog_name(item.name or "")
-        title = (getattr(item, "series_title", "") or getattr(item, "title", "") or parsed.get("title") or item.name or "").strip()
-        year = (getattr(item, "year", "") or parsed.get("year") or "").strip()
-        slug = _content_slug(item)
+    grouped_by_file_id: dict[str, dict[str, str]] = {}
+    for group in catalog:
+        slug = (group.get("slug") or "").strip().lower()
         if not slug:
             continue
-
-        card = grouped_by_slug.get(slug)
-        if not card:
-            card = {
-                "id": str(item.id),
-                "title": title,
-                "year": year,
-                "poster": getattr(item, "poster_url", "") or "",
-                "slug": slug,
-            }
-            grouped_by_slug[slug] = card
-        elif not card.get("poster") and getattr(item, "poster_url", ""):
-            card["poster"] = getattr(item, "poster_url", "") or ""
-
-        grouped_by_item_id[str(item.id)] = grouped_by_slug[slug]
+        card = {
+            "id": str(group.get("id") or ""),
+            "title": group.get("title", ""),
+            "year": group.get("year", ""),
+            "poster": group.get("poster", "") or "",
+            "slug": slug,
+        }
+        grouped_by_slug[slug] = card
+        content_id = str(group.get("id") or "")
+        if content_id:
+            grouped_by_item_id[content_id] = card
+        for item in group.get("items", []) or []:
+            file_id = str(item.get("id") or "")
+            if file_id:
+                grouped_by_file_id[file_id] = card
 
     # Watchlist cards
     watchlist_rows = await WatchlistEntry.find(WatchlistEntry.user_phone == user.phone_number).sort("-created_at").to_list()
@@ -1321,22 +1306,9 @@ async def profile_page(request: Request):
         if key.startswith("slug:"):
             match = grouped_by_slug.get(key.split("slug:", 1)[-1].strip().lower())
         elif re.fullmatch(r"[0-9a-fA-F]{24}", key):
-            match = grouped_by_item_id.get(key)
+            match = grouped_by_item_id.get(key) or grouped_by_file_id.get(key)
         else:
             match = grouped_by_slug.get(key.lower())
-        if not match and re.fullmatch(r"[0-9a-fA-F]{24}", key):
-            item = await FileSystemItem.get(key)
-            if item and _is_video_name(item.name or "", item.mime_type):
-                parsed = _parse_catalog_name(item.name or "")
-                title = (getattr(item, "series_title", "") or getattr(item, "title", "") or parsed.get("title") or item.name or "").strip()
-                year = (getattr(item, "year", "") or parsed.get("year") or "").strip()
-                match = {
-                    "id": str(item.id),
-                    "title": title,
-                    "year": year,
-                    "poster": getattr(item, "poster_url", "") or "",
-                    "slug": _content_slug(item),
-                }
         if not match:
             continue
         slug = (match.get("slug") or "").strip()
@@ -1372,9 +1344,10 @@ async def profile_page(request: Request):
         item = progress_items.get(item_id)
         if not item:
             continue
+        linked = grouped_by_file_id.get(item_id) or {}
         parsed = _parse_catalog_name(item.name or "")
-        title = (getattr(item, "series_title", "") or getattr(item, "title", "") or parsed.get("title") or item.name or "").strip()
-        year = (getattr(item, "year", "") or parsed.get("year") or "").strip()
+        title = (linked.get("title") or getattr(item, "series_title", "") or getattr(item, "title", "") or parsed.get("title") or item.name or "").strip()
+        year = (linked.get("year") or getattr(item, "year", "") or parsed.get("year") or "").strip()
         position = float(getattr(progress, "position", 0) or 0)
         duration = float(getattr(progress, "duration", 0) or 0)
         remaining = max(0.0, duration - position)
@@ -1382,8 +1355,8 @@ async def profile_page(request: Request):
             "item_id": str(item.id),
             "title": title,
             "year": year,
-            "poster": getattr(item, "poster_url", "") or "",
-            "slug": _content_slug(item),
+            "poster": linked.get("poster") or getattr(item, "poster_url", "") or "",
+            "slug": linked.get("slug") or _content_slug(item),
             "remaining": _format_remaining(remaining),
             "updated_at": getattr(progress, "updated_at", None),
             "position": position,
