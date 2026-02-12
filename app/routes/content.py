@@ -2,6 +2,7 @@ import re
 import uuid
 import json
 import asyncio
+import html
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -192,7 +193,7 @@ async def _enrich_group(group: dict) -> dict:
         role = c.get("character") or ""
         profile_path = c.get("profile_path")
         image = profile_base + profile_path if profile_path else ""
-        cast_profiles.append({"name": name, "role": role, "image": image})
+        cast_profiles.append({"id": c.get("id"), "name": name, "role": role, "image": image})
 
     director = ""
     for crew in credits.get("crew") or []:
@@ -395,7 +396,7 @@ def _group_slug(title: str, year: str) -> str:
 
 
 def _youtube_key(url: str) -> str:
-    raw = (url or "").strip()
+    raw = html.unescape((url or "").strip())
     if not raw:
         return ""
 
@@ -426,6 +427,9 @@ def _youtube_key(url: str) -> str:
             if parsed.path.startswith("/shorts/"):
                 key = parsed.path.split("/shorts/")[-1].split("?")[0].strip()
                 return key if re.fullmatch(r"[A-Za-z0-9_-]{11}", key) else ""
+            if parsed.path.startswith("/live/"):
+                key = parsed.path.split("/live/")[-1].split("?")[0].strip()
+                return key if re.fullmatch(r"[A-Za-z0-9_-]{11}", key) else ""
             params = urllib.parse.parse_qs(parsed.query)
             if "v" in params and params["v"]:
                 key = (params["v"][0] or "").strip()
@@ -433,10 +437,155 @@ def _youtube_key(url: str) -> str:
     except Exception:
         pass
     # Fallback for raw URL/text that still contains a YouTube key
-    match = re.search(r"(?:v=|\/embed\/|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{11})", raw, re.I)
+    match = re.search(r"(?:v=|\/embed\/|youtu\.be\/|\/shorts\/|\/live\/)([A-Za-z0-9_-]{11})", raw, re.I)
     if match:
         return match.group(1)
     return ""
+
+
+def _normalize_person_name(name: str) -> str:
+    value = re.sub(r"[^a-z0-9]+", " ", (name or "").strip().lower())
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _same_person_name(left: str, right: str) -> bool:
+    lhs = _normalize_person_name(left)
+    rhs = _normalize_person_name(right)
+    return bool(lhs and rhs and lhs == rhs)
+
+
+def _google_profile_url(name: str) -> str:
+    query = (name or "").strip()
+    if not query:
+        return "https://www.google.com"
+    return "https://www.google.com/search?q=" + urllib.parse.quote_plus(f"{query} actor profile")
+
+
+async def _tmdb_person_profile(name: str, tmdb_person_id: int | None = None) -> dict:
+    if not settings.TMDB_API_KEY:
+        return {}
+    person_id = tmdb_person_id
+    picked: dict = {}
+    if not person_id:
+        search = await _tmdb_get("/search/person", {"query": name, "include_adult": "false"})
+        results = (search or {}).get("results") or []
+        if not results:
+            return {}
+        wanted = _normalize_person_name(name)
+        for row in results:
+            if _normalize_person_name(row.get("name") or "") == wanted:
+                picked = row
+                break
+        if not picked:
+            picked = results[0]
+        person_id = picked.get("id")
+    if not person_id:
+        return {}
+
+    details = await _tmdb_get(
+        f"/person/{person_id}",
+        {"append_to_response": "combined_credits,external_ids"},
+    )
+    if not details:
+        details = picked
+    if not details:
+        return {}
+
+    profile_path = details.get("profile_path") or picked.get("profile_path") or ""
+    profile_image = f"https://image.tmdb.org/t/p/w500{profile_path}" if profile_path else ""
+
+    known_for_rows = (details.get("combined_credits", {}) or {}).get("cast") or []
+    if not known_for_rows:
+        known_for_rows = picked.get("known_for") or []
+    def _popularity(value) -> float:
+        try:
+            return float(value or 0.0)
+        except Exception:
+            return 0.0
+
+    known_for_rows = sorted(
+        known_for_rows,
+        key=lambda row: (
+            (row.get("release_date") or row.get("first_air_date") or ""),
+            _popularity(row.get("popularity")),
+        ),
+        reverse=True,
+    )
+    known_for = []
+    seen = set()
+    for row in known_for_rows:
+        title = (row.get("title") or row.get("name") or "").strip()
+        if not title:
+            continue
+        year = (row.get("release_date") or row.get("first_air_date") or "")[:4]
+        media_type = (row.get("media_type") or "").lower()
+        content_type = "series" if media_type == "tv" else "movie"
+        key = (title.lower(), year, content_type)
+        if key in seen:
+            continue
+        seen.add(key)
+        known_for.append({
+            "title": title,
+            "year": year,
+            "type": content_type,
+        })
+        if len(known_for) >= 12:
+            break
+
+    external_ids = details.get("external_ids") or {}
+    return {
+        "tmdb_id": int(person_id),
+        "name": details.get("name") or picked.get("name") or name,
+        "known_for_department": details.get("known_for_department") or "",
+        "birthday": details.get("birthday") or "",
+        "deathday": details.get("deathday") or "",
+        "place_of_birth": details.get("place_of_birth") or "",
+        "biography": details.get("biography") or "",
+        "profile_image": profile_image,
+        "homepage": details.get("homepage") or "",
+        "imdb_id": details.get("imdb_id") or external_ids.get("imdb_id") or "",
+        "popularity": details.get("popularity"),
+        "known_for": known_for,
+    }
+
+
+async def _google_person_fallback(name: str) -> dict:
+    query = (name or "").strip()
+    if not query:
+        return {}
+    url = (
+        "https://www.google.com/search?hl=en&q="
+        + urllib.parse.quote_plus(f"{query} actor biography")
+    )
+
+    def _fetch():
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            body = resp.read().decode("utf-8", errors="ignore")
+        title_match = re.search(r"<title>(.*?)</title>", body, re.I | re.S)
+        desc_match = re.search(
+            r'<meta[^>]*name=["\']description["\'][^>]*content=["\']([^"\']+)["\']',
+            body,
+            re.I,
+        )
+        title = html.unescape(title_match.group(1).strip()) if title_match else ""
+        description = html.unescape(desc_match.group(1).strip()) if desc_match else ""
+        return {"title": title, "description": description}
+
+    try:
+        return await asyncio.to_thread(_fetch)
+    except Exception:
+        return {}
 
 
 def _item_card(item: FileSystemItem) -> dict:
@@ -881,6 +1030,143 @@ async def content_details(request: Request, content_key: str):
     })
 
 
+@router.get("/content/cast")
+async def content_cast_profile(
+    request: Request,
+    name: str = "",
+    tmdb_id: Optional[int] = None,
+    back: str = "",
+):
+    user = await get_current_user(request)
+    is_admin = _is_admin(user)
+    site = await _site_settings()
+
+    cast_name = (name or "").strip()
+    if not cast_name:
+        raise HTTPException(status_code=400, detail="Cast name is required")
+
+    base_query = _content_query(user, is_admin)
+    exact_regex = f"^{re.escape(cast_name)}$"
+    cast_filter = {
+        "$or": [
+            {"actors": {"$elemMatch": {"$regex": exact_regex, "$options": "i"}}},
+            {"cast_profiles.name": {"$regex": exact_regex, "$options": "i"}},
+        ]
+    }
+    rows = await FileSystemItem.find(
+        {"$and": [base_query, {"is_folder": False}, cast_filter]}
+    ).sort("-created_at").limit(420).to_list()
+
+    if not rows:
+        fuzzy_regex = _build_search_regex(cast_name)
+        if fuzzy_regex:
+            fuzzy_filter = {
+                "$or": [
+                    {"actors": {"$elemMatch": {"$regex": fuzzy_regex, "$options": "i"}}},
+                    {"cast_profiles.name": {"$regex": fuzzy_regex, "$options": "i"}},
+                ]
+            }
+            rows = await FileSystemItem.find(
+                {"$and": [base_query, {"is_folder": False}, fuzzy_filter]}
+            ).sort("-created_at").limit(420).to_list()
+
+    cards_by_key: dict[tuple[str, str, str], dict] = {}
+    local_image = ""
+    local_roles: set[str] = set()
+    local_tmdb_id: int | None = None
+
+    for row in rows:
+        for cast_row in getattr(row, "cast_profiles", []) or []:
+            cast_row_name = (cast_row.get("name") or "").strip()
+            if not cast_row_name or not _same_person_name(cast_row_name, cast_name):
+                continue
+            if not local_image and cast_row.get("image"):
+                local_image = cast_row.get("image")
+            role = (cast_row.get("role") or "").strip()
+            if role:
+                local_roles.add(role)
+            if local_tmdb_id is None:
+                raw_tmdb = cast_row.get("id") or cast_row.get("tmdb_id") or cast_row.get("person_id")
+                try:
+                    if raw_tmdb is not None and str(raw_tmdb).strip():
+                        local_tmdb_id = int(str(raw_tmdb).strip())
+                except Exception:
+                    pass
+
+        if not _is_video(row):
+            continue
+        card = _item_card(row)
+        key = (card["title"].lower(), card["year"], card["type"])
+        if key in cards_by_key:
+            continue
+        cards_by_key[key] = {
+            "id": card["id"],
+            "title": card["title"],
+            "year": card["year"],
+            "type": card["type"],
+            "poster": card["poster"],
+            "slug": _group_slug(card["title"], card["year"]),
+            "quality": card["quality"],
+        }
+        if len(cards_by_key) >= 84:
+            break
+
+    resolved_tmdb_id = tmdb_id if tmdb_id and tmdb_id > 0 else local_tmdb_id
+    tmdb_profile = await _tmdb_person_profile(cast_name, resolved_tmdb_id)
+    google_profile = {}
+    if not tmdb_profile or not tmdb_profile.get("biography"):
+        google_profile = await _google_person_fallback(cast_name)
+
+    profile = {
+        "tmdb_id": resolved_tmdb_id,
+        "name": cast_name,
+        "known_for_department": "",
+        "birthday": "",
+        "deathday": "",
+        "place_of_birth": "",
+        "biography": "",
+        "profile_image": local_image,
+        "homepage": "",
+        "imdb_id": "",
+        "popularity": None,
+        "known_for": [],
+        "roles": sorted(local_roles),
+        "source": "local",
+        "google_url": _google_profile_url(cast_name),
+    }
+    if tmdb_profile:
+        profile.update(tmdb_profile)
+        profile["source"] = "tmdb"
+    if not profile.get("profile_image") and local_image:
+        profile["profile_image"] = local_image
+    if google_profile.get("description") and not profile.get("biography"):
+        profile["biography"] = google_profile.get("description")
+    if google_profile and profile.get("source") != "tmdb":
+        profile["source"] = "google"
+    if not profile.get("roles"):
+        profile["roles"] = sorted(local_roles)
+    if profile.get("tmdb_id"):
+        profile["tmdb_url"] = f"https://www.themoviedb.org/person/{profile['tmdb_id']}"
+    if profile.get("imdb_id"):
+        profile["imdb_url"] = f"https://www.imdb.com/name/{profile['imdb_id']}/"
+
+    cards = sorted(cards_by_key.values(), key=lambda item: (item.get("title") or "").lower())
+    back_path = (back or "").strip()
+    if back_path and not back_path.startswith("/"):
+        back_path = ""
+
+    return templates.TemplateResponse("cast_profile.html", {
+        "request": request,
+        "user": user,
+        "is_admin": is_admin,
+        "site": site,
+        "cast": profile,
+        "cards": cards,
+        "content_count": len(cards),
+        "back_path": back_path,
+    })
+
+
 @router.get("/content/search")
 async def content_search(request: Request, q: str):
     user = await get_current_user(request)
@@ -957,26 +1243,15 @@ async def toggle_watchlist(request: Request, item_id: str):
         legacy_id = raw_key
         primary_key = raw_key
         # Prefer stable slug key when possible.
-        is_admin = _is_admin(user)
-        catalog = await _build_catalog(user, is_admin, limit=3000)
-        for group in catalog:
-            if group.get("id") == raw_key or any((itm.get("id") == raw_key) for itm in (group.get("items") or [])):
-                slug_val = (group.get("slug") or "").strip()
-                if slug_val:
-                    primary_key = f"slug:{slug_val}"
-                break
+        db_item = await FileSystemItem.get(raw_key)
+        if db_item:
+            card = _item_card(db_item)
+            slug_val = _group_slug(card.get("title", ""), card.get("year", ""))
+            if slug_val:
+                primary_key = f"slug:{slug_val}"
     else:
         slug = raw_key.lower()
         primary_key = f"slug:{slug}"
-        # Resolve legacy object id so old entries can still be removed cleanly.
-        is_admin = _is_admin(user)
-        catalog = await _build_catalog(user, is_admin, limit=3000)
-        for group in catalog:
-            if (group.get("slug") or "") == slug:
-                legacy_id = group.get("id") or ""
-                break
-        if not legacy_id:
-            return JSONResponse({"error": "Content not found"}, status_code=404)
 
     lookup_keys = [primary_key]
     if legacy_id and legacy_id not in lookup_keys:

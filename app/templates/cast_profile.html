@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="rounded-2xl border border-gray-800 bg-gradient-to-b from-gray-900 to-black p-5 sm:p-8 mb-6">
+    <div class="flex flex-col md:flex-row md:items-start gap-6">
+        <div class="w-40 sm:w-52 shrink-0">
+            {% if cast.profile_image %}
+            <img src="{{ cast.profile_image }}" alt="{{ cast.name }}" class="aspect-[2/3] w-full rounded-xl border border-gray-800 object-cover">
+            {% else %}
+            <div class="aspect-[2/3] w-full rounded-xl border border-gray-800 bg-gray-950 flex items-center justify-center">
+                <i class="fas fa-user text-yellow-400 text-4xl"></i>
+            </div>
+            {% endif %}
+        </div>
+        <div class="flex-1 min-w-0">
+            <div class="flex flex-wrap items-center gap-2 text-xs uppercase tracking-widest text-gray-400">
+                <span class="px-2 py-1 rounded bg-gray-800 text-yellow-300">{{ cast.source|upper }}</span>
+                {% if cast.known_for_department %}<span>{{ cast.known_for_department }}</span>{% endif %}
+                {% if cast.popularity is not none %}<span>Popularity {{ "%.1f"|format(cast.popularity|float) }}</span>{% endif %}
+            </div>
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-white mt-3">{{ cast.name }}</h1>
+
+            <div class="mt-4 flex flex-wrap gap-2 text-xs text-gray-300">
+                {% if cast.birthday %}<span class="px-2 py-1 rounded bg-gray-800 border border-gray-700">Born: {{ cast.birthday }}</span>{% endif %}
+                {% if cast.deathday %}<span class="px-2 py-1 rounded bg-gray-800 border border-gray-700">Died: {{ cast.deathday }}</span>{% endif %}
+                {% if cast.place_of_birth %}<span class="px-2 py-1 rounded bg-gray-800 border border-gray-700">{{ cast.place_of_birth }}</span>{% endif %}
+                {% for role in cast.roles or [] %}
+                <span class="px-2 py-1 rounded bg-gray-800 border border-gray-700">{{ role }}</span>
+                {% endfor %}
+            </div>
+
+            <div class="mt-5">
+                {% if cast.biography %}
+                <p class="text-sm sm:text-base text-gray-300 leading-7">{{ cast.biography }}</p>
+                {% else %}
+                <p class="text-sm text-gray-400">No biography found yet for this cast member.</p>
+                {% endif %}
+            </div>
+
+            <div class="mt-5 flex flex-wrap gap-2">
+                <a href="{{ cast.google_url }}" target="_blank" rel="noopener" class="px-4 py-2 rounded-full border border-gray-700 text-sm text-gray-100 hover:border-yellow-500">
+                    <i class="fab fa-google mr-2"></i>Google
+                </a>
+                {% if cast.tmdb_url %}
+                <a href="{{ cast.tmdb_url }}" target="_blank" rel="noopener" class="px-4 py-2 rounded-full border border-gray-700 text-sm text-gray-100 hover:border-yellow-500">
+                    <i class="fas fa-database mr-2"></i>TMDB
+                </a>
+                {% endif %}
+                {% if cast.imdb_url %}
+                <a href="{{ cast.imdb_url }}" target="_blank" rel="noopener" class="px-4 py-2 rounded-full border border-gray-700 text-sm text-gray-100 hover:border-yellow-500">
+                    <i class="fab fa-imdb mr-2"></i>IMDb
+                </a>
+                {% endif %}
+                {% if cast.homepage %}
+                <a href="{{ cast.homepage }}" target="_blank" rel="noopener" class="px-4 py-2 rounded-full border border-gray-700 text-sm text-gray-100 hover:border-yellow-500">
+                    <i class="fas fa-link mr-2"></i>Website
+                </a>
+                {% endif %}
+                <a href="{{ back_path or '/content' }}" class="px-4 py-2 rounded-full bg-yellow-400 text-black text-sm font-semibold hover:bg-yellow-300">
+                    <i class="fas fa-arrow-left mr-2"></i>Back
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+{% if cast.known_for and cast.known_for|length > 0 %}
+<section class="rounded-2xl border border-gray-800 bg-gray-950 p-5 sm:p-6 mb-6">
+    <h2 class="text-xl font-bold text-white mb-4">Known For</h2>
+    <div class="flex flex-wrap gap-2">
+        {% for row in cast.known_for %}
+        <span class="px-3 py-1.5 rounded-full border border-gray-700 bg-gray-900 text-xs text-gray-200">
+            {{ row.title }}{% if row.year %} ({{ row.year }}){% endif %}
+        </span>
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+<section class="rounded-2xl border border-gray-800 bg-gray-950 p-5 sm:p-6">
+    <div class="flex items-center justify-between gap-3 mb-4">
+        <h2 class="text-xl font-bold text-white">Available In Library</h2>
+        <div class="text-xs text-gray-400">{{ content_count }} title{{ "" if content_count == 1 else "s" }}</div>
+    </div>
+    {% if cards and cards|length > 0 %}
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+        {% for item in cards %}
+        <a href="/content/details/{{ item.slug or item.id }}" class="group rounded-2xl border border-gray-800 bg-black/70 overflow-hidden hover:border-yellow-500/60 transition">
+            <div class="relative aspect-[2/3]">
+                {% if item.poster %}
+                <img src="{{ item.poster }}" alt="{{ item.title }}" class="h-full w-full object-cover">
+                {% else %}
+                <div class="h-full w-full bg-gradient-to-br from-gray-900 via-black to-gray-800 flex items-center justify-center">
+                    <i class="fas fa-film text-yellow-400 text-3xl"></i>
+                </div>
+                {% endif %}
+                <div class="absolute inset-0 bg-gradient-to-t from-black/95 via-black/20 to-transparent"></div>
+                <div class="absolute bottom-0 left-0 right-0 p-3">
+                    <div class="text-[10px] uppercase tracking-widest text-yellow-400">{{ item.type }}</div>
+                    <div class="text-sm font-semibold text-white line-clamp-2">{{ item.title }}</div>
+                    {% if item.year %}<div class="text-[11px] text-gray-400 mt-1">{{ item.year }}</div>{% endif %}
+                </div>
+            </div>
+            <div class="p-3">
+                <div class="text-xs text-gray-500">{{ item.quality or "HD" }}</div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="rounded-xl border border-gray-800 bg-black/60 p-5 text-sm text-gray-400">
+        No published content found for this cast member yet.
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

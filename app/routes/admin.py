@@ -1289,7 +1289,7 @@ async def tmdb_details(tmdb_id: int, content_type: str = "movie"):
             role = c.get("character") or ""
             profile_path = c.get("profile_path")
             image = profile_base + profile_path if profile_path else ""
-            cast_profiles.append({"name": name, "role": role, "image": image})
+            cast_profiles.append({"id": c.get("id"), "name": name, "role": role, "image": image})
         director = ""
         for crew in credits.get("crew") or []:
             if crew.get("job") == "Director":
