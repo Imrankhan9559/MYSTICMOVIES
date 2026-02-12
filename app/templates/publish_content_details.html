@@ -1,0 +1,110 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="content-header">
+    <div class="container-fluid">
+        <div class="row mb-2">
+            <div class="col-sm-6">
+                <h1 class="m-0">Content Details</h1>
+                <div class="admin-section-note">Complete metadata and file listing.</div>
+            </div>
+            <div class="col-sm-6">
+                <ol class="breadcrumb float-sm-right">
+                    <li class="breadcrumb-item"><a href="/dashboard">Dashboard</a></li>
+                    <li class="breadcrumb-item"><a href="/dashboard/publish-content">Publish Content</a></li>
+                    <li class="breadcrumb-item active">Details</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</div>
+
+<section class="content">
+    <div class="container-fluid">
+        <div class="card card-outline card-dark">
+            <div class="card-header">
+                <h3 class="card-title">{{ group.title }}</h3>
+                <div class="card-tools">
+                    <a href="/dashboard/publish-content/edit/{{ group.id }}" class="btn btn-sm btn-primary">Edit</a>
+                    <a href="{{ group.content_path }}" target="_blank" class="btn btn-sm btn-outline-success ml-1">View User Side</a>
+                    <button type="button" class="btn btn-sm btn-outline-light ml-1" id="copyContentLink" data-link="{{ group.content_full_url }}">Copy Link</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-3">
+                        {% if group.poster %}
+                        <img src="{{ group.poster }}" alt="{{ group.title }}" class="img-fluid rounded border border-secondary mb-2">
+                        {% endif %}
+                        {% if group.backdrop %}
+                        <img src="{{ group.backdrop }}" alt="{{ group.title }} backdrop" class="img-fluid rounded border border-secondary">
+                        {% endif %}
+                    </div>
+                    <div class="col-md-9">
+                        <div class="row mb-3">
+                            <div class="col-md-4"><strong>Type:</strong> {{ group.type|title }}</div>
+                            <div class="col-md-4"><strong>Year:</strong> {{ group.year or "-" }}</div>
+                            <div class="col-md-4"><strong>Release Date:</strong> {{ group.release_date_label or "-" }}</div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-md-6"><strong>Total Size:</strong> {{ group.total_size_label }}</div>
+                            <div class="col-md-6"><strong>Files:</strong> {{ group.file_count }}</div>
+                        </div>
+                        <div class="mb-3"><strong>Genres:</strong> {{ group.genres|join(", ") if group.genres else "-" }}</div>
+                        <div class="mb-3"><strong>Director:</strong> {{ group.director or "-" }}</div>
+                        <div class="mb-3"><strong>Actors:</strong> {{ group.actors|join(", ") if group.actors else "-" }}</div>
+                        <div class="mb-3"><strong>Description:</strong> {{ group.description or "-" }}</div>
+                    </div>
+                </div>
+                <hr class="border-secondary" />
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>File</th>
+                                <th>Quality</th>
+                                <th>Season</th>
+                                <th>Episode</th>
+                                <th>Episode Title</th>
+                                <th class="text-right">Size</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for item in group['items'] %}
+                            <tr>
+                                <td class="text-truncate" style="max-width: 400px;" title="{{ item.name }}">{{ item.name }}</td>
+                                <td>{{ item.quality or "-" }}</td>
+                                <td>{% if group.type == "series" %}{{ item.season or "-" }}{% else %}-{% endif %}</td>
+                                <td>{% if group.type == "series" %}{{ item.episode or "-" }}{% else %}-{% endif %}</td>
+                                <td>{% if group.type == "series" %}{{ item.episode_title or "-" }}{% else %}-{% endif %}</td>
+                                <td class="text-right">{{ item.size_label }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+const copyBtn = document.getElementById("copyContentLink");
+if (copyBtn) {
+    copyBtn.addEventListener("click", async () => {
+        const link = copyBtn.dataset.link || "";
+        if (!link) return;
+        try {
+            await navigator.clipboard.writeText(link);
+            copyBtn.textContent = "Copied";
+            setTimeout(() => { copyBtn.textContent = "Copy Link"; }, 1200);
+        } catch (e) {
+            copyBtn.textContent = "Failed";
+            setTimeout(() => { copyBtn.textContent = "Copy Link"; }, 1200);
+        }
+    });
+}
+</script>
+{% endblock %}

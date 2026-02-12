@@ -116,6 +116,30 @@ def _clean_display_title(title: str) -> str:
         return " ".join(tokens[:-1])
     return title
 
+
+def _slugify(text: str) -> str:
+    value = (text or "").strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    return value.strip("-")
+
+
+def _content_path(title: str, year: str) -> str:
+    title_part = _slugify(title)
+    year_part = (year or "").strip()
+    slug = f"{title_part}-{year_part}" if year_part else title_part
+    return f"/content/details/{slug}" if slug else "/content"
+
+
+def _format_release_date(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    try:
+        dt = datetime.strptime(raw[:10], "%Y-%m-%d")
+        return dt.strftime("%d %b %Y")
+    except Exception:
+        return raw
+
 def _summarize_group(group: dict) -> dict:
     items = group.get("items", [])
     total_size = sum(int(i.get("size") or 0) for i in items)
@@ -216,9 +240,19 @@ async def _group_published_catalog() -> list[dict]:
         year = (getattr(item, "year", "") or info["year"] or "").strip()
         key = (_title_key(getattr(item, "title", "") or item.name or ""), year, ctype)
         group = groups.setdefault(key, {
+            "id": str(item.id),
             "title": display_title,
             "year": year,
             "type": ctype,
+            "poster": getattr(item, "poster_url", "") or "",
+            "backdrop": getattr(item, "backdrop_url", "") or "",
+            "description": getattr(item, "description", "") or "",
+            "genres": getattr(item, "genres", []) or [],
+            "actors": getattr(item, "actors", []) or [],
+            "director": getattr(item, "director", "") or "",
+            "trailer_url": getattr(item, "trailer_url", "") or "",
+            "trailer_key": getattr(item, "trailer_key", "") or "",
+            "release_date": getattr(item, "release_date", "") or "",
             "items": []
         })
         quality = getattr(item, "quality", "") or info["quality"]
@@ -231,11 +265,14 @@ async def _group_published_catalog() -> list[dict]:
             "size_label": format_size(item.size or 0),
             "quality": quality,
             "season": season,
-            "episode": episode
+            "episode": episode,
+            "episode_title": getattr(item, "episode_title", "") or ""
         })
     for g in groups.values():
         g["items"].sort(key=lambda x: (x.get("season") or 0, x.get("episode") or 0, x.get("quality") or ""))
         _summarize_group(g)
+        g["release_date_label"] = _format_release_date(g.get("release_date", ""))
+        g["content_path"] = _content_path(g.get("title", ""), g.get("year", ""))
     return sorted(groups.values(), key=lambda g: g["title"].lower())
 
 
@@ -387,15 +424,43 @@ async def publish_content(request: Request):
 
     published_groups = await _group_published_catalog()
     if settings.TMDB_API_KEY:
-        for g in published_groups[:24]:
+        for g in published_groups[:80]:
             if not g.get("poster") and not g.get("backdrop"):
                 await _ensure_group_assets(g)
+    base_url = str(request.base_url).rstrip("/")
+    for g in published_groups:
+        g["content_full_url"] = f"{base_url}{g.get('content_path', '')}"
     site = await _site_settings()
     return templates.TemplateResponse("publish_content.html", {
         "request": request,
         "user": user,
         "is_admin": True,
         "published_groups": published_groups,
+        "site": site
+    })
+
+
+@router.get("/dashboard/publish-content/details/{group_id}")
+async def publish_content_details(request: Request, group_id: str):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    group = await _find_group_by_item_id(group_id)
+    if not group:
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+    if settings.TMDB_API_KEY and (not group.get("poster") or not group.get("description")):
+        await _ensure_group_assets(group)
+    base_url = str(request.base_url).rstrip("/")
+    group["content_full_url"] = f"{base_url}{group.get('content_path', '')}"
+    site = await _site_settings()
+    return templates.TemplateResponse("publish_content_details.html", {
+        "request": request,
+        "user": user,
+        "is_admin": True,
+        "group": group,
         "site": site
     })
 
@@ -412,6 +477,8 @@ async def publish_content_edit(request: Request, group_id: str):
         return RedirectResponse("/dashboard/publish-content", status_code=303)
     if settings.TMDB_API_KEY:
         await _ensure_group_assets(group)
+    base_url = str(request.base_url).rstrip("/")
+    group["content_full_url"] = f"{base_url}{group.get('content_path', '')}"
     site = await _site_settings()
     return templates.TemplateResponse("publish_content_edit.html", {
         "request": request,
@@ -419,7 +486,7 @@ async def publish_content_edit(request: Request, group_id: str):
         "is_admin": True,
         "group": group,
         "site": site,
-        "return_to": f"/dashboard/publish-content/edit/{group_id}"
+        "return_to": f"/dashboard/publish-content/edit/{group.get('id')}"
     })
 
 @router.post("/dashboard/publish-content/save")
@@ -522,16 +589,19 @@ async def publish_content_add_files(
         raise HTTPException(403)
     if not group_id:
         return RedirectResponse("/dashboard/publish-content", status_code=303)
-    base_item = await FileSystemItem.get(group_id)
-    if not base_item or base_item.catalog_status != "published":
+    group = await _find_group_by_item_id(group_id)
+    if not group:
+        return RedirectResponse("/dashboard/publish-content", status_code=303)
+    base_item = await FileSystemItem.get(group["id"])
+    if not base_item:
         return RedirectResponse("/dashboard/publish-content", status_code=303)
 
     raw_ids = [i.strip() for i in (item_ids or "").split(",") if i.strip()]
     if not raw_ids:
-        return RedirectResponse(f"/dashboard/publish-content/edit/{group_id}", status_code=303)
+        return RedirectResponse(f"/dashboard/publish-content/edit/{group.get('id')}", status_code=303)
     items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(raw_ids))).to_list()
     if not items:
-        return RedirectResponse(f"/dashboard/publish-content/edit/{group_id}", status_code=303)
+        return RedirectResponse(f"/dashboard/publish-content/edit/{group.get('id')}", status_code=303)
 
     override_map = {}
     if overrides:
@@ -574,7 +644,7 @@ async def publish_content_add_files(
         overrides=override_map
     )
 
-    return RedirectResponse(f"/dashboard/publish-content/edit/{group_id}", status_code=303)
+    return RedirectResponse(f"/dashboard/publish-content/edit/{group.get('id')}", status_code=303)
 
 @router.post("/dashboard/publish-content/delete")
 async def publish_content_delete(
@@ -596,16 +666,25 @@ async def publish_content_delete(
     if not group_title:
         return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
+    deleted_items: list[FileSystemItem] = []
     if group and group.get("items"):
         ids = [i.get("id") for i in group["items"] if i.get("id")]
         if ids:
-            await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(ids))).delete()
-    else:
-        await FileSystemItem.find(
+            deleted_items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(ids))).to_list()
+            if deleted_items:
+                await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(ids))).delete()
+    if not deleted_items:
+        deleted_items = await FileSystemItem.find(
             FileSystemItem.catalog_status == "published",
             FileSystemItem.catalog_type == group_type,
             Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
-        ).delete()
+        ).to_list()
+        if deleted_items:
+            await FileSystemItem.find(In(FileSystemItem.id, _cast_ids([str(x.id) for x in deleted_items]))).delete()
+
+    parent_ids = {str(item.parent_id) for item in deleted_items if item.parent_id}
+    for parent_id in parent_ids:
+        await _cleanup_parents(parent_id)
 
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     if admin_phone:
@@ -656,6 +735,7 @@ async def publish_content_update_file(
     item = await FileSystemItem.get(published_id)
     if not item or item.catalog_status != "published":
         return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
+    old_parent_id = item.parent_id
 
     item.quality = (quality or "").strip()
     if (season or "").strip():
@@ -700,6 +780,8 @@ async def publish_content_update_file(
                     item.parent_id = str(quality_folder.id)
 
     await item.save()
+    if old_parent_id and old_parent_id != item.parent_id:
+        await _cleanup_parents(old_parent_id)
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.get("/dashboard/storage/search")
