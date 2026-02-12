@@ -48,7 +48,6 @@
             </div>
             <div class="mt-5 text-xs text-gray-400 flex flex-wrap gap-2">
                 {% if item.director %}<span class="px-2 py-1 bg-gray-800 rounded">Director: {{ item.director }}</span>{% endif %}
-                {% if item.industry_label %}<span class="px-2 py-1 bg-gray-800 rounded">Industry: {{ item.industry_label }}</span>{% endif %}
                 {% for g in item.genres or [] %}<span class="px-2 py-1 bg-gray-800 rounded">#{{ g }}</span>{% endfor %}
             </div>
 
@@ -213,7 +212,7 @@
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
         <div>
             <h2 class="text-xl font-bold text-white">Related Content</h2>
-            <p class="text-xs text-gray-400 mt-1">Matched by genres, cast, director, year and industry.</p>
+            <p class="text-xs text-gray-400 mt-1">Matched by shared genres and cast.</p>
         </div>
         <div class="text-xs text-gray-400">{{ related_cards|length }} recommendations</div>
     </div>
@@ -233,7 +232,7 @@
                     <div class="text-[10px] uppercase tracking-widest text-yellow-400">{{ rel.type }}</div>
                     <div class="text-sm font-semibold text-white line-clamp-2">{{ rel.title }}</div>
                     <div class="text-[11px] text-gray-400 mt-1">
-                        {% if rel.year %}{{ rel.year }}{% else %}-{% endif %} | {{ rel.industry_label }}
+                        {% if rel.year %}{{ rel.year }}{% else %}-{% endif %} | {{ "Movie" if rel.type == "movie" else "Web Series" }}
                     </div>
                 </div>
             </div>

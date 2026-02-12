@@ -1,0 +1,102 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="content-header">
+    <div class="container-fluid">
+        <div class="row mb-2">
+            <div class="col-sm-6">
+                <h1 class="m-0">Header & Footer Settings</h1>
+                <div class="admin-section-note">Manage top bar, menu links, footer links, social links and contact details.</div>
+            </div>
+            <div class="col-sm-6">
+                <ol class="breadcrumb float-sm-right">
+                    <li class="breadcrumb-item"><a href="/dashboard">Dashboard</a></li>
+                    <li class="breadcrumb-item active">Header & Footer</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</div>
+
+<section class="content">
+    <div class="container-fluid">
+        {% if saved %}
+        <div class="alert alert-success">Header & footer settings updated.</div>
+        {% endif %}
+
+        <div class="card card-outline card-warning">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-heading"></i> Header & Footer Controls</h3>
+            </div>
+            <div class="card-body">
+                <form action="/admin/header-footer/save" method="post">
+                    <div class="form-row">
+                        <div class="form-group col-md-8">
+                            <label>Top Bar Text</label>
+                            <input name="topbar_text" class="form-control" value="{{ site.topbar_text if site else 'Welcome to Mystic Movies' }}" />
+                        </div>
+                        <div class="form-group col-md-4">
+                            <label>Logo URL (optional)</label>
+                            <input name="logo_path" class="form-control" value="{{ site.logo_path if site else '' }}" placeholder="/static/logo.png" />
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Header Menu</label>
+                        <textarea name="header_menu_text" rows="5" class="form-control" placeholder="Label|URL|Icon">{{ header_menu_text }}</textarea>
+                        <small class="form-text text-muted">One item per line. Example: `Home|/|fas fa-house`</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Footer About Text</label>
+                        <textarea name="footer_about_text" rows="3" class="form-control">{{ site.footer_about_text if site else '' }}</textarea>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group col-md-6">
+                            <label>Footer Explore Links</label>
+                            <textarea name="footer_explore_text" rows="5" class="form-control" placeholder="Label|URL">{{ footer_explore_text }}</textarea>
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Footer Support Links</label>
+                            <textarea name="footer_support_text" rows="5" class="form-control" placeholder="Label|URL">{{ footer_support_text }}</textarea>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group col-md-3">
+                            <label>Facebook URL</label>
+                            <input name="social_fb" class="form-control" value="{{ site.social_fb if site else '#' }}" />
+                        </div>
+                        <div class="form-group col-md-3">
+                            <label>Instagram URL</label>
+                            <input name="social_ig" class="form-control" value="{{ site.social_ig if site else '#' }}" />
+                        </div>
+                        <div class="form-group col-md-3">
+                            <label>Telegram URL</label>
+                            <input name="social_tg" class="form-control" value="{{ site.social_tg if site else '#' }}" />
+                        </div>
+                        <div class="form-group col-md-3">
+                            <label>Donate URL</label>
+                            <input name="donate_link" class="form-control" value="{{ site.donate_link if site else '/donate' }}" />
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group col-md-6">
+                            <label>Contact Name</label>
+                            <input name="contact_name" class="form-control" value="{{ site.contact_name if site else 'Mystic Movies Admin' }}" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Contact Email</label>
+                            <input name="contact_email" class="form-control" value="{{ site.contact_email if site else 'support@mysticmovies.site' }}" />
+                        </div>
+                    </div>
+
+                    <button class="btn btn-warning"><i class="fas fa-save"></i> Save Header & Footer</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

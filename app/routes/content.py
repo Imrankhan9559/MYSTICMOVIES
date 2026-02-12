@@ -15,7 +15,16 @@ from beanie.operators import In
 
 from app.core.config import settings
 from app.core.content_store import build_content_groups, sync_content_catalog
-from app.db.models import ContentItem, FileSystemItem, User, TokenSetting, WatchlistEntry, ContentRequest, SiteSettings
+from app.db.models import (
+    ContentItem,
+    FileSystemItem,
+    User,
+    TokenSetting,
+    WatchlistEntry,
+    ContentRequest,
+    SiteSettings,
+    HomeSlider,
+)
 from app.routes.dashboard import get_current_user
 from app.utils.file_utils import format_size
 
@@ -50,6 +59,22 @@ def _share_params(link_token: str, viewer_name: str) -> str:
         safe_name = urllib.parse.quote(viewer_name)
         params = f"{params}&U={safe_name}" if params else f"U={safe_name}"
     return params
+
+
+DEFAULT_HEADER_MENU = [
+    {"label": "Home", "url": "/", "icon": "fas fa-house"},
+    {"label": "Content", "url": "/content", "icon": "fas fa-film"},
+    {"label": "Request Content", "url": "/request-content", "icon": "fas fa-inbox"},
+]
+DEFAULT_FOOTER_EXPLORE_LINKS = [
+    {"label": "Movies Library", "url": "/content/f/movies"},
+    {"label": "Web Series", "url": "/content/f/series"},
+    {"label": "Latest Uploads", "url": "/content/f/all"},
+]
+DEFAULT_FOOTER_SUPPORT_LINKS = [
+    {"label": "Request Content", "url": "/request-content"},
+    {"label": "Report an Issue", "url": "/request-content"},
+]
 
 
 def _normalize_phone(phone: str) -> str:
@@ -681,17 +706,12 @@ def _related_content_cards(target: dict, catalog: list[dict], limit: int = 12) -
     target_id = (target.get("id") or "").strip()
     target_slug = (target.get("slug") or "").strip()
     target_type = (target.get("type") or "").strip().lower()
-    target_industry = _infer_industry(target)
-    target_industry_label = _industry_label(target_industry)
-    target["industry_label"] = target_industry_label
 
     target_genres = _clean_values(target.get("genres") or [])
     target_genres_map = {_norm_label(x): x for x in target_genres}
     target_cast = _group_cast_names(target)
     target_cast_map = {_norm_label(x): x for x in target_cast}
-    target_director_norm = _norm_label(target.get("director") or "")
     target_year = _year_int(target.get("year") or "")
-    target_title_tokens = _title_tokens(target.get("title") or "")
 
     scored: list[dict] = []
     for row in catalog:
@@ -709,7 +729,7 @@ def _related_content_cards(target: dict, catalog: list[dict], limit: int = 12) -
         row_genres_map = {_norm_label(x): x for x in row_genres}
         shared_genres = [target_genres_map[key] for key in target_genres_map.keys() & row_genres_map.keys()]
         if shared_genres:
-            score += min(12, len(shared_genres) * 3.0)
+            score += min(8.0, len(shared_genres) * 2.4)
             for genre_name in shared_genres[:2]:
                 reasons.append(f"Genre: {genre_name}")
 
@@ -717,42 +737,29 @@ def _related_content_cards(target: dict, catalog: list[dict], limit: int = 12) -
         row_cast_map = {_norm_label(x): x for x in row_cast}
         shared_cast = [target_cast_map[key] for key in target_cast_map.keys() & row_cast_map.keys()]
         if shared_cast:
-            score += min(9, len(shared_cast) * 2.5)
+            score += min(10.0, len(shared_cast) * 3.5)
             for cast_name in shared_cast[:2]:
                 reasons.append(f"Cast: {cast_name}")
 
-        row_director_norm = _norm_label(row.get("director") or "")
-        if target_director_norm and row_director_norm and row_director_norm == target_director_norm:
-            score += 3.0
-            reasons.append("Same director")
-
-        row_industry = _infer_industry(row)
-        if target_industry == row_industry and target_industry != "other":
-            score += 2.0
-            reasons.append(target_industry_label)
-        elif target_industry == row_industry and target_industry == "other":
-            score += 0.5
+        # Hard rule: recommendations must share genre or cast.
+        if not shared_genres and not shared_cast:
+            continue
 
         row_type = (row.get("type") or "").strip().lower()
         if target_type and row_type == target_type:
-            score += 1.0
+            score += 0.6
 
         row_year = _year_int(row.get("year") or "")
         if target_year and row_year:
             year_gap = abs(target_year - row_year)
             if year_gap == 0:
-                score += 1.2
+                score += 0.8
             elif year_gap <= 2:
-                score += 0.7
+                score += 0.5
             elif year_gap <= 5:
-                score += 0.3
+                score += 0.2
 
-        row_title_tokens = _title_tokens(row.get("title") or "")
-        shared_title_tokens = target_title_tokens & row_title_tokens
-        if shared_title_tokens:
-            score += min(1.0, len(shared_title_tokens) * 0.35)
-
-        if score < 1.8:
+        if score < 1.5:
             continue
 
         scored.append({
@@ -763,7 +770,6 @@ def _related_content_cards(target: dict, catalog: list[dict], limit: int = 12) -
             "type": row.get("type") or "",
             "poster": row.get("poster") or "",
             "quality": row.get("quality") or row.get("primary_quality") or "HD",
-            "industry_label": _industry_label(row_industry),
             "score": score,
             "match_tags": reasons[:3],
         })
@@ -826,11 +832,86 @@ async def _ensure_share_token(file_id: str) -> str:
     return item.share_token
 
 
+def _clean_link_rows(value, include_icon: bool = False) -> list[dict]:
+    rows = value if isinstance(value, list) else []
+    cleaned: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = (row.get("label") or "").strip()
+        url = (row.get("url") or "").strip() or "#"
+        icon = (row.get("icon") or "").strip()
+        if not label:
+            continue
+        payload = {"label": label, "url": url}
+        if include_icon:
+            payload["icon"] = icon
+        cleaned.append(payload)
+    return cleaned
+
+
+def _apply_site_defaults(row: SiteSettings) -> bool:
+    changed = False
+    if not getattr(row, "topbar_text", "").strip():
+        row.topbar_text = "Welcome to Mystic Movies"
+        changed = True
+    if getattr(row, "logo_path", None) is None:
+        row.logo_path = ""
+        changed = True
+    if not getattr(row, "footer_about_text", "").strip():
+        row.footer_about_text = "Mystic Movies provides high-quality content for free. If a movie is missing, let us know."
+        changed = True
+    if not getattr(row, "social_fb", "").strip():
+        row.social_fb = "#"
+        changed = True
+    if not getattr(row, "social_ig", "").strip():
+        row.social_ig = "#"
+        changed = True
+    if not getattr(row, "social_tg", "").strip():
+        row.social_tg = "#"
+        changed = True
+    if not getattr(row, "donate_link", "").strip():
+        row.donate_link = "/donate"
+        changed = True
+    if not getattr(row, "contact_name", "").strip():
+        row.contact_name = "Mystic Movies Admin"
+        changed = True
+    if not getattr(row, "contact_email", "").strip():
+        row.contact_email = "support@mysticmovies.site"
+        changed = True
+
+    header_menu = _clean_link_rows(getattr(row, "header_menu", None), include_icon=True)
+    if not header_menu:
+        row.header_menu = [x.copy() for x in DEFAULT_HEADER_MENU]
+        changed = True
+    else:
+        row.header_menu = header_menu
+
+    explore_links = _clean_link_rows(getattr(row, "footer_explore_links", None), include_icon=False)
+    if not explore_links:
+        row.footer_explore_links = [x.copy() for x in DEFAULT_FOOTER_EXPLORE_LINKS]
+        changed = True
+    else:
+        row.footer_explore_links = explore_links
+
+    support_links = _clean_link_rows(getattr(row, "footer_support_links", None), include_icon=False)
+    if not support_links:
+        row.footer_support_links = [x.copy() for x in DEFAULT_FOOTER_SUPPORT_LINKS]
+        changed = True
+    else:
+        row.footer_support_links = support_links
+    return changed
+
+
 async def _site_settings() -> SiteSettings:
     row = await SiteSettings.find_one(SiteSettings.key == "main")
     if not row:
         row = SiteSettings(key="main")
         await row.insert()
+    changed = _apply_site_defaults(row)
+    if changed:
+        row.updated_at = datetime.now()
+        await row.save()
     return row
 
 
@@ -935,6 +1016,17 @@ def _normalize_filter_type(value: str) -> str:
     return "all"
 
 
+def _normalize_sort_type(value: str) -> str:
+    raw = (value or "").strip().lower()
+    if raw in {"a-z", "az", "title_asc"}:
+        return "title_asc"
+    if raw in {"z-a", "za", "title_desc"}:
+        return "title_desc"
+    if raw in {"release_old", "release_oldest", "date_old", "oldest"}:
+        return "release_old"
+    return "release_new"
+
+
 def _release_sort_score(card: dict) -> int:
     release_raw = (card.get("release_date") or "").strip()
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y", "%d %b %Y", "%d %B %Y"):
@@ -947,6 +1039,20 @@ def _release_sort_score(card: dict) -> int:
     if re.fullmatch(r"\d{4}", year):
         return int(f"{year}0101")
     return 0
+
+
+def _sort_catalog_cards(cards: list[dict], sort_by: str) -> list[dict]:
+    if sort_by == "title_asc":
+        return sorted(cards, key=lambda row: (row.get("title") or "").lower())
+    if sort_by == "title_desc":
+        return sorted(cards, key=lambda row: (row.get("title") or "").lower(), reverse=True)
+    if sort_by == "release_old":
+        return sorted(cards, key=lambda row: (_release_sort_score(row), (row.get("title") or "").lower()))
+    return sorted(
+        cards,
+        key=lambda row: (_release_sort_score(row), (row.get("title") or "").lower()),
+        reverse=True,
+    )
 
 
 def _card_matches_query(card: dict, query: str) -> bool:
@@ -1013,6 +1119,7 @@ async def _render_catalog_page(
     filter_type: str,
     q: str = "",
     page: int = 1,
+    sort_by: str = "release_new",
     title_override: str = "",
     cards_override: list[dict] | None = None,
     active_tab: str = "all",
@@ -1024,6 +1131,7 @@ async def _render_catalog_page(
     normalized_filter = _normalize_filter_type(filter_type)
     search_query = (q or "").strip()
     search_mode = bool(search_query)
+    sort_mode = _normalize_sort_type(sort_by)
 
     cards = cards_override[:] if cards_override is not None else await _build_catalog(user, is_admin, limit=4000)
     if normalized_filter == "movies":
@@ -1033,17 +1141,14 @@ async def _render_catalog_page(
     if search_mode:
         cards = [c for c in cards if _card_matches_query(c, search_query)]
 
-    cards = sorted(
-        cards,
-        key=lambda row: (_release_sort_score(row), (row.get("title") or "").lower()),
-        reverse=True,
-    )
+    cards = _sort_catalog_cards(cards, sort_mode)
     cards = _decorate_catalog_cards(cards)
     asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
 
     paged_cards, total_items, total_pages, current_page = _paginate_cards(cards, page)
     page_start = max(1, current_page - 2)
     page_end = min(total_pages, current_page + 2)
+    page_qs_prefix = f"sort={urllib.parse.quote(sort_mode)}&" if sort_mode != "release_new" else ""
 
     if not page_base_url:
         if search_mode:
@@ -1080,8 +1185,89 @@ async def _render_catalog_page(
         "page_start": page_start,
         "page_end": page_end,
         "page_base_url": page_base_url,
+        "page_qs_prefix": page_qs_prefix,
         "query": search_query,
+        "sort_by": sort_mode,
+        "hide_global_search": True,
     })
+
+
+def _content_type_label(content_type: str) -> str:
+    return "Web Series" if (content_type or "").strip().lower() == "series" else "Movie"
+
+
+def _build_auto_slide(group: dict) -> dict:
+    title = (group.get("title") or "").strip()
+    year = (group.get("year") or "").strip()
+    ctype = (group.get("type") or "").strip().lower()
+    subtitle = f"{year} | {_content_type_label(ctype)}" if year else _content_type_label(ctype)
+    slug = (group.get("slug") or "").strip() or _group_slug(title, year)
+    image = (group.get("backdrop") or "").strip() or (group.get("poster") or "").strip()
+    return {
+        "title": title,
+        "subtitle": subtitle,
+        "button_text": "Watch Now",
+        "link_url": f"/content/details/{slug}" if slug else "/content",
+        "image_url": image,
+        "slug": slug,
+    }
+
+
+async def _build_home_slides(catalog: list[dict], max_slides: int = 8) -> list[dict]:
+    by_slug = {
+        (item.get("slug") or _group_slug(item.get("title", ""), item.get("year", ""))): item
+        for item in catalog
+    }
+    manual_rows = await HomeSlider.find(HomeSlider.is_active == True).sort([("sort_order", 1), ("created_at", -1)]).to_list()
+    slides: list[dict] = []
+    seen_links: set[str] = set()
+
+    for row in manual_rows:
+        slug = (getattr(row, "content_slug", "") or "").strip().lower()
+        matched = by_slug.get(slug) if slug else None
+        title = (getattr(row, "title", "") or "").strip() or (matched.get("title") if matched else "")
+        if not title:
+            continue
+        subtitle = (getattr(row, "subtitle", "") or "").strip()
+        if not subtitle and matched:
+            year = (matched.get("year") or "").strip()
+            subtitle = f"{year} | {_content_type_label(matched.get('type') or '')}" if year else _content_type_label(matched.get("type") or "")
+        button_text = (getattr(row, "button_text", "") or "").strip() or "Watch Now"
+        link_url = (getattr(row, "link_url", "") or "").strip()
+        if not link_url and slug:
+            link_url = f"/content/details/{slug}"
+        if not link_url and matched:
+            link_url = f"/content/details/{matched.get('slug') or slug}"
+        if not link_url:
+            link_url = "/content"
+        image_url = (getattr(row, "image_url", "") or "").strip()
+        if not image_url and matched:
+            image_url = (matched.get("backdrop") or "").strip() or (matched.get("poster") or "").strip()
+        dedupe_key = f"{title.lower()}::{link_url}"
+        if dedupe_key in seen_links:
+            continue
+        seen_links.add(dedupe_key)
+        slides.append({
+            "title": title,
+            "subtitle": subtitle,
+            "button_text": button_text,
+            "link_url": link_url,
+            "image_url": image_url,
+            "slug": slug,
+        })
+        if len(slides) >= max_slides:
+            return slides
+
+    for row in catalog:
+        auto_slide = _build_auto_slide(row)
+        dedupe_key = f"{(auto_slide.get('title') or '').lower()}::{auto_slide.get('link_url') or ''}"
+        if dedupe_key in seen_links:
+            continue
+        seen_links.add(dedupe_key)
+        slides.append(auto_slide)
+        if len(slides) >= max_slides:
+            break
+    return slides
 
 
 @router.get("/")
@@ -1089,7 +1275,9 @@ async def home_page(request: Request):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
-    catalog = await _build_catalog(user, is_admin, limit=200)
+    catalog = await _build_catalog(user, is_admin, limit=600)
+    catalog = _sort_catalog_cards(catalog, "release_new")
+    slides = await _build_home_slides(catalog, max_slides=8)
     movies = [c for c in catalog if c["type"] == "movie"][:24]
     series = [c for c in catalog if c["type"] == "series"][:24]
     trending = catalog[:18]
@@ -1101,6 +1289,7 @@ async def home_page(request: Request):
         "user": user,
         "is_admin": is_admin,
         "site": settings_row,
+        "slides": slides,
         "trending": trending,
         "movies": movies,
         "series": series,
@@ -1112,6 +1301,7 @@ async def content_all(
     request: Request,
     q: str = "",
     page: int = 1,
+    sort: str = "release_new",
     filter: str = "",
     search_content: str = "",
 ):
@@ -1126,63 +1316,79 @@ async def content_all(
             clean_url = f"/content/f/{normalized_filter}/search_content/{urllib.parse.quote(final_query)}"
         else:
             clean_url = f"/content/f/{normalized_filter}"
+        sort_mode = _normalize_sort_type(sort)
+        if sort_mode != "release_new":
+            clean_url += f"{'&' if '?' in clean_url else '?'}sort={urllib.parse.quote(sort_mode)}"
         if page > 1:
-            clean_url = f"{clean_url}?page={page}"
+            clean_url += f"{'&' if '?' in clean_url else '?'}page={page}"
         return RedirectResponse(clean_url, status_code=307)
     if (q or "").strip():
         clean_url = f"/content/f/all/search_content/{urllib.parse.quote((q or '').strip())}"
+        sort_mode = _normalize_sort_type(sort)
+        if sort_mode != "release_new":
+            clean_url += f"?sort={urllib.parse.quote(sort_mode)}"
         if page > 1:
-            clean_url = f"{clean_url}?page={page}"
+            clean_url += f"{'&' if '?' in clean_url else '?'}page={page}"
         return RedirectResponse(clean_url, status_code=307)
     return await _render_catalog_page(
         request=request,
         filter_type="all",
         q=q,
         page=page,
+        sort_by=sort,
         active_tab="all",
     )
 
 
 @router.get("/content/movies")
-async def content_movies(request: Request, q: str = "", page: int = 1):
+async def content_movies(request: Request, q: str = "", page: int = 1, sort: str = "release_new"):
     if (q or "").strip():
         clean_url = f"/content/f/movies/search_content/{urllib.parse.quote((q or '').strip())}"
+        sort_mode = _normalize_sort_type(sort)
+        if sort_mode != "release_new":
+            clean_url += f"?sort={urllib.parse.quote(sort_mode)}"
         if page > 1:
-            clean_url = f"{clean_url}?page={page}"
+            clean_url += f"{'&' if '?' in clean_url else '?'}page={page}"
         return RedirectResponse(clean_url, status_code=307)
     return await _render_catalog_page(
         request=request,
         filter_type="movies",
         q=q,
         page=page,
+        sort_by=sort,
         active_tab="movies",
     )
 
 
 @router.get("/content/web-series")
-async def content_series(request: Request, q: str = "", page: int = 1):
+async def content_series(request: Request, q: str = "", page: int = 1, sort: str = "release_new"):
     if (q or "").strip():
         clean_url = f"/content/f/series/search_content/{urllib.parse.quote((q or '').strip())}"
+        sort_mode = _normalize_sort_type(sort)
+        if sort_mode != "release_new":
+            clean_url += f"?sort={urllib.parse.quote(sort_mode)}"
         if page > 1:
-            clean_url = f"{clean_url}?page={page}"
+            clean_url += f"{'&' if '?' in clean_url else '?'}page={page}"
         return RedirectResponse(clean_url, status_code=307)
     return await _render_catalog_page(
         request=request,
         filter_type="series",
         q=q,
         page=page,
+        sort_by=sort,
         active_tab="series",
     )
 
 
 @router.get("/content/f/{filter_type}")
-async def content_by_filter(request: Request, filter_type: str, page: int = 1):
+async def content_by_filter(request: Request, filter_type: str, page: int = 1, sort: str = "release_new"):
     normalized_filter = _normalize_filter_type(filter_type)
     return await _render_catalog_page(
         request=request,
         filter_type=normalized_filter,
         q="",
         page=page,
+        sort_by=sort,
         active_tab=normalized_filter,
         page_base_url=f"/content/f/{normalized_filter}",
     )
@@ -1194,6 +1400,7 @@ async def content_by_filter_search(
     filter_type: str,
     search_query: str,
     page: int = 1,
+    sort: str = "release_new",
 ):
     normalized_filter = _normalize_filter_type(filter_type)
     decoded_query = urllib.parse.unquote(search_query or "")
@@ -1202,6 +1409,7 @@ async def content_by_filter_search(
         filter_type=normalized_filter,
         q=decoded_query,
         page=page,
+        sort_by=sort,
         active_tab=normalized_filter,
         page_base_url=f"/content/f/{normalized_filter}/search_content/{urllib.parse.quote(decoded_query)}",
     )
@@ -1587,12 +1795,11 @@ async def toggle_watchlist(request: Request, item_id: str):
 
 
 @router.get("/content/watchlist")
-async def content_watchlist(request: Request, page: int = 1):
+async def content_watchlist(request: Request, page: int = 1, sort: str = "release_new"):
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/login")
     is_admin = _is_admin(user)
-    site = await _site_settings()
     rows = await WatchlistEntry.find(WatchlistEntry.user_phone == user.phone_number).sort("-created_at").to_list()
     object_ids = set()
     slug_ids = set()
@@ -1618,6 +1825,7 @@ async def content_watchlist(request: Request, page: int = 1):
         filter_type="all",
         q="",
         page=page,
+        sort_by=sort,
         title_override="My Watchlist",
         cards_override=filtered_cards,
         active_tab="watchlist",

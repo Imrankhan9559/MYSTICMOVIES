@@ -1,98 +1,287 @@
 {% extends "base.html" %}
 {% block content %}
-{% macro poster_card(item) %}
-<div class="group rounded-2xl border border-gray-800 bg-black/70 overflow-hidden hover:border-yellow-500/60 transition">
-    <div class="relative aspect-[2/3]">
-        {% if item.poster %}
-        <img src="{{ item.poster }}" alt="{{ item.title }}" class="h-full w-full object-cover">
-        {% else %}
-        <div class="h-full w-full bg-gradient-to-br from-gray-900 via-black to-gray-800 flex items-center justify-center">
-            <i class="fas fa-film text-yellow-400 text-4xl"></i>
-        </div>
-        {% endif %}
-        <div class="absolute inset-0 bg-gradient-to-t from-black/95 via-black/20 to-transparent"></div>
-        <div class="absolute bottom-0 left-0 right-0 p-3">
-            <div class="text-[10px] uppercase tracking-widest text-yellow-400">{{ item.type }}</div>
-            <div class="text-sm font-semibold text-white line-clamp-2">{{ item.title }}</div>
-            {% if item.year %}
-            <div class="text-[11px] text-gray-400 mt-1">{{ item.year }}</div>
-            {% endif %}
-        </div>
-        <a href="/content/details/{{ item.slug }}" class="absolute inset-0" aria-label="Open {{ item.title }}"></a>
-    </div>
-    <div class="p-3 space-y-1">
-        {% if item.card_labels and item.card_labels|length > 0 %}
-            {% for label in item.card_labels %}
-                <div class="text-xs text-gray-500 truncate">{{ label }}</div>
-            {% endfor %}
-        {% else %}
-        <div class="text-xs text-gray-500">No files available.</div>
-        {% endif %}
-    </div>
-</div>
-{% endmacro %}
-
-{% set featured = trending[0] if trending and trending|length > 0 else None %}
-
-<section class="relative overflow-hidden rounded-2xl border border-yellow-600/30 bg-gradient-to-r from-black via-gray-950 to-yellow-950 p-6 sm:p-10 mb-8">
-    <div class="absolute inset-0 opacity-25 bg-[radial-gradient(circle_at_20%_20%,#facc15_0%,transparent_40%),radial-gradient(circle_at_80%_60%,#f59e0b_0%,transparent_45%)]"></div>
-    <div class="relative grid gap-8 lg:grid-cols-[1.15fr,0.85fr] items-center">
-        <div>
-            <p class="text-yellow-400 uppercase tracking-[0.28em] text-xs font-semibold mb-3">MysticMovies</p>
-            <h1 class="text-3xl sm:text-5xl font-extrabold text-white leading-tight">{{ site.hero_title }}</h1>
-            <p class="text-gray-300 mt-4 max-w-2xl">{{ site.hero_subtitle }}</p>
-            <div class="mt-6 flex flex-wrap gap-3">
-                <a href="{{ site.hero_cta_link or '/content' }}" class="inline-flex items-center px-5 py-2.5 rounded-full bg-yellow-400 text-black font-bold hover:bg-yellow-300 transition">
-                    <i class="fas fa-play mr-2"></i>{{ site.hero_cta_text or 'Browse Content' }}
-                </a>
-                {% if user %}
-                <a href="/profile" class="inline-flex items-center px-5 py-2.5 rounded-full bg-gray-800 text-gray-100 border border-gray-700 hover:bg-gray-700 transition">
-                    <i class="fas fa-user mr-2"></i>My Profile
-                </a>
-                {% endif %}
-            </div>
-        </div>
-        {% if featured %}
-        <div class="lg:ml-auto max-w-sm">
-            {{ poster_card(featured) }}
-        </div>
-        {% endif %}
-    </div>
-</section>
-
-<section class="mb-10">
-    <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-bold text-white">Trending Now</h2>
-        <a href="/content" class="text-yellow-400 text-sm hover:text-yellow-300">See all</a>
-    </div>
-    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        {% for item in trending %}
-            {{ poster_card(item) }}
-        {% endfor %}
-    </div>
-</section>
-
-<section class="mb-10">
-    <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-bold text-white">Movies</h2>
-        <a href="/content/movies" class="text-yellow-400 text-sm hover:text-yellow-300">View movies</a>
-    </div>
-    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        {% for item in movies %}
-            {{ poster_card(item) }}
-        {% endfor %}
-    </div>
-</section>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swiper@10/swiper-bundle.min.css">
+<style>
+    .home-hero-slider {
+        width: 100%;
+        height: min(78vh, 760px);
+        border-radius: 16px;
+        overflow: hidden;
+        border: 1px solid rgba(212, 175, 55, 0.25);
+        margin-bottom: 34px;
+        background: #050505;
+    }
+    .home-slide-bg {
+        width: 100%;
+        height: 100%;
+        background-size: cover;
+        background-position: center;
+        animation: mmKenBurns 18s ease-in-out infinite alternate;
+    }
+    @keyframes mmKenBurns {
+        from { transform: scale(1); }
+        to { transform: scale(1.1); }
+    }
+    .home-slide-overlay {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(to top, rgba(0, 0, 0, 0.93) 2%, rgba(0, 0, 0, 0.28) 62%, rgba(0, 0, 0, 0.72) 100%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        padding: 20px;
+    }
+    .home-slide-content {
+        max-width: 880px;
+        width: 92%;
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+    }
+    .home-slide-subtitle {
+        color: #f1cd55;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+        margin-bottom: 8px;
+    }
+    .home-slide-title {
+        color: #fff;
+        font-size: clamp(28px, 6vw, 58px);
+        font-weight: 800;
+        line-height: 1.16;
+        margin-bottom: 20px;
+    }
+    .home-slide-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        background: #d4af37;
+        color: #000;
+        text-decoration: none;
+        font-size: 13px;
+        font-weight: 800;
+        padding: 12px 34px;
+        border-radius: 999px;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        transition: transform .2s ease, box-shadow .2s ease, background .2s ease;
+    }
+    .home-slide-btn:hover {
+        background: #fff;
+        color: #000;
+        transform: translateY(-1px) scale(1.02);
+        box-shadow: 0 8px 26px rgba(212, 175, 55, 0.4);
+    }
+    .home-hero-slider .swiper-button-next,
+    .home-hero-slider .swiper-button-prev {
+        color: #d4af37;
+        text-shadow: 0 0 10px #000;
+    }
+    .home-hero-slider .swiper-pagination-bullet-active {
+        background: #d4af37;
+    }
+    .home-section {
+        padding: 12px 0 34px;
+        border-bottom: 1px solid #1a1a1a;
+    }
+    .home-section:last-child {
+        border-bottom: 0;
+    }
+    .home-section-header {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 18px;
+    }
+    .home-section-title {
+        font-size: clamp(18px, 3.5vw, 25px);
+        font-weight: 800;
+        color: #fff;
+        border-left: 4px solid #d4af37;
+        padding-left: 10px;
+    }
+    .home-view-all {
+        color: #a0a0a0;
+        text-transform: uppercase;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: .5px;
+    }
+    .home-view-all:hover { color: #f1cd55; }
+    .home-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+    }
+    @media (min-width: 768px) {
+        .home-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    }
+    @media (min-width: 1280px) {
+        .home-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    }
+    .home-card {
+        background: #111;
+        border: 1px solid #222;
+        border-radius: 8px;
+        overflow: hidden;
+        transition: transform .2s ease, border-color .2s ease;
+        height: 100%;
+    }
+    .home-card:hover {
+        transform: translateY(-4px);
+        border-color: #d4af37;
+    }
+    .home-card-poster {
+        aspect-ratio: 2 / 3;
+        width: 100%;
+        object-fit: cover;
+        display: block;
+        background: #0a0a0a;
+    }
+    .home-card-fallback {
+        aspect-ratio: 2 / 3;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(145deg, #121212, #060606);
+        color: #d4af37;
+        font-size: 26px;
+    }
+    .home-card-body {
+        padding: 10px;
+    }
+    .home-card-title {
+        font-size: 13px;
+        font-weight: 700;
+        color: #f1f1f1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .home-card-meta {
+        margin-top: 3px;
+        font-size: 11px;
+        color: #d4af37;
+        text-transform: uppercase;
+        font-weight: 700;
+    }
+    @media (max-width: 768px) {
+        .home-hero-slider {
+            margin-bottom: 26px;
+            height: min(66vh, 530px);
+        }
+        .home-hero-slider .swiper-button-next,
+        .home-hero-slider .swiper-button-prev {
+            display: none;
+        }
+    }
+</style>
 
 <section>
-    <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-bold text-white">Web Series</h2>
-        <a href="/content/web-series" class="text-yellow-400 text-sm hover:text-yellow-300">View series</a>
+    {% if slides and slides|length > 0 %}
+    <div class="swiper home-hero-slider">
+        <div class="swiper-wrapper">
+            {% for slide in slides %}
+            <div class="swiper-slide">
+                {% if slide.image_url %}
+                <div class="home-slide-bg" style="background-image: url('{{ slide.image_url }}');"></div>
+                {% else %}
+                <div class="home-slide-bg" style="background-image: radial-gradient(circle at 18% 20%, #2b1f08 0%, #0a0a0a 60%);"></div>
+                {% endif %}
+                <div class="home-slide-overlay">
+                    <div class="home-slide-content">
+                        <div class="home-slide-subtitle">{{ slide.subtitle or 'Latest Release' }}</div>
+                        <div class="home-slide-title">{{ slide.title }}</div>
+                        <a href="{{ slide.link_url or '/content' }}" class="home-slide-btn">
+                            <i class="fas fa-play"></i>{{ slide.button_text or 'Watch Now' }}
+                        </a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="swiper-button-next"></div>
+        <div class="swiper-button-prev"></div>
+        <div class="swiper-pagination"></div>
     </div>
-    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        {% for item in series %}
-            {{ poster_card(item) }}
+    {% endif %}
+</section>
+
+{% macro card(item) %}
+<a href="/content/details/{{ item.slug }}" class="home-card">
+    {% if item.poster %}
+    <img src="{{ item.poster }}" alt="{{ item.title }}" class="home-card-poster" loading="lazy">
+    {% else %}
+    <div class="home-card-fallback"><i class="fas fa-film"></i></div>
+    {% endif %}
+    <div class="home-card-body">
+        <div class="home-card-title">{{ item.title }}</div>
+        <div class="home-card-meta">{{ item.year or "-" }} | {{ "Movie" if item.type == "movie" else "Series" }}</div>
+    </div>
+</a>
+{% endmacro %}
+
+<section class="home-section">
+    <div class="home-section-header">
+        <div class="home-section-title">Latest Uploads</div>
+        <a class="home-view-all" href="/content/f/all">View All <i class="fas fa-angle-right"></i></a>
+    </div>
+    <div class="home-grid">
+        {% for item in trending %}
+            {{ card(item) }}
         {% endfor %}
     </div>
 </section>
+
+<section class="home-section">
+    <div class="home-section-header">
+        <div class="home-section-title">Latest Movies</div>
+        <a class="home-view-all" href="/content/f/movies">View All <i class="fas fa-angle-right"></i></a>
+    </div>
+    <div class="home-grid">
+        {% for item in movies %}
+            {{ card(item) }}
+        {% endfor %}
+    </div>
+</section>
+
+<section class="home-section">
+    <div class="home-section-header">
+        <div class="home-section-title">Latest Web Series</div>
+        <a class="home-view-all" href="/content/f/series">View All <i class="fas fa-angle-right"></i></a>
+    </div>
+    <div class="home-grid">
+        {% for item in series %}
+            {{ card(item) }}
+        {% endfor %}
+    </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/swiper@10/swiper-bundle.min.js"></script>
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+    if (!document.querySelector(".home-hero-slider")) return;
+    new Swiper(".home-hero-slider", {
+        loop: true,
+        effect: "fade",
+        speed: 1000,
+        fadeEffect: { crossFade: true },
+        autoplay: {
+            delay: 3200,
+            disableOnInteraction: false,
+            pauseOnMouseEnter: false,
+        },
+        pagination: {
+            el: ".swiper-pagination",
+            clickable: true,
+        },
+        navigation: {
+            nextEl: ".swiper-button-next",
+            prevEl: ".swiper-button-prev",
+        },
+    });
+});
+</script>
 {% endblock %}

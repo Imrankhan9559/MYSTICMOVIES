@@ -186,6 +186,18 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a href="/header-footer-settings" class="nav-link {% if request.url.path.startswith('/header-footer-settings') or request.url.path.startswith('/dashboard/header-footer-settings') %}active{% endif %}">
+                            <i class="nav-icon fas fa-heading"></i>
+                            <p>Header & Footer</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="/manage-slider" class="nav-link {% if request.url.path.startswith('/manage-slider') or request.url.path.startswith('/dashboard/manage-slider') %}active{% endif %}">
+                            <i class="nav-icon fas fa-images"></i>
+                            <p>Manage Slider</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a href="/user-playback-analytics" class="nav-link {% if request.url.path.startswith('/user-playback-analytics') %}active{% endif %}">
                             <i class="nav-icon fas fa-chart-line"></i>
                             <p>User Playback Analytics</p>

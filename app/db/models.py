@@ -192,6 +192,22 @@ class SiteSettings(Document):
         name = "site_settings"
 
 
+class HomeSlider(Document):
+    title: str = ""
+    subtitle: str = ""
+    button_text: str = "Watch Now"
+    link_url: str = "/content"
+    image_url: str = ""
+    content_slug: Optional[str] = None
+    sort_order: int = 0
+    is_active: bool = True
+    created_at: datetime = datetime.now()
+    updated_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "home_sliders"
+
+
 class WatchlistEntry(Document):
     user_phone: str
     item_id: str
@@ -249,6 +265,7 @@ async def init_db():
             WatchPartyMember,
             WatchPartyMessage,
             SiteSettings,
+            HomeSlider,
             WatchlistEntry,
             ContentRequest,
             UserActivityEvent,

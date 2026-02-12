@@ -82,6 +82,11 @@
         padding: 10px 14px;
         font-weight: 500;
     }
+    .search-input:focus {
+        outline: none;
+        box-shadow: none;
+        border: none;
+    }
     .search-btn {
         background: var(--gold-primary);
         color: #000;
@@ -167,6 +172,25 @@
     .catalog-count {
         color: #666;
         font-size: 13px;
+    }
+    .catalog-tools {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .sort-select {
+        background: #0f0f0f;
+        color: #ddd;
+        border: 1px solid #2f2f2f;
+        border-radius: 8px;
+        padding: 7px 10px;
+        font-size: 12px;
+        min-width: 210px;
+    }
+    .sort-select:focus {
+        outline: none;
+        border-color: var(--gold-primary);
+        box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.18);
     }
     .catalog-grid {
         display: grid;
@@ -356,6 +380,18 @@
         .catalog-container {
             width: min(1240px, calc(100vw - 28px));
         }
+        .catalog-header {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        .catalog-tools {
+            width: 100%;
+            justify-content: space-between;
+        }
+        .sort-select {
+            min-width: 160px;
+            max-width: 62vw;
+        }
     }
 </style>
 
@@ -363,9 +399,9 @@
     <div class="hero-section">
         <div class="search-wrapper-outer">
             <div class="filter-btn-group">
-                <a href="/content/f/all" class="filter-btn {{ 'active' if filter_type == 'all' else '' }}">All Content</a>
-                <a href="/content/f/movies" class="filter-btn {{ 'active' if filter_type == 'movies' else '' }}">Movies</a>
-                <a href="/content/f/series" class="filter-btn {{ 'active' if filter_type == 'series' else '' }}">Web Series</a>
+                <a href="/content/f/all{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="filter-btn {{ 'active' if filter_type == 'all' else '' }}">All Content</a>
+                <a href="/content/f/movies{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="filter-btn {{ 'active' if filter_type == 'movies' else '' }}">Movies</a>
+                <a href="/content/f/series{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="filter-btn {{ 'active' if filter_type == 'series' else '' }}">Web Series</a>
             </div>
 
             <div class="search-bar-container" id="searchBarContainer">
@@ -389,11 +425,11 @@
             <div id="dynamic-search-dropdown"></div>
 
             <div class="tags-container">
-                <a href="/content/f/{{ filter_type }}/search_content/Bollywood" class="tag-pill">Bollywood</a>
-                <a href="/content/f/{{ filter_type }}/search_content/Hollywood" class="tag-pill">Hollywood</a>
-                <a href="/content/f/{{ filter_type }}/search_content/Anime" class="tag-pill">Anime</a>
-                <a href="/content/f/{{ filter_type }}/search_content/Netflix" class="tag-pill">Netflix</a>
-                <a href="/content/f/{{ filter_type }}/search_content/2025" class="tag-pill">2025</a>
+                <a href="/content/f/{{ filter_type }}/search_content/Bollywood{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="tag-pill">Bollywood</a>
+                <a href="/content/f/{{ filter_type }}/search_content/Hollywood{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="tag-pill">Hollywood</a>
+                <a href="/content/f/{{ filter_type }}/search_content/Anime{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="tag-pill">Anime</a>
+                <a href="/content/f/{{ filter_type }}/search_content/Netflix{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="tag-pill">Netflix</a>
+                <a href="/content/f/{{ filter_type }}/search_content/2025{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="tag-pill">2025</a>
             </div>
         </div>
     </div>
@@ -402,7 +438,15 @@
         <div class="catalog-container">
             <div class="catalog-header">
                 <div class="catalog-title">{{ title }}</div>
-                <div class="catalog-count">{{ "{:,}".format(total_items or 0) }} Items</div>
+                <div class="catalog-tools">
+                    <div class="catalog-count">{{ "{:,}".format(total_items or 0) }} Items</div>
+                    <select id="sortSelect" class="sort-select" aria-label="Sort content">
+                        <option value="title_asc" {{ "selected" if sort_by == "title_asc" else "" }}>A to Z</option>
+                        <option value="title_desc" {{ "selected" if sort_by == "title_desc" else "" }}>Z to A</option>
+                        <option value="release_new" {{ "selected" if sort_by == "release_new" else "" }}>Release Date (Newest First)</option>
+                        <option value="release_old" {{ "selected" if sort_by == "release_old" else "" }}>Release Date (Oldest First)</option>
+                    </select>
+                </div>
             </div>
 
             {% if cards and cards|length > 0 %}
@@ -463,15 +507,15 @@
             {% if total_pages and total_pages > 1 %}
             <div class="pagination-bar">
                 {% if current_page > 1 %}
-                <a href="{{ page_base_url }}?page={{ current_page - 1 }}" class="page-link-custom"><i class="fas fa-chevron-left"></i></a>
+                <a href="{{ page_base_url }}?{{ page_qs_prefix }}page={{ current_page - 1 }}" class="page-link-custom"><i class="fas fa-chevron-left"></i></a>
                 {% endif %}
 
                 {% for i in range(page_start, page_end + 1) %}
-                <a href="{{ page_base_url }}?page={{ i }}" class="page-link-custom {{ 'active' if i == current_page else '' }}">{{ i }}</a>
+                <a href="{{ page_base_url }}?{{ page_qs_prefix }}page={{ i }}" class="page-link-custom {{ 'active' if i == current_page else '' }}">{{ i }}</a>
                 {% endfor %}
 
                 {% if current_page < total_pages %}
-                <a href="{{ page_base_url }}?page={{ current_page + 1 }}" class="page-link-custom"><i class="fas fa-chevron-right"></i></a>
+                <a href="{{ page_base_url }}?{{ page_qs_prefix }}page={{ current_page + 1 }}" class="page-link-custom"><i class="fas fa-chevron-right"></i></a>
                 {% endif %}
             </div>
             {% endif %}
@@ -486,8 +530,23 @@ document.addEventListener("DOMContentLoaded", function () {
     const loadingDots = document.getElementById("loadingDots");
     const mainBtn = document.getElementById("mainSearchBtn");
     const dropdown = document.getElementById("dynamic-search-dropdown");
+    const sortSelect = document.getElementById("sortSelect");
     const filterType = "{{ filter_type or 'all' }}";
     let debounceTimer;
+
+    if (sortSelect) {
+        sortSelect.addEventListener("change", function () {
+            const url = new URL(window.location.href);
+            const value = (this.value || "release_new").trim();
+            if (value === "release_new") {
+                url.searchParams.delete("sort");
+            } else {
+                url.searchParams.set("sort", value);
+            }
+            url.searchParams.delete("page");
+            window.location.href = url.toString();
+        });
+    }
 
     function repositionDropdown() {
         if (!dropdown || dropdown.style.display === "none") return;
@@ -501,7 +560,9 @@ document.addEventListener("DOMContentLoaded", function () {
     function executeSearch() {
         const q = (input?.value || "").trim();
         if (!q) return;
-        window.location.href = `/content/f/${encodeURIComponent(filterType)}/search_content/${encodeURIComponent(q)}`;
+        const sortValue = (sortSelect?.value || "release_new").trim();
+        const suffix = sortValue !== "release_new" ? `?sort=${encodeURIComponent(sortValue)}` : "";
+        window.location.href = `/content/f/${encodeURIComponent(filterType)}/search_content/${encodeURIComponent(q)}${suffix}`;
     }
 
     if (mainBtn) mainBtn.addEventListener("click", executeSearch);

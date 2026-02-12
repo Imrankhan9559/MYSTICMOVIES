@@ -1,280 +1,829 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MysticMovies</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" />
     {% set _site = site if site else None %}
-    {% set accent = _site.accent_color if _site else '#facc15' %}
-    {% set bg = _site.bg_color if _site else '#070b12' %}
+    {% set accent = _site.accent_color if _site and _site.accent_color else '#d4af37' %}
+    {% set bg = _site.bg_color if _site and _site.bg_color else '#000000' %}
+    {% set topbar_text = _site.topbar_text if _site and _site.topbar_text else 'Welcome to Mystic Movies' %}
+    {% set logo_path = _site.logo_path if _site and _site.logo_path else '' %}
+    {% set hide_header_search = hide_global_search if hide_global_search is defined else false %}
+    {% set header_menu = (_site.header_menu if _site and _site.header_menu else [
+        {'label': 'Home', 'url': '/', 'icon': 'fas fa-house'},
+        {'label': 'Content', 'url': '/content', 'icon': 'fas fa-film'},
+        {'label': 'Request Content', 'url': '/request-content', 'icon': 'fas fa-inbox'}
+    ]) %}
+    {% set footer_explore_links = (_site.footer_explore_links if _site and _site.footer_explore_links else [
+        {'label': 'Movies Library', 'url': '/content/f/movies'},
+        {'label': 'Web Series', 'url': '/content/f/series'},
+        {'label': 'Latest Uploads', 'url': '/content/f/all'}
+    ]) %}
+    {% set footer_support_links = (_site.footer_support_links if _site and _site.footer_support_links else [
+        {'label': 'Request Content', 'url': '/request-content'},
+        {'label': 'Report an Issue', 'url': '/request-content'}
+    ]) %}
+    {% set footer_about_text = _site.footer_about_text if _site and _site.footer_about_text else 'Mystic Movies provides high-quality content for free. If a movie is missing, let us know!' %}
+    {% set social_fb = _site.social_fb if _site and _site.social_fb else '#' %}
+    {% set social_ig = _site.social_ig if _site and _site.social_ig else '#' %}
+    {% set social_tg = _site.social_tg if _site and _site.social_tg else '#' %}
+    {% set donate_link = _site.donate_link if _site and _site.donate_link else '/donate' %}
+    {% set contact_name = _site.contact_name if _site and _site.contact_name else 'Mystic Movies Admin' %}
+    {% set contact_email = _site.contact_email if _site and _site.contact_email else 'support@mysticmovies.site' %}
+    <title>{{ (_site.site_name or 'MysticMovies') if _site else 'MysticMovies' }}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.2/css/all.min.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;700;800&family=Orbitron:wght@500;700&display=swap" rel="stylesheet">
     <style>
         :root {
             color-scheme: dark;
-            --site-max-width: min(1280px, 100vw);
+            --site-max-width: min(1300px, calc(100vw - 28px));
+            --mm-black: {{ bg }};
+            --mm-text: #ffffff;
+            --mm-gold: {{ accent }};
+            --mm-gold-glow: color-mix(in srgb, {{ accent }} 28%, transparent);
+            --mm-nav-bg: rgba(0, 0, 0, 0.88);
+            --mm-nav-sticky: rgba(0, 0, 0, 0.98);
         }
         @media (min-width: 1536px) {
-            :root {
-                --site-max-width: min(1440px, 100vw);
-            }
+            :root { --site-max-width: min(1440px, calc(100vw - 40px)); }
         }
-        * {
-            box-sizing: border-box;
+        * { box-sizing: border-box; }
+        html, body {
+            margin: 0;
+            padding: 0;
+            min-height: 100%;
+            background: var(--mm-black);
+            color: var(--mm-text);
+            font-family: "Montserrat", "Segoe UI", sans-serif;
         }
-        body {
-            font-family: "Poppins", "Segoe UI", sans-serif;
-            min-height: 100dvh;
-            background:
-                radial-gradient(circle at 12% 8%, rgba(250, 204, 21, 0.08), transparent 32%),
-                radial-gradient(circle at 86% 24%, rgba(245, 158, 11, 0.07), transparent 34%),
-                {{ bg }};
-        }
-        img,
-        video {
+        img, video {
             max-width: 100%;
             height: auto;
             display: block;
         }
-        [class*="aspect-"] > img,
-        [class*="aspect-"] img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            object-position: center;
-        }
+        a { text-decoration: none; }
         .site-shell {
             width: var(--site-max-width);
             margin-inline: auto;
         }
-        .brand-glow {
-            text-shadow: 0 0 18px rgba(250, 204, 21, 0.22);
+
+        .mystic-header-wrap {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            z-index: 1000;
         }
-        .fade-in-up {
-            animation: fadeInUp 0.5s ease both;
+        .top-bar-animated {
+            background: #050505;
+            height: 34px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-bottom: 1px solid #202020;
         }
-        @keyframes fadeInUp {
-            from {
-                opacity: 0;
-                transform: translateY(10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
+        .anim-text-box {
+            color: var(--mm-gold);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            text-align: center;
+            padding-inline: 10px;
         }
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
+        .main-nav {
+            height: 78px;
+            background: var(--mm-nav-bg);
+            border-bottom: 1px solid rgba(212, 175, 55, 0.16);
+            backdrop-filter: blur(12px);
+            transition: all .25s ease;
         }
-        ::-webkit-scrollbar-track {
-            background: #0f172a;
+        .main-nav.sticky {
+            height: 66px;
+            background: var(--mm-nav-sticky);
+            border-bottom-color: var(--mm-gold);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
         }
-        ::-webkit-scrollbar-thumb {
-            background: #475569;
+        .main-nav-inner {
+            width: var(--site-max-width);
+            margin-inline: auto;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+        .nav-logo {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            color: #fff;
+            font-weight: 800;
+            letter-spacing: .4px;
+            min-width: 0;
+        }
+        .nav-logo img {
+            height: 40px;
+            width: auto;
+            transition: .25s ease;
+        }
+        .main-nav.sticky .nav-logo img {
+            height: 34px;
+        }
+        .logo-text {
+            font-size: clamp(19px, 2.4vw, 32px);
+            line-height: 1;
+            white-space: nowrap;
+            text-transform: lowercase;
+        }
+        .nav-menu {
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 22px;
+            margin: 0;
+            padding: 0;
+            flex: 1;
+            justify-content: center;
+            min-width: 0;
+        }
+        .nav-link {
+            color: #d0d0d0;
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            transition: color .2s ease, text-shadow .2s ease;
+        }
+        .nav-link i {
+            color: var(--mm-gold);
+            font-size: 13px;
+        }
+        .nav-link:hover {
+            color: #fff;
+            text-shadow: 0 0 12px var(--mm-gold-glow);
+        }
+        .nav-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        .search-trigger {
+            border: 0;
+            background: transparent;
+            color: #f1f1f1;
+            width: 36px;
+            height: 36px;
             border-radius: 999px;
+            cursor: pointer;
+            transition: transform .2s ease, color .2s ease, background .2s ease;
         }
-        ::-webkit-scrollbar-thumb:hover {
-            background: {{ accent }};
+        .search-trigger:hover {
+            color: var(--mm-gold);
+            background: rgba(255, 255, 255, 0.06);
+            transform: scale(1.05);
+        }
+        .btn-profile {
+            border: 1px solid var(--mm-gold);
+            color: var(--mm-gold);
+            font-size: 12px;
+            font-weight: 700;
+            border-radius: 6px;
+            padding: 8px 18px;
+            text-transform: uppercase;
+            transition: all .2s ease;
+            white-space: nowrap;
+        }
+        .btn-profile:hover {
+            color: #000;
+            background: var(--mm-gold);
+            box-shadow: 0 0 18px var(--mm-gold-glow);
+        }
+        .hamburger {
+            width: 38px;
+            height: 38px;
+            border-radius: 8px;
+            border: 1px solid #2a2a2a;
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--mm-gold);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .menu-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.76);
+            backdrop-filter: blur(3px);
+            z-index: 1010;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity .25s ease;
+        }
+        .menu-backdrop.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        .mobile-menu {
+            position: fixed;
+            top: 0;
+            right: 0;
+            width: min(320px, 86vw);
+            height: 100vh;
+            background: #101010;
+            border-left: 1px solid #212121;
+            z-index: 1011;
+            transform: translateX(100%);
+            transition: transform .3s ease;
+            display: flex;
+            flex-direction: column;
+        }
+        .mobile-menu.active {
+            transform: translateX(0);
+        }
+        .mobile-header {
+            height: 74px;
+            border-bottom: 1px solid #222;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 18px;
+            color: #fff;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 1px;
+        }
+        .mobile-close {
+            border: 0;
+            background: transparent;
+            color: #fff;
+            font-size: 20px;
+            cursor: pointer;
+        }
+        .mobile-links {
+            padding: 20px 16px 24px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .mm-link {
+            color: #c6c6c6;
+            border: 1px solid #1f1f1f;
+            background: #0d0d0d;
+            padding: 12px 12px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            transition: .2s ease;
+        }
+        .mm-link i { color: var(--mm-gold); width: 16px; text-align: center; }
+        .mm-link:hover {
+            border-color: var(--mm-gold);
+            color: #fff;
+        }
+
+        .search-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.95);
+            z-index: 1020;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .search-overlay.active {
+            display: flex;
+        }
+        .search-modal {
+            width: min(860px, 96vw);
+            background: #0e0e0e;
+            border: 1px solid #2b2b2b;
+            border-radius: 14px;
+            box-shadow: 0 20px 80px rgba(0, 0, 0, 0.6);
+            overflow: hidden;
+        }
+        .search-modal-head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 1px solid #232323;
+            padding: 14px;
+        }
+        .search-icon {
+            color: #8a8a8a;
+            font-size: 16px;
+        }
+        .search-input-huge {
+            flex: 1;
+            width: 100%;
+            border: none;
+            outline: none;
+            background: transparent;
+            color: #fff;
+            font-family: "Orbitron", "Montserrat", sans-serif;
+            font-size: clamp(20px, 4.5vw, 34px);
+            line-height: 1.2;
+        }
+        .search-input-huge:focus {
+            outline: none;
+            box-shadow: none;
+            border: none;
+        }
+        .close-search {
+            border: 0;
+            background: transparent;
+            color: #fff;
+            font-size: 28px;
+            cursor: pointer;
+            line-height: 1;
+            padding: 0 2px;
+        }
+        .header-search-results {
+            max-height: min(56vh, 420px);
+            overflow-y: auto;
+            display: none;
+        }
+        .header-search-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            border-bottom: 1px solid #232323;
+            color: #fff;
+            transition: background .18s ease;
+        }
+        .header-search-item:hover {
+            background: #151515;
+        }
+        .header-search-item img {
+            width: 42px;
+            height: 62px;
+            object-fit: cover;
+            border-radius: 4px;
+            flex-shrink: 0;
+            background: #232323;
+        }
+        .header-search-fallback {
+            width: 42px;
+            height: 62px;
+            border-radius: 4px;
+            border: 1px solid #383838;
+            background: #1b1b1b;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--mm-gold);
+        }
+
+        .site-main {
+            width: var(--site-max-width);
+            margin-inline: auto;
+            padding-top: 130px;
+            padding-bottom: 32px;
+            min-height: calc(100vh - 360px);
+        }
+
+        footer {
+            background: #050505;
+            border-top: 1px solid #1a1a1a;
+            margin-top: auto;
+            padding-top: 64px;
+            padding-bottom: 28px;
+            color: #8d8d8d;
+        }
+        .footer-grid {
+            width: var(--site-max-width);
+            margin-inline: auto;
+            display: grid;
+            grid-template-columns: repeat(1, minmax(0, 1fr));
+            gap: 28px;
+        }
+        @media (min-width: 768px) {
+            .footer-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (min-width: 1200px) {
+            .footer-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        }
+        .footer-title {
+            color: #fff;
+            font-size: 15px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 16px;
+            position: relative;
+            display: inline-block;
+        }
+        .footer-title::after {
+            content: "";
+            display: block;
+            width: 30px;
+            height: 2px;
+            margin-top: 8px;
+            background: var(--mm-gold);
+        }
+        .footer-links {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .footer-links a {
+            color: #8f8f8f;
+            font-size: 14px;
+            transition: all .2s ease;
+        }
+        .footer-links a:hover {
+            color: var(--mm-gold);
+            text-shadow: 0 0 10px var(--mm-gold-glow);
+            transform: translateX(3px);
+        }
+        .social-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 16px;
+        }
+        .social-btn {
+            width: 38px;
+            height: 38px;
+            border-radius: 999px;
+            border: 1px solid #292929;
+            background: rgba(255, 255, 255, 0.04);
+            color: #fff;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: .2s ease;
+        }
+        .social-btn:hover { transform: translateY(-2px); }
+        .social-btn.fb:hover { background: #1877f2; border-color: #1877f2; }
+        .social-btn.ig:hover { background: #d62976; border-color: #d62976; }
+        .social-btn.tg:hover { background: #2aabee; border-color: #2aabee; }
+        .social-btn.donate:hover { background: var(--mm-gold); border-color: var(--mm-gold); color: #111; }
+        .admin-card {
+            border: 1px solid #232323;
+            border-left: 3px solid var(--mm-gold);
+            border-radius: 10px;
+            background: linear-gradient(145deg, #0f0f0f, #0a0a0a);
+            padding: 16px;
+        }
+        .admin-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #c7c7c7;
+            font-size: 13px;
+            margin-bottom: 8px;
+            word-break: break-word;
+        }
+        .admin-row i {
+            color: var(--mm-gold);
+            width: 16px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        .footer-bottom {
+            width: var(--site-max-width);
+            margin: 46px auto 0;
+            border-top: 1px solid #1d1d1d;
+            padding-top: 18px;
+            text-align: center;
+            color: #8a8a8a;
+            font-size: 12px;
+        }
+        .btn-back-to-top {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            width: 44px;
+            height: 44px;
+            border-radius: 999px;
+            border: 0;
+            background: var(--mm-gold);
+            color: #111;
+            box-shadow: 0 0 16px var(--mm-gold-glow);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 999;
+        }
+
+        @media (max-width: 992px) {
+            .nav-menu { display: none; }
+            .hamburger { display: inline-flex; }
+            .site-main { padding-top: 136px; }
+        }
+        @media (max-width: 768px) {
+            .btn-profile { padding: 8px 12px; font-size: 11px; }
+            .site-main { padding-top: 132px; }
+            footer { padding-top: 52px; }
+            .footer-grid { text-align: center; }
+            .social-group { justify-content: center; }
+            .footer-title::after { margin-inline: auto; }
         }
     </style>
 </head>
-<body class="text-gray-100">
-    <header class="sticky top-0 z-50 border-b border-yellow-600/20 bg-black/85 backdrop-blur-xl">
-        <div class="site-shell px-4 sm:px-6 py-3">
-            <div class="flex items-center gap-3 lg:gap-5">
-                <button id="mobileMenuBtn" class="lg:hidden inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-700 text-gray-200 hover:border-yellow-500">
-                    <i class="fas fa-bars"></i>
-                </button>
+<body>
+    <div id="menuBackdrop" class="menu-backdrop" aria-hidden="true"></div>
 
-                <a href="/" class="shrink-0 font-extrabold tracking-wide flex items-center gap-2">
-                    <span class="text-white text-xl sm:text-2xl">{{ (_site.site_name or 'MysticMovies') if _site else 'MysticMovies' }}</span>
+    <header class="mystic-header-wrap">
+        <div class="top-bar-animated">
+            <div id="animText" class="anim-text-box">{{ topbar_text }}</div>
+        </div>
+        <div id="stickyNav" class="main-nav">
+            <div class="main-nav-inner">
+                <a href="/" class="nav-logo">
+                    {% if logo_path %}
+                    <img src="{{ logo_path }}" alt="Logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline';">
+                    {% endif %}
+                    <span class="logo-text" {% if logo_path %}style="display: {{ 'none' if logo_path else 'inline' }};"{% endif %}>{{ (_site.site_name or 'mysticmovies') if _site else 'mysticmovies' }}</span>
                 </a>
 
-                <nav class="hidden lg:flex items-center gap-5 text-sm">
-                    <a href="/" class="text-gray-300 hover:text-yellow-300 transition">Home</a>
-                    <a href="/content" class="text-gray-300 hover:text-yellow-300 transition">Content</a>
-                    <a href="/request-content" class="text-gray-300 hover:text-yellow-300 transition">Request Content</a>
-                    {% if is_admin %}
-                    <a href="/dashboard" class="text-gray-300 hover:text-yellow-300 transition">Dashboard</a>
-                    <a href="/storage" class="text-gray-300 hover:text-yellow-300 transition">Storage</a>
+                <ul class="nav-menu">
+                    {% for m in header_menu %}
+                    <li>
+                        <a href="{{ m.url or '#' }}" class="nav-link">
+                            {% if m.icon %}<i class="{{ m.icon }}"></i>{% endif %}
+                            {{ m.label }}
+                        </a>
+                    </li>
+                    {% endfor %}
+                </ul>
+
+                <div class="nav-actions">
+                    {% if not hide_header_search %}
+                    <button id="openSearchBtn" class="search-trigger" type="button" aria-label="Search">
+                        <i class="fas fa-magnifying-glass"></i>
+                    </button>
                     {% endif %}
-                </nav>
 
-                <div class="flex-1 hidden md:block">
-                    <div class="relative max-w-xl">
-                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-500">
-                            <i class="fas fa-search"></i>
-                        </div>
-                        <input
-                            id="globalSearchInput"
-                            type="text"
-                            placeholder="Search published content..."
-                            class="w-full rounded-full border border-gray-700 bg-gray-900/90 pl-10 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400"
-                            autocomplete="off">
-                        <div id="globalSearchDropdown" class="hidden absolute mt-2 w-full rounded-2xl border border-gray-700 bg-black/95 shadow-2xl overflow-hidden"></div>
-                    </div>
-                </div>
-
-                <div class="ml-auto flex items-center gap-2 sm:gap-3">
                     {% if user %}
-                    <a href="/profile" class="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-gray-900 border border-gray-700 hover:border-yellow-500 transition">
-                        <i class="fas fa-user text-yellow-400"></i>
-                        <span class="text-xs sm:text-sm">{{ user.first_name or "Profile" }}</span>
-                    </a>
+                    <a href="/profile" class="btn-profile"><i class="fas fa-user"></i> Profile</a>
                     {% else %}
-                    <a href="/login" class="px-4 py-2 rounded-full bg-yellow-400 text-black font-bold text-xs sm:text-sm hover:bg-yellow-300 transition">Login</a>
+                    <a href="/login" class="btn-profile">Login</a>
                     {% endif %}
+
+                    <button id="openMobileBtn" class="hamburger" type="button" aria-label="Menu">
+                        <i class="fas fa-bars"></i>
+                    </button>
                 </div>
             </div>
-
-            <div class="mt-3 md:hidden">
-                <div class="relative">
-                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-500">
-                        <i class="fas fa-search"></i>
-                    </div>
-                    <input
-                        id="globalSearchInputMobile"
-                        type="text"
-                        placeholder="Search published content..."
-                        class="w-full rounded-full border border-gray-700 bg-gray-900/90 pl-10 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400"
-                        autocomplete="off">
-                    <div id="globalSearchDropdownMobile" class="hidden absolute mt-2 w-full rounded-2xl border border-gray-700 bg-black/95 shadow-2xl overflow-hidden"></div>
-                </div>
-            </div>
-        </div>
-
-        <div id="mobileMenuPanel" class="hidden lg:hidden border-t border-gray-800 bg-black/95">
-            <nav class="site-shell px-4 sm:px-6 py-3 flex flex-col gap-2 text-sm">
-                <a href="/" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Home</a>
-                <a href="/content" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Content</a>
-                <a href="/request-content" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Request Content</a>
-                {% if user %}
-                <a href="/profile" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Profile</a>
-                {% endif %}
-                {% if is_admin %}
-                <a href="/dashboard" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Dashboard</a>
-                <a href="/storage" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Storage</a>
-                {% endif %}
-            </nav>
         </div>
     </header>
 
-    <main class="site-shell px-4 sm:px-6 py-6 sm:py-8 fade-in-up">
+    <aside id="mobileMenuOverlay" class="mobile-menu" aria-hidden="true">
+        <div class="mobile-header">
+            <span>{{ (user.first_name if user else 'Welcome Guest') or 'Welcome Guest' }}</span>
+            <button id="closeMobileBtn" class="mobile-close" type="button" aria-label="Close menu"><i class="fas fa-xmark"></i></button>
+        </div>
+        <div class="mobile-links">
+            {% for m in header_menu %}
+            <a href="{{ m.url or '#' }}" class="mm-link">
+                {% if m.icon %}<i class="{{ m.icon }}"></i>{% endif %}
+                {{ m.label }}
+            </a>
+            {% endfor %}
+            {% if user %}
+            <a href="/profile" class="mm-link"><i class="fas fa-user-gear"></i> My Profile</a>
+            <a href="/logout" class="mm-link"><i class="fas fa-power-off"></i> Logout</a>
+            {% else %}
+            <a href="/login" class="mm-link"><i class="fas fa-right-to-bracket"></i> Login / Sign Up</a>
+            {% endif %}
+        </div>
+    </aside>
+
+    {% if not hide_header_search %}
+    <div id="searchOverlay" class="search-overlay" aria-hidden="true">
+        <div class="search-modal" role="dialog" aria-modal="true" aria-label="Search content">
+            <div class="search-modal-head">
+                <i class="fas fa-magnifying-glass search-icon"></i>
+                <input type="text" id="headerSearchInput" class="search-input-huge" placeholder="Type to search..." autocomplete="off">
+                <button id="closeSearchBtn" class="close-search" type="button" aria-label="Close search">&times;</button>
+            </div>
+            <div id="headerSearchResults" class="header-search-results"></div>
+        </div>
+    </div>
+    {% endif %}
+
+    <main class="site-main fade-in-up">
         {% block content %}{% endblock %}
     </main>
 
-    <footer class="mt-12 border-t border-gray-900 bg-black/60">
-        <div class="site-shell px-4 sm:px-6 py-6 text-xs text-gray-500 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div>(c) 2026 {{ _site.footer_text if _site else 'MysticMovies' }}. Stream. Download. Telegram.</div>
-            <div class="flex items-center gap-3">
-                <a href="/content" class="hover:text-yellow-300 transition">Content</a>
-                <a href="/request-content" class="hover:text-yellow-300 transition">Request Content</a>
-                {% if is_admin %}
-                <a href="/dashboard" class="hover:text-yellow-300 transition">Dashboard</a>
-                {% endif %}
+    <footer>
+        <div class="footer-grid">
+            <div>
+                <div class="footer-title">Explore</div>
+                <ul class="footer-links">
+                    {% for row in footer_explore_links %}
+                    <li><a href="{{ row.url or '#' }}">{{ row.label }}</a></li>
+                    {% endfor %}
+                </ul>
             </div>
+
+            <div>
+                <div class="footer-title">Support</div>
+                <ul class="footer-links">
+                    {% for row in footer_support_links %}
+                    <li><a href="{{ row.url or '#' }}">{{ row.label }}</a></li>
+                    {% endfor %}
+                </ul>
+            </div>
+
+            <div>
+                <div class="footer-title">Get In Touch</div>
+                <div style="font-size:13px; line-height:1.7;">{{ footer_about_text }}</div>
+                <div class="social-group">
+                    <a href="{{ social_fb }}" class="social-btn fb" target="_blank" rel="noreferrer"><i class="fab fa-facebook-f"></i></a>
+                    <a href="{{ social_ig }}" class="social-btn ig" target="_blank" rel="noreferrer"><i class="fab fa-instagram"></i></a>
+                    <a href="{{ social_tg }}" class="social-btn tg" target="_blank" rel="noreferrer"><i class="fab fa-telegram"></i></a>
+                    <a href="{{ donate_link }}" class="social-btn donate"><i class="fas fa-heart"></i></a>
+                </div>
+            </div>
+
+            <div>
+                <div class="footer-title">Admin Contact</div>
+                <div class="admin-card">
+                    <div class="admin-row"><i class="fas fa-user-shield"></i><span>{{ contact_name }}</span></div>
+                    <div class="admin-row"><i class="fas fa-envelope"></i><span>{{ contact_email }}</span></div>
+                    <div style="font-size:11px; color:#666; margin-top:8px; font-style:italic;">Replies usually within 24 hours.</div>
+                </div>
+            </div>
+        </div>
+        <div class="footer-bottom">
+            Copyright &copy; <span id="footerYear"></span> <span style="color: var(--mm-gold);">{{ (_site.footer_text or 'MysticMovies') if _site else 'MysticMovies' }}</span>. All rights reserved.
         </div>
     </footer>
 
+    <button id="backToTopBtn" class="btn-back-to-top" type="button" aria-label="Back to top"><i class="fas fa-chevron-up"></i></button>
+
     <script>
-        const mobileMenuBtn = document.getElementById("mobileMenuBtn");
-        const mobileMenuPanel = document.getElementById("mobileMenuPanel");
-        if (mobileMenuBtn && mobileMenuPanel) {
-            mobileMenuBtn.addEventListener("click", () => {
-                mobileMenuPanel.classList.toggle("hidden");
+        const stickyNav = document.getElementById("stickyNav");
+        const menuBackdrop = document.getElementById("menuBackdrop");
+        const mobileMenu = document.getElementById("mobileMenuOverlay");
+        const openMobileBtn = document.getElementById("openMobileBtn");
+        const closeMobileBtn = document.getElementById("closeMobileBtn");
+        const backToTopBtn = document.getElementById("backToTopBtn");
+        const footerYear = document.getElementById("footerYear");
+
+        if (footerYear) footerYear.textContent = String(new Date().getFullYear());
+
+        function openMobileMenu() {
+            if (!mobileMenu || !menuBackdrop) return;
+            mobileMenu.classList.add("active");
+            menuBackdrop.classList.add("active");
+        }
+        function closeMobileMenu() {
+            if (!mobileMenu || !menuBackdrop) return;
+            mobileMenu.classList.remove("active");
+            menuBackdrop.classList.remove("active");
+        }
+        if (openMobileBtn) openMobileBtn.addEventListener("click", openMobileMenu);
+        if (closeMobileBtn) closeMobileBtn.addEventListener("click", closeMobileMenu);
+        if (menuBackdrop) menuBackdrop.addEventListener("click", closeMobileMenu);
+
+        window.addEventListener("scroll", () => {
+            if (stickyNav) {
+                if (window.scrollY > 50) stickyNav.classList.add("sticky");
+                else stickyNav.classList.remove("sticky");
+            }
+            if (backToTopBtn) {
+                if (window.scrollY > 200) backToTopBtn.style.display = "inline-flex";
+                else backToTopBtn.style.display = "none";
+            }
+        });
+        if (backToTopBtn) {
+            backToTopBtn.addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+        }
+
+        const animText = document.getElementById("animText");
+        if (animText) {
+            const fonts = ["Orbitron", "Montserrat", "Impact", "Arial Black"];
+            let index = 0;
+            setInterval(() => {
+                animText.style.fontFamily = fonts[index];
+                index = (index + 1) % fonts.length;
+            }, 360);
+        }
+
+        const searchOverlay = document.getElementById("searchOverlay");
+        const openSearchBtn = document.getElementById("openSearchBtn");
+        const closeSearchBtn = document.getElementById("closeSearchBtn");
+        const headerSearchInput = document.getElementById("headerSearchInput");
+        const headerSearchResults = document.getElementById("headerSearchResults");
+        let latestSearchItems = [];
+        let searchTimer = null;
+
+        function esc(value) {
+            return String(value || "")
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/\"/g, "&quot;")
+                .replace(/'/g, "&#39;");
+        }
+
+        function openSearchOverlay() {
+            if (!searchOverlay) return;
+            searchOverlay.classList.add("active");
+            if (headerSearchInput) {
+                setTimeout(() => headerSearchInput.focus(), 60);
+            }
+        }
+        function closeSearchOverlay() {
+            if (!searchOverlay) return;
+            searchOverlay.classList.remove("active");
+            if (headerSearchResults) {
+                headerSearchResults.innerHTML = "";
+                headerSearchResults.style.display = "none";
+            }
+        }
+
+        if (openSearchBtn) openSearchBtn.addEventListener("click", openSearchOverlay);
+        if (closeSearchBtn) closeSearchBtn.addEventListener("click", closeSearchOverlay);
+        if (searchOverlay) {
+            searchOverlay.addEventListener("click", (event) => {
+                if (event.target === searchOverlay) closeSearchOverlay();
             });
         }
 
-        function bindGlobalSearch(inputEl, dropdownEl) {
-            if (!inputEl || !dropdownEl) return;
-            let timer = null;
-            let latestItems = [];
-
-            function esc(value) {
-                return String(value || "")
-                    .replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;")
-                    .replace(/\"/g, "&quot;")
-                    .replace(/'/g, "&#39;");
-            }
-
-            function hideDropdown() {
-                dropdownEl.classList.add("hidden");
-                dropdownEl.innerHTML = "";
-            }
-
-            function renderItems(items) {
-                latestItems = items || [];
-                if (!items || items.length === 0) {
-                    hideDropdown();
-                    return;
-                }
-                dropdownEl.innerHTML = items.map(item => {
-                    const poster = item.poster
-                        ? `<img src="${esc(item.poster)}" alt="${esc(item.title)}" class="h-14 w-10 rounded object-cover border border-gray-700">`
-                        : `<div class="h-14 w-10 rounded border border-gray-700 bg-gray-900 flex items-center justify-center text-yellow-400"><i class="fas fa-film text-xs"></i></div>`;
-                    return `
-                        <a href="/content/details/${esc(item.slug)}" class="flex items-center gap-3 px-3 py-2 border-b border-gray-900 hover:bg-gray-900/80">
-                            ${poster}
-                            <div class="min-w-0">
-                                <div class="text-sm text-white truncate">${esc(item.title)}</div>
-                                <div class="text-xs text-gray-400">${esc(item.year || "-")} | ${esc((item.type || "").toUpperCase())}</div>
-                            </div>
-                        </a>
-                    `;
-                }).join("");
-                dropdownEl.classList.remove("hidden");
-            }
-
-            inputEl.addEventListener("input", () => {
-                const q = (inputEl.value || "").trim();
-                if (timer) clearTimeout(timer);
+        if (headerSearchInput && headerSearchResults) {
+            headerSearchInput.addEventListener("input", () => {
+                const q = (headerSearchInput.value || "").trim();
+                if (searchTimer) clearTimeout(searchTimer);
                 if (q.length < 2) {
-                    hideDropdown();
+                    latestSearchItems = [];
+                    headerSearchResults.innerHTML = "";
+                    headerSearchResults.style.display = "none";
                     return;
                 }
-                timer = setTimeout(async () => {
+                searchTimer = setTimeout(async () => {
                     try {
                         const res = await fetch(`/content/search/suggestions?q=${encodeURIComponent(q)}`, { credentials: "same-origin" });
                         if (!res.ok) {
-                            hideDropdown();
+                            headerSearchResults.innerHTML = "";
+                            headerSearchResults.style.display = "none";
                             return;
                         }
                         const data = await res.json();
-                        renderItems(data.items || []);
-                    } catch (e) {
-                        hideDropdown();
+                        const items = data.items || [];
+                        latestSearchItems = items;
+                        if (!items.length) {
+                            headerSearchResults.innerHTML = "";
+                            headerSearchResults.style.display = "none";
+                            return;
+                        }
+                        headerSearchResults.innerHTML = items.map((item) => {
+                            const title = esc(item.title || "");
+                            const year = esc(item.year || "-");
+                            const type = esc((item.type || "").toUpperCase());
+                            const href = `/content/details/${encodeURIComponent(item.slug || "")}`;
+                            const poster = item.poster
+                                ? `<img src="${esc(item.poster)}" alt="${title}" loading="lazy">`
+                                : `<div class="header-search-fallback"><i class="fas fa-film"></i></div>`;
+                            return `
+                                <a href="${href}" class="header-search-item">
+                                    ${poster}
+                                    <div style="min-width:0;">
+                                        <div style="font-size:14px; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${title}</div>
+                                        <div style="font-size:11px; color:#8a8a8a;">${year} | ${type}</div>
+                                    </div>
+                                </a>
+                            `;
+                        }).join("");
+                        headerSearchResults.style.display = "block";
+                    } catch (error) {
+                        headerSearchResults.innerHTML = "";
+                        headerSearchResults.style.display = "none";
                     }
-                }, 180);
+                }, 220);
             });
 
-            inputEl.addEventListener("blur", () => {
-                setTimeout(hideDropdown, 180);
-            });
-
-            inputEl.addEventListener("keydown", (e) => {
-                if (e.key !== "Enter") return;
-                const q = (inputEl.value || "").trim();
+            headerSearchInput.addEventListener("keydown", (event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                const q = (headerSearchInput.value || "").trim();
                 if (!q) return;
-                e.preventDefault();
-                if (latestItems.length > 0 && latestItems[0].slug) {
-                    window.location.href = `/content/details/${latestItems[0].slug}`;
+                if (latestSearchItems.length > 0 && latestSearchItems[0].slug) {
+                    window.location.href = `/content/details/${latestSearchItems[0].slug}`;
                     return;
                 }
                 window.location.href = `/content?q=${encodeURIComponent(q)}`;
             });
         }
-
-        bindGlobalSearch(
-            document.getElementById("globalSearchInput"),
-            document.getElementById("globalSearchDropdown")
-        );
-        bindGlobalSearch(
-            document.getElementById("globalSearchInputMobile"),
-            document.getElementById("globalSearchDropdownMobile")
-        );
     </script>
 </body>
 </html>

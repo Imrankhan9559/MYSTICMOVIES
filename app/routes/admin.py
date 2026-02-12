@@ -8,7 +8,16 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from beanie.operators import In, Or
 from app.core.content_store import build_content_groups, sync_content_catalog
-from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting, SiteSettings, ContentRequest, UserActivityEvent
+from app.db.models import (
+    User,
+    FileSystemItem,
+    PlaybackProgress,
+    TokenSetting,
+    SiteSettings,
+    ContentRequest,
+    UserActivityEvent,
+    HomeSlider,
+)
 from app.routes.dashboard import get_current_user, _cast_ids, _clone_parts, _build_search_regex
 from app.routes.content import refresh_tmdb_metadata, _parse_name, _tmdb_get, _ensure_group_assets
 from app.core.config import settings
@@ -27,11 +36,136 @@ def _is_admin(user: User | None) -> bool:
         return True
     return _normalize_phone(user.phone_number) == _normalize_phone(getattr(settings, "ADMIN_PHONE", ""))
 
+
+DEFAULT_HEADER_MENU = [
+    {"label": "Home", "url": "/", "icon": "fas fa-house"},
+    {"label": "Content", "url": "/content", "icon": "fas fa-film"},
+    {"label": "Request Content", "url": "/request-content", "icon": "fas fa-inbox"},
+]
+DEFAULT_FOOTER_EXPLORE_LINKS = [
+    {"label": "Movies Library", "url": "/content/f/movies"},
+    {"label": "Web Series", "url": "/content/f/series"},
+    {"label": "Latest Uploads", "url": "/content/f/all"},
+]
+DEFAULT_FOOTER_SUPPORT_LINKS = [
+    {"label": "Request Content", "url": "/request-content"},
+    {"label": "Report an Issue", "url": "/request-content"},
+]
+
+
+def _clean_link_rows(value, include_icon: bool = False) -> list[dict]:
+    rows = value if isinstance(value, list) else []
+    cleaned: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = (row.get("label") or "").strip()
+        url = (row.get("url") or "").strip() or "#"
+        icon = (row.get("icon") or "").strip()
+        if not label:
+            continue
+        payload = {"label": label, "url": url}
+        if include_icon:
+            payload["icon"] = icon
+        cleaned.append(payload)
+    return cleaned
+
+
+def _links_to_text(rows: list[dict], include_icon: bool = False) -> str:
+    lines = []
+    for row in rows or []:
+        label = (row.get("label") or "").strip()
+        url = (row.get("url") or "").strip()
+        icon = (row.get("icon") or "").strip()
+        if not label:
+            continue
+        if include_icon:
+            lines.append(f"{label}|{url}|{icon}")
+        else:
+            lines.append(f"{label}|{url}")
+    return "\n".join(lines)
+
+
+def _parse_links_text(raw: str, include_icon: bool = False) -> list[dict]:
+    out: list[dict] = []
+    for line in (raw or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        parts = [part.strip() for part in text.split("|")]
+        label = parts[0] if len(parts) > 0 else ""
+        url = parts[1] if len(parts) > 1 and parts[1] else "#"
+        icon = parts[2] if len(parts) > 2 else ""
+        if not label:
+            continue
+        row = {"label": label, "url": url}
+        if include_icon:
+            row["icon"] = icon
+        out.append(row)
+    return out
+
+
+def _apply_site_defaults(row: SiteSettings) -> bool:
+    changed = False
+    if not getattr(row, "topbar_text", "").strip():
+        row.topbar_text = "Welcome to Mystic Movies"
+        changed = True
+    if getattr(row, "logo_path", None) is None:
+        row.logo_path = ""
+        changed = True
+    if not getattr(row, "footer_about_text", "").strip():
+        row.footer_about_text = "Mystic Movies provides high-quality content for free. If a movie is missing, let us know."
+        changed = True
+    if not getattr(row, "social_fb", "").strip():
+        row.social_fb = "#"
+        changed = True
+    if not getattr(row, "social_ig", "").strip():
+        row.social_ig = "#"
+        changed = True
+    if not getattr(row, "social_tg", "").strip():
+        row.social_tg = "#"
+        changed = True
+    if not getattr(row, "donate_link", "").strip():
+        row.donate_link = "/donate"
+        changed = True
+    if not getattr(row, "contact_name", "").strip():
+        row.contact_name = "Mystic Movies Admin"
+        changed = True
+    if not getattr(row, "contact_email", "").strip():
+        row.contact_email = "support@mysticmovies.site"
+        changed = True
+
+    header_menu = _clean_link_rows(getattr(row, "header_menu", None), include_icon=True)
+    if not header_menu:
+        row.header_menu = [x.copy() for x in DEFAULT_HEADER_MENU]
+        changed = True
+    else:
+        row.header_menu = header_menu
+
+    explore_links = _clean_link_rows(getattr(row, "footer_explore_links", None), include_icon=False)
+    if not explore_links:
+        row.footer_explore_links = [x.copy() for x in DEFAULT_FOOTER_EXPLORE_LINKS]
+        changed = True
+    else:
+        row.footer_explore_links = explore_links
+
+    support_links = _clean_link_rows(getattr(row, "footer_support_links", None), include_icon=False)
+    if not support_links:
+        row.footer_support_links = [x.copy() for x in DEFAULT_FOOTER_SUPPORT_LINKS]
+        changed = True
+    else:
+        row.footer_support_links = support_links
+    return changed
+
 async def _site_settings() -> SiteSettings:
     row = await SiteSettings.find_one(SiteSettings.key == "main")
     if not row:
         row = SiteSettings(key="main")
         await row.insert()
+    changed = _apply_site_defaults(row)
+    if changed:
+        row.updated_at = datetime.now()
+        await row.save()
     return row
 
 
@@ -433,6 +567,245 @@ async def main_settings(request: Request):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
     return await _render_main_settings(request, user, speed_result=None)
+
+
+@router.get("/header-footer-settings")
+@router.get("/dashboard/header-footer-settings")
+async def header_footer_settings(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/admin-login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    base_ctx = await _admin_context_base(user)
+    site = base_ctx.get("site")
+    return templates.TemplateResponse("header_footer_settings.html", {
+        "request": request,
+        **base_ctx,
+        "saved": (request.query_params.get("saved") or "").strip() == "1",
+        "header_menu_text": _links_to_text(getattr(site, "header_menu", []), include_icon=True),
+        "footer_explore_text": _links_to_text(getattr(site, "footer_explore_links", []), include_icon=False),
+        "footer_support_text": _links_to_text(getattr(site, "footer_support_links", []), include_icon=False),
+    })
+
+
+@router.post("/admin/header-footer/save")
+async def save_header_footer_settings(
+    request: Request,
+    topbar_text: str = Form("Welcome to Mystic Movies"),
+    logo_path: str = Form(""),
+    header_menu_text: str = Form(""),
+    footer_about_text: str = Form(""),
+    footer_explore_text: str = Form(""),
+    footer_support_text: str = Form(""),
+    social_fb: str = Form("#"),
+    social_ig: str = Form("#"),
+    social_tg: str = Form("#"),
+    donate_link: str = Form("/donate"),
+    contact_name: str = Form("Mystic Movies Admin"),
+    contact_email: str = Form("support@mysticmovies.site"),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    site = await _site_settings()
+
+    header_menu = _parse_links_text(header_menu_text, include_icon=True)
+    explore_links = _parse_links_text(footer_explore_text, include_icon=False)
+    support_links = _parse_links_text(footer_support_text, include_icon=False)
+
+    site.topbar_text = (topbar_text or "Welcome to Mystic Movies").strip()
+    site.logo_path = (logo_path or "").strip()
+    site.header_menu = header_menu if header_menu else [x.copy() for x in DEFAULT_HEADER_MENU]
+    site.footer_about_text = (footer_about_text or "").strip()
+    site.footer_explore_links = explore_links if explore_links else [x.copy() for x in DEFAULT_FOOTER_EXPLORE_LINKS]
+    site.footer_support_links = support_links if support_links else [x.copy() for x in DEFAULT_FOOTER_SUPPORT_LINKS]
+    site.social_fb = (social_fb or "#").strip()
+    site.social_ig = (social_ig or "#").strip()
+    site.social_tg = (social_tg or "#").strip()
+    site.donate_link = (donate_link or "/donate").strip()
+    site.contact_name = (contact_name or "Mystic Movies Admin").strip()
+    site.contact_email = (contact_email or "support@mysticmovies.site").strip()
+    site.updated_at = datetime.now()
+    await site.save()
+    return RedirectResponse("/header-footer-settings?saved=1", status_code=303)
+
+
+def _is_truthy(value: str) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "on", "yes"}
+
+
+async def _slider_content_options(limit: int = 800) -> list[dict]:
+    groups = await _group_published_catalog()
+    options = []
+    for group in groups:
+        title = (group.get("title") or "").strip()
+        if not title:
+            continue
+        slug = (group.get("slug") or "").strip() or _slugify(title)
+        if not slug:
+            continue
+        options.append({
+            "slug": slug,
+            "title": title,
+            "year": (group.get("year") or "").strip(),
+            "type": (group.get("type") or "").strip().lower(),
+            "poster": group.get("poster") or "",
+            "backdrop": group.get("backdrop") or "",
+            "link_url": f"/content/details/{slug}",
+        })
+        if len(options) >= limit:
+            break
+    return options
+
+
+@router.get("/manage-slider")
+@router.get("/dashboard/manage-slider")
+async def manage_slider(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/admin-login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    base_ctx = await _admin_context_base(user)
+    sliders = await HomeSlider.find_all().sort([("sort_order", 1), ("created_at", -1)]).to_list()
+    options = await _slider_content_options()
+    return templates.TemplateResponse("manage_slider.html", {
+        "request": request,
+        **base_ctx,
+        "sliders": sliders,
+        "content_options": options,
+        "saved": (request.query_params.get("saved") or "").strip() == "1",
+    })
+
+
+@router.post("/manage-slider/create")
+async def create_slider_item(
+    request: Request,
+    content_slug: str = Form(""),
+    title: str = Form(""),
+    subtitle: str = Form(""),
+    button_text: str = Form("Watch Now"),
+    link_url: str = Form(""),
+    image_url: str = Form(""),
+    sort_order: int = Form(0),
+    is_active: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    slug = (content_slug or "").strip().lower()
+    title = (title or "").strip()
+    link = (link_url or "").strip()
+    if slug and not link:
+        link = f"/content/details/{slug}"
+    row = HomeSlider(
+        content_slug=slug or None,
+        title=title,
+        subtitle=(subtitle or "").strip(),
+        button_text=(button_text or "Watch Now").strip(),
+        link_url=link or "/content",
+        image_url=(image_url or "").strip(),
+        sort_order=int(sort_order or 0),
+        is_active=_is_truthy(is_active),
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    await row.insert()
+    return RedirectResponse("/manage-slider?saved=1", status_code=303)
+
+
+@router.post("/manage-slider/update/{slider_id}")
+async def update_slider_item(
+    request: Request,
+    slider_id: str,
+    content_slug: str = Form(""),
+    title: str = Form(""),
+    subtitle: str = Form(""),
+    button_text: str = Form("Watch Now"),
+    link_url: str = Form(""),
+    image_url: str = Form(""),
+    sort_order: int = Form(0),
+    is_active: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    row = await HomeSlider.get(slider_id)
+    if not row:
+        raise HTTPException(404)
+    slug = (content_slug or "").strip().lower()
+    link = (link_url or "").strip()
+    if slug and not link:
+        link = f"/content/details/{slug}"
+    row.content_slug = slug or None
+    row.title = (title or "").strip()
+    row.subtitle = (subtitle or "").strip()
+    row.button_text = (button_text or "Watch Now").strip()
+    row.link_url = link or "/content"
+    row.image_url = (image_url or "").strip()
+    row.sort_order = int(sort_order or 0)
+    row.is_active = _is_truthy(is_active)
+    row.updated_at = datetime.now()
+    await row.save()
+    return RedirectResponse("/manage-slider?saved=1", status_code=303)
+
+
+@router.post("/manage-slider/delete/{slider_id}")
+async def delete_slider_item(request: Request, slider_id: str):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    row = await HomeSlider.get(slider_id)
+    if row:
+        await row.delete()
+    return RedirectResponse("/manage-slider?saved=1", status_code=303)
+
+
+@router.post("/manage-slider/reorder")
+async def reorder_slider_items(request: Request):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    ids = payload.get("ids") if isinstance(payload, dict) else []
+    if not isinstance(ids, list):
+        raise HTTPException(status_code=400, detail="ids must be a list")
+
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for raw in ids:
+        slider_id = str(raw or "").strip()
+        if not slider_id or slider_id in seen:
+            continue
+        seen.add(slider_id)
+        ordered_ids.append(slider_id)
+
+    if not ordered_ids:
+        return {"status": "ok", "updated": 0}
+
+    rows = await HomeSlider.find(In(HomeSlider.id, _cast_ids(ordered_ids))).to_list()
+    rows_by_id = {str(row.id): row for row in rows}
+    now = datetime.now()
+    updated = 0
+    order_value = 10
+
+    for slider_id in ordered_ids:
+        row = rows_by_id.get(slider_id)
+        if not row:
+            continue
+        row.sort_order = order_value
+        row.updated_at = now
+        await row.save()
+        updated += 1
+        order_value += 10
+
+    return {"status": "ok", "updated": updated}
 
 
 @router.get("/users")
