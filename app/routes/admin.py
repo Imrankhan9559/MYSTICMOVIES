@@ -351,6 +351,48 @@ async def _find_group_identity(
         return g
     return None
 
+
+def _build_request_content_options(published_groups: list[dict]) -> list[dict]:
+    options = []
+    for g in published_groups:
+        content_path = (g.get("content_path") or "").strip()
+        if not content_path.startswith("/content/details/"):
+            continue
+        title = (g.get("title") or "").strip()
+        year = (g.get("year") or "").strip()
+        ctype = (g.get("type") or "").strip().lower()
+        options.append({
+            "id": g.get("id"),
+            "title": title,
+            "type": ctype,
+            "year": year,
+            "path": content_path,
+            "label": f"{title} ({year or '-'}) [{(ctype or 'movie').upper()}]",
+        })
+    options.sort(key=lambda x: ((x.get("title") or "").lower(), x.get("year") or ""))
+    return options
+
+
+def _hydrate_request_links(rows: list[ContentRequest], published_groups: list[dict]) -> None:
+    by_id = {str(g.get("id")): g for g in published_groups if g.get("id")}
+    for row in rows:
+        path = (getattr(row, "fulfilled_content_path", "") or "").strip()
+        ref_id = (getattr(row, "fulfilled_content_id", "") or "").strip()
+        if path:
+            if not path.startswith("/") and not re.match(r"^https?://", path, re.I):
+                path = "/" + path.lstrip("/")
+            setattr(row, "fulfilled_content_path", path)
+            continue
+        if ref_id and ref_id in by_id:
+            g = by_id[ref_id]
+            resolved_path = (g.get("content_path") or "").strip()
+            if resolved_path:
+                setattr(row, "fulfilled_content_path", resolved_path)
+            if not getattr(row, "fulfilled_content_title", ""):
+                setattr(row, "fulfilled_content_title", g.get("title") or "")
+            if not getattr(row, "fulfilled_content_type", ""):
+                setattr(row, "fulfilled_content_type", g.get("type") or "")
+
 @router.get("/admin")
 async def admin_redirect(request: Request):
     return RedirectResponse("/dashboard")
@@ -372,30 +414,17 @@ async def main_control(request: Request):
 
     total_users = await User.count()
     total_files = await FileSystemItem.find(FileSystemItem.is_folder == False).count()
-    all_users = await User.find_all().sort("-created_at").to_list()
-    pending_users = await User.find(User.status == "pending").sort("-requested_at").to_list()
-    pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").limit(50).to_list()
-    request_content_options = []
-    for g in published_groups:
-        content_path = (g.get("content_path") or "").strip()
-        if not content_path.startswith("/content/details/"):
-            continue
-        title = (g.get("title") or "").strip()
-        year = (g.get("year") or "").strip()
-        ctype = (g.get("type") or "").strip().lower()
-        label = f"{title} ({year or '-'}) [{(ctype or 'movie').upper()}]"
-        request_content_options.append({
-            "id": g.get("id"),
-            "title": title,
-            "type": ctype,
-            "year": year,
-            "path": content_path,
-            "label": label,
-        })
-    request_content_options.sort(key=lambda x: ((x.get("title") or "").lower(), x.get("year") or ""))
+    pending_admin_requests_all = await User.find(User.status == "pending").sort("-requested_at").to_list()
+    pending_requests_all = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").to_list()
+    fulfilled_requests_all = await ContentRequest.find(ContentRequest.status == "fulfilled").sort("-updated_at").to_list()
+    _hydrate_request_links(fulfilled_requests_all, published_groups)
+    request_content_options = _build_request_content_options(published_groups)
 
     total_titles = int(base_ctx.get("published_movies") or 0) + int(base_ctx.get("published_series") or 0)
-    published_preview = published_groups[:10]
+    published_preview = published_groups[:15]
+    pending_content_requests = pending_requests_all[:5]
+    fulfilled_content_requests = fulfilled_requests_all[:5]
+    pending_admin_requests = pending_admin_requests_all[:5]
 
     return templates.TemplateResponse("admin.html", {
         "request": request,
@@ -403,9 +432,12 @@ async def main_control(request: Request):
         "total_users": total_users,
         "total_files": total_files,
         "total_titles": total_titles,
-        "users": all_users,
-        "pending_users": pending_users,
-        "pending_content_requests": pending_requests,
+        "pending_users": pending_admin_requests,
+        "pending_content_requests": pending_content_requests,
+        "fulfilled_content_requests": fulfilled_content_requests,
+        "pending_content_requests_total": len(pending_requests_all),
+        "fulfilled_content_requests_total": len(fulfilled_requests_all),
+        "pending_admin_requests_total": len(pending_admin_requests_all),
         "request_content_options": request_content_options,
         "published_preview": published_preview,
     })
@@ -440,6 +472,72 @@ async def main_settings(request: Request):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
     return await _render_main_settings(request, user, speed_result=None)
+
+
+@router.get("/users")
+@router.get("/dashboard/users")
+async def users_page(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/admin-login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    base_ctx = await _admin_context_base(user)
+    all_users = await User.find_all().sort("-created_at").to_list()
+    pending_admin_requests = await User.find(User.status == "pending").sort("-requested_at").to_list()
+    return templates.TemplateResponse("admin_users.html", {
+        "request": request,
+        **base_ctx,
+        "users": all_users,
+        "pending_admin_requests": pending_admin_requests,
+    })
+
+
+@router.get("/content-requests")
+@router.get("/dashboard/content-requests")
+@router.get("/Content-Requests")
+@router.get("/ContentRequests")
+async def content_requests_page(request: Request, status: str = ""):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/admin-login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    base_ctx = await _admin_context_base(user)
+    status_filter = (status or "").strip().lower()
+    all_rows = await ContentRequest.find_all().sort("-updated_at").limit(1200).to_list()
+    if status_filter in {"pending", "fulfilled", "rejected"}:
+        all_requests = [r for r in all_rows if (getattr(r, "status", "") or "") == status_filter]
+    else:
+        all_requests = all_rows
+    published_groups = await _group_published_catalog()
+    _hydrate_request_links(all_rows, published_groups)
+    _hydrate_request_links(all_requests, published_groups)
+    pending_content_requests = [r for r in all_rows if (getattr(r, "status", "") or "") == "pending"]
+    fulfilled_content_requests = [r for r in all_rows if (getattr(r, "status", "") or "") == "fulfilled"]
+    rejected_content_requests = [r for r in all_rows if (getattr(r, "status", "") or "") == "rejected"]
+
+    base_url = str(request.base_url).rstrip("/")
+    for row in all_requests:
+        path = (getattr(row, "fulfilled_content_path", "") or "").strip()
+        if path and not path.startswith("/"):
+            path = "/" + path.lstrip("/")
+        setattr(row, "content_path", path)
+        setattr(row, "content_full_url", f"{base_url}{path}" if path else "")
+
+    request_content_options = _build_request_content_options(published_groups)
+    return templates.TemplateResponse("admin_content_requests.html", {
+        "request": request,
+        **base_ctx,
+        "status_filter": status_filter,
+        "all_requests": all_requests,
+        "pending_content_requests": pending_content_requests,
+        "fulfilled_content_requests": fulfilled_content_requests,
+        "rejected_content_requests": rejected_content_requests,
+        "request_content_options": request_content_options,
+    })
 
 
 @router.get("/user-playback-analytics")
@@ -574,6 +672,16 @@ async def user_playback_analytics(request: Request, q: str = "", user_key: str =
         "events_view": events_view,
         "progress_view": progress_view,
     })
+
+
+@router.get("/publish-content")
+async def publish_content_alias(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/admin-login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    return RedirectResponse("/dashboard/publish-content", status_code=302)
 
 @router.get("/dashboard/add-content")
 async def add_content(request: Request):
@@ -1779,6 +1887,7 @@ async def update_content_request(
     selected_content_title: str = Form(""),
     selected_content_type: str = Form(""),
     selected_content_path: str = Form(""),
+    return_to: str = Form(""),
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
@@ -1803,7 +1912,11 @@ async def update_content_request(
                 selected_content_type = selected_content_type or (picked.get("type") or "")
                 selected_content_path = selected_content_path or (picked.get("content_path") or "")
         if not selected_content_path.startswith("/content/details/"):
-            return RedirectResponse("/dashboard?request=missing_content", status_code=303)
+            target = (return_to or "/dashboard").strip()
+            if not target.startswith("/"):
+                target = "/dashboard"
+            sep = "&" if "?" in target else "?"
+            return RedirectResponse(f"{target}{sep}request=missing_content", status_code=303)
         row.fulfilled_content_id = selected_content_id or None
         row.fulfilled_content_title = selected_content_title or None
         row.fulfilled_content_type = selected_content_type or None
@@ -1817,10 +1930,13 @@ async def update_content_request(
     row.status = action
     row.updated_at = datetime.now()
     await row.save()
-    return RedirectResponse("/dashboard", status_code=303)
+    target = (return_to or "/dashboard").strip()
+    if not target.startswith("/"):
+        target = "/dashboard"
+    return RedirectResponse(target, status_code=303)
 
 @router.post("/admin/delete_user")
-async def delete_user(request: Request, user_phone: str = Form(...)):
+async def delete_user(request: Request, user_phone: str = Form(...), return_to: str = Form("")):
     """Deletes a user from the DB"""
     user = await get_current_user(request)
     # Re-verify admin
@@ -1833,7 +1949,10 @@ async def delete_user(request: Request, user_phone: str = Form(...)):
         # Optional: Delete their files too
         await FileSystemItem.find(FileSystemItem.owner_phone == user_phone).delete()
     
-    return RedirectResponse("/dashboard", status_code=303)
+    target = (return_to or "/dashboard").strip()
+    if not target.startswith("/"):
+        target = "/dashboard"
+    return RedirectResponse(target, status_code=303)
 
 
 @router.post("/admin/user/set-role")
@@ -1857,7 +1976,7 @@ async def set_user_role(
     return RedirectResponse(return_to or "/dashboard", status_code=303)
 
 @router.post("/admin/approve_user")
-async def approve_user(request: Request, user_phone: str = Form(...)):
+async def approve_user(request: Request, user_phone: str = Form(...), return_to: str = Form("")):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
@@ -1871,10 +1990,13 @@ async def approve_user(request: Request, user_phone: str = Form(...)):
         elif not getattr(target, "role", ""):
             target.role = "user"
         await target.save()
-    return RedirectResponse("/dashboard", status_code=303)
+    target = (return_to or "/dashboard").strip()
+    if not target.startswith("/"):
+        target = "/dashboard"
+    return RedirectResponse(target, status_code=303)
 
 @router.post("/admin/block_user")
-async def block_user(request: Request, user_phone: str = Form(...)):
+async def block_user(request: Request, user_phone: str = Form(...), return_to: str = Form("")):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
@@ -1882,4 +2004,7 @@ async def block_user(request: Request, user_phone: str = Form(...)):
     if target:
         target.status = "blocked"
         await target.save()
-    return RedirectResponse("/dashboard", status_code=303)
+    target = (return_to or "/dashboard").strip()
+    if not target.startswith("/"):
+        target = "/dashboard"
+    return RedirectResponse(target, status_code=303)

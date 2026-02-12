@@ -11,11 +11,8 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/admin-lte@3.2/dist/css/adminlte.min.css">
     <style>
         :root { color-scheme: dark; }
-        body.dark-mode {
-            background-color: #0b0f17;
-        }
-        .dark-mode .content-wrapper,
-        .dark-mode .main-footer {
+        body.dark-mode { background-color: #0b0f17; }
+        .dark-mode .content-wrapper, .dark-mode .main-footer {
             background-color: #0b0f17;
             color: #e5e7eb;
         }
@@ -23,12 +20,8 @@
             background-color: #0f172a;
             border-bottom: 1px solid #1f2937;
         }
-        .dark-mode .main-sidebar {
-            background-color: #0b1120;
-        }
-        .dark-mode .brand-link {
-            border-bottom: 1px solid #1f2937;
-        }
+        .dark-mode .main-sidebar { background-color: #0b1120; }
+        .dark-mode .brand-link { border-bottom: 1px solid #1f2937; }
         .dark-mode .card {
             background-color: #0f172a;
             border-color: #1f2937;
@@ -43,16 +36,9 @@
             background-color: #0b1220;
             border-bottom-color: #1f2937;
         }
-        .dark-mode .table {
-            color: #e5e7eb;
-        }
-        .dark-mode .table thead th {
-            border-bottom-color: #1f2937;
-        }
-        .dark-mode .table td,
-        .dark-mode .table th {
-            border-top-color: #1f2937;
-        }
+        .dark-mode .table { color: #e5e7eb; }
+        .dark-mode .table thead th { border-bottom-color: #1f2937; }
+        .dark-mode .table td, .dark-mode .table th { border-top-color: #1f2937; }
         .dark-mode .form-control,
         .dark-mode .custom-select,
         .dark-mode .input-group-text {
@@ -60,8 +46,7 @@
             border-color: #1f2937;
             color: #e5e7eb;
         }
-        .dark-mode .form-control:focus,
-        .dark-mode .custom-select:focus {
+        .dark-mode .form-control:focus, .dark-mode .custom-select:focus {
             border-color: #f59e0b;
             box-shadow: 0 0 0 .2rem rgba(245, 158, 11, 0.2);
         }
@@ -69,15 +54,9 @@
             background: #111827;
             border: 1px solid #1f2937;
         }
-        .dark-mode .small-box .icon {
-            color: rgba(255, 255, 255, 0.12);
-        }
-        .dark-mode .small-box .small-box-footer {
-            color: #f8fafc;
-        }
-        .dark-mode .badge-warning {
-            color: #1f2937;
-        }
+        .dark-mode .small-box .icon { color: rgba(255, 255, 255, 0.12); }
+        .dark-mode .small-box .small-box-footer { color: #f8fafc; }
+        .dark-mode .badge-warning { color: #1f2937; }
         .admin-hero-badge {
             background: #111827;
             border: 1px solid #1f2937;
@@ -111,10 +90,10 @@
         </ul>
         <ul class="navbar-nav ml-auto">
             <li class="nav-item d-none d-md-inline-flex align-items-center mr-3">
-                <span class="admin-hero-badge">Movies: {{ published_movies or 0 }} • {{ published_movie_files or 0 }} attached</span>
+                <span class="admin-hero-badge">Movies: {{ published_movies or 0 }} | {{ published_movie_files or 0 }} attached</span>
             </li>
             <li class="nav-item d-none d-md-inline-flex align-items-center mr-3">
-                <span class="admin-hero-badge">Series: {{ published_series or 0 }} • {{ published_series_files or 0 }} attached</span>
+                <span class="admin-hero-badge">Series: {{ published_series or 0 }} | {{ published_series_files or 0 }} attached</span>
             </li>
             <li class="nav-item d-none d-md-inline-flex align-items-center mr-3">
                 <span class="admin-hero-badge">Pending: {{ pending_storage or 0 }}</span>
@@ -164,9 +143,21 @@
                         </a>
                     </li>
                     <li class="nav-item">
-                        <a href="/dashboard/publish-content" class="nav-link {% if request.url.path.startswith('/dashboard/publish-content') %}active{% endif %}">
+                        <a href="/publish-content" class="nav-link {% if request.url.path.startswith('/dashboard/publish-content') or request.url.path.startswith('/publish-content') %}active{% endif %}">
                             <i class="nav-icon fas fa-folder-open"></i>
                             <p>Publish Content</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="/content-requests" class="nav-link {% if request.url.path.startswith('/content-requests') or request.url.path.startswith('/dashboard/content-requests') or request.url.path.startswith('/Content-Requests') or request.url.path.startswith('/ContentRequests') %}active{% endif %}">
+                            <i class="nav-icon fas fa-inbox"></i>
+                            <p>Content Requests</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="/users" class="nav-link {% if request.url.path.startswith('/users') or request.url.path.startswith('/dashboard/users') %}active{% endif %}">
+                            <i class="nav-icon fas fa-users-cog"></i>
+                            <p>Users</p>
                         </a>
                     </li>
                     <li class="nav-item">

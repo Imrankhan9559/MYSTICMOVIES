@@ -1,0 +1,268 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="content-header">
+    <div class="container-fluid">
+        <div class="row mb-2">
+            <div class="col-sm-6">
+                <h1 class="m-0">Content Requests</h1>
+                <div class="admin-section-note">View all pending, fulfilled, and rejected requests. Manage fulfillment links.</div>
+            </div>
+            <div class="col-sm-6">
+                <ol class="breadcrumb float-sm-right">
+                    <li class="breadcrumb-item"><a href="/dashboard">Dashboard</a></li>
+                    <li class="breadcrumb-item active">Content Requests</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</div>
+
+{% set return_to = '/content-requests' + ('?status=' + status_filter if status_filter else '') %}
+
+<section class="content">
+    <div class="container-fluid">
+        <div class="mb-3 d-flex flex-wrap gap-2">
+            <a href="/content-requests" class="btn btn-sm {% if not status_filter %}btn-primary{% else %}btn-outline-light{% endif %}">All ({{ all_requests|length }})</a>
+            <a href="/content-requests?status=pending" class="btn btn-sm {% if status_filter == 'pending' %}btn-primary{% else %}btn-outline-light{% endif %}">Pending ({{ pending_content_requests|length }})</a>
+            <a href="/content-requests?status=fulfilled" class="btn btn-sm {% if status_filter == 'fulfilled' %}btn-primary{% else %}btn-outline-light{% endif %}">Fulfilled ({{ fulfilled_content_requests|length }})</a>
+            <a href="/content-requests?status=rejected" class="btn btn-sm {% if status_filter == 'rejected' %}btn-primary{% else %}btn-outline-light{% endif %}">Rejected ({{ rejected_content_requests|length }})</a>
+        </div>
+
+        <div class="card card-outline card-warning">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-inbox"></i> Requests</h3>
+            </div>
+            <div class="card-body p-0">
+                {% if request.query_params.get('request') == 'missing_content' %}
+                <div class="alert alert-danger rounded-0 mb-0">
+                    Select a published movie or web series before marking request as fulfilled.
+                </div>
+                {% endif %}
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Type</th>
+                                <th>Requested Title</th>
+                                <th>Shared Content</th>
+                                <th>Status</th>
+                                <th>Updated</th>
+                                <th class="text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in all_requests %}
+                            <tr>
+                                <td>{{ r.user_phone }}</td>
+                                <td class="text-uppercase">{{ r.request_type }}</td>
+                                <td>{{ r.title }}</td>
+                                <td>
+                                    {% if r.fulfilled_content_title %}
+                                    {{ r.fulfilled_content_title }}
+                                    {% else %}
+                                    <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if r.status == "fulfilled" %}
+                                    <span class="badge badge-success">FULFILLED</span>
+                                    {% elif r.status == "rejected" %}
+                                    <span class="badge badge-danger">REJECTED</span>
+                                    {% else %}
+                                    <span class="badge badge-warning">PENDING</span>
+                                    {% endif %}
+                                </td>
+                                <td>{{ r.updated_at.strftime('%Y-%m-%d %H:%M') if r.updated_at else "-" }}</td>
+                                <td class="text-right">
+                                    {% if r.content_path %}
+                                    <a href="{{ r.content_path }}" target="_blank" class="btn btn-sm btn-outline-success">View</a>
+                                    {% endif %}
+
+                                    <button
+                                        type="button"
+                                        class="btn btn-sm btn-success js-open-fulfill"
+                                        data-request-id="{{ r.id }}"
+                                        data-request-title="{{ r.title }}"
+                                        data-request-type="{{ r.request_type }}"
+                                        data-return-to="{{ return_to }}"
+                                    >
+                                        Fulfill
+                                    </button>
+
+                                    <form action="/admin/request/{{ r.id }}/pending" method="post" class="d-inline">
+                                        <input type="hidden" name="return_to" value="{{ return_to }}">
+                                        <button class="btn btn-sm btn-outline-light">Pending</button>
+                                    </form>
+                                    <form action="/admin/request/{{ r.id }}/rejected" method="post" class="d-inline">
+                                        <input type="hidden" name="return_to" value="{{ return_to }}">
+                                        <button class="btn btn-sm btn-danger">Reject</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="7" class="text-center text-muted">No requests found.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block page_scripts %}
+<div class="modal fade" id="fulfillRequestModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+        <div class="modal-content bg-dark border border-secondary">
+            <div class="modal-header border-secondary">
+                <h5 class="modal-title">Mark Request as Fulfilled</h5>
+                <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <form id="fulfillRequestForm" method="post">
+                <div class="modal-body">
+                    <div class="mb-2 text-muted text-sm" id="fulfillRequestMeta"></div>
+                    <div class="form-group">
+                        <label for="fulfillContentSearch">Search and Select Published Content</label>
+                        <input
+                            type="text"
+                            id="fulfillContentSearch"
+                            class="form-control bg-dark text-light border-secondary"
+                            placeholder="Search by title, year, type, or path"
+                            autocomplete="off"
+                        >
+                        <div id="fulfillContentList" class="list-group mt-2 border border-secondary rounded" style="max-height: 320px; overflow-y: auto;">
+                            {% if request_content_options %}
+                            {% for opt in request_content_options %}
+                            <button
+                                type="button"
+                                class="list-group-item list-group-item-action bg-dark text-light border-secondary js-fulfill-option"
+                                data-id="{{ opt.id|e }}"
+                                data-title="{{ opt.title|e }}"
+                                data-type="{{ opt.type|e }}"
+                                data-path="{{ opt.path|e }}"
+                                data-search="{{ (opt.label ~ ' ' ~ opt.path ~ ' ' ~ opt.type)|lower|e }}"
+                            >
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <span class="font-weight-semibold">{{ opt.title }}</span>
+                                    <span class="badge badge-secondary text-uppercase">{{ opt.type }}</span>
+                                </div>
+                                <div class="small text-muted">{{ opt.label }}</div>
+                            </button>
+                            {% endfor %}
+                            <div id="fulfillContentNoResults" class="p-2 text-muted d-none">No matching content found.</div>
+                            {% else %}
+                            <div class="p-2 text-muted">No published content available.</div>
+                            {% endif %}
+                        </div>
+                        <div class="small mt-2 text-muted" id="fulfillSelectedSummary">No content selected.</div>
+                    </div>
+                    <input type="hidden" name="selected_content_id" id="selectedContentId">
+                    <input type="hidden" name="selected_content_title" id="selectedContentTitle">
+                    <input type="hidden" name="selected_content_type" id="selectedContentType">
+                    <input type="hidden" name="selected_content_path" id="selectedContentPath">
+                    <input type="hidden" name="return_to" id="selectedReturnTo" value="{{ return_to }}">
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-outline-light" data-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-success">Confirm Fulfilled</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+    const modalEl = document.getElementById("fulfillRequestModal");
+    const formEl = document.getElementById("fulfillRequestForm");
+    const searchEl = document.getElementById("fulfillContentSearch");
+    const metaEl = document.getElementById("fulfillRequestMeta");
+    const idEl = document.getElementById("selectedContentId");
+    const titleEl = document.getElementById("selectedContentTitle");
+    const typeEl = document.getElementById("selectedContentType");
+    const pathEl = document.getElementById("selectedContentPath");
+    const returnToEl = document.getElementById("selectedReturnTo");
+    const summaryEl = document.getElementById("fulfillSelectedSummary");
+    const noResultsEl = document.getElementById("fulfillContentNoResults");
+    const optionEls = Array.from(document.querySelectorAll(".js-fulfill-option"));
+    let selectedOption = null;
+
+    function clearSelection() {
+        selectedOption = null;
+        optionEls.forEach((el) => el.classList.remove("active"));
+        idEl.value = "";
+        titleEl.value = "";
+        typeEl.value = "";
+        pathEl.value = "";
+        summaryEl.textContent = "No content selected.";
+        summaryEl.classList.remove("text-warning");
+        summaryEl.classList.add("text-muted");
+    }
+
+    function selectOption(optionEl) {
+        selectedOption = optionEl;
+        optionEls.forEach((el) => el.classList.toggle("active", el === optionEl));
+        idEl.value = optionEl.dataset.id || "";
+        titleEl.value = optionEl.dataset.title || "";
+        typeEl.value = optionEl.dataset.type || "";
+        pathEl.value = optionEl.dataset.path || "";
+        summaryEl.textContent = `${titleEl.value} (${(typeEl.value || "content").toUpperCase()}) selected`;
+        summaryEl.classList.remove("text-muted", "text-warning");
+        summaryEl.classList.add("text-info");
+    }
+
+    function filterOptions() {
+        const query = (searchEl.value || "").trim().toLowerCase();
+        let visibleCount = 0;
+        optionEls.forEach((el) => {
+            const searchable = (el.dataset.search || "").toLowerCase();
+            const visible = !query || searchable.includes(query);
+            el.classList.toggle("d-none", !visible);
+            if (visible) visibleCount += 1;
+        });
+        if (noResultsEl) {
+            noResultsEl.classList.toggle("d-none", visibleCount > 0);
+        }
+    }
+
+    optionEls.forEach((el) => {
+        el.addEventListener("click", () => selectOption(el));
+    });
+
+    searchEl.addEventListener("input", filterOptions);
+
+    formEl.addEventListener("submit", (event) => {
+        if (!idEl.value) {
+            event.preventDefault();
+            summaryEl.textContent = "Select one published content before confirming.";
+            summaryEl.classList.remove("text-muted", "text-info");
+            summaryEl.classList.add("text-warning");
+            searchEl.focus();
+        }
+    });
+
+    document.querySelectorAll(".js-open-fulfill").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const requestId = btn.dataset.requestId || "";
+            const requestTitle = btn.dataset.requestTitle || "";
+            const requestType = (btn.dataset.requestType || "").toUpperCase();
+            const returnTo = btn.dataset.returnTo || "/content-requests";
+            if (!requestId) return;
+            formEl.action = `/admin/request/${requestId}/fulfilled`;
+            metaEl.textContent = `${requestType} request: ${requestTitle}`;
+            returnToEl.value = returnTo;
+            searchEl.value = "";
+            filterOptions();
+            clearSelection();
+            $(modalEl).modal("show");
+            setTimeout(() => searchEl.focus(), 50);
+        });
+    });
+})();
+</script>
+{% endblock %}

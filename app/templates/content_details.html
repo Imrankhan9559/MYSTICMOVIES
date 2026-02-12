@@ -30,7 +30,7 @@
             {% endif %}
             <div class="mt-5 flex flex-wrap gap-3">
                 {% if user %}
-                <button data-item-id="{{ item.id }}" id="watchlistToggle" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">
+                <button data-item-id="{{ item.slug or item.id }}" id="watchlistToggle" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">
                     <i class="fas fa-bookmark mr-2"></i>{{ "Remove Watchlist" if watchlisted else "Add Watchlist" }}
                 </button>
                 {% else %}

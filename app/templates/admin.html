@@ -6,7 +6,7 @@
         <div class="row mb-2">
             <div class="col-sm-6">
                 <h1 class="m-0">Dashboard</h1>
-                <div class="admin-section-note">Manage published content, users, and approvals.</div>
+                <div class="admin-section-note">Quick preview of requests, published content, and admin approvals.</div>
             </div>
             <div class="col-sm-6">
                 <ol class="breadcrumb float-sm-right">
@@ -29,7 +29,7 @@
                         <div class="admin-section-note">{{ published_movie_files or 0 }} Attached</div>
                     </div>
                     <div class="icon"><i class="fas fa-film"></i></div>
-                    <a href="/dashboard/publish-content" class="small-box-footer">Open <i class="fas fa-arrow-circle-right"></i></a>
+                    <a href="/publish-content" class="small-box-footer">Open <i class="fas fa-arrow-circle-right"></i></a>
                 </div>
             </div>
             <div class="col-lg-3 col-6">
@@ -40,17 +40,17 @@
                         <div class="admin-section-note">{{ published_series_files or 0 }} Attached</div>
                     </div>
                     <div class="icon"><i class="fas fa-tv"></i></div>
-                    <a href="/dashboard/publish-content" class="small-box-footer">Open <i class="fas fa-arrow-circle-right"></i></a>
+                    <a href="/publish-content" class="small-box-footer">Open <i class="fas fa-arrow-circle-right"></i></a>
                 </div>
             </div>
             <div class="col-lg-3 col-6">
                 <div class="small-box bg-dark">
                     <div class="inner">
-                        <h3>{{ pending_storage or 0 }}</h3>
-                        <p>Pending in Storage</p>
+                        <h3>{{ pending_content_requests_total or 0 }}</h3>
+                        <p>Pending Requests</p>
                     </div>
-                    <div class="icon"><i class="fas fa-database"></i></div>
-                    <a href="/dashboard/add-content" class="small-box-footer">Publish <i class="fas fa-arrow-circle-right"></i></a>
+                    <div class="icon"><i class="fas fa-inbox"></i></div>
+                    <a href="/content-requests" class="small-box-footer">View More <i class="fas fa-arrow-circle-right"></i></a>
                 </div>
             </div>
             <div class="col-lg-3 col-6">
@@ -60,56 +60,7 @@
                         <p>Total Users</p>
                     </div>
                     <div class="icon"><i class="fas fa-users"></i></div>
-                    <a href="#user-db" class="small-box-footer">Manage <i class="fas fa-arrow-circle-right"></i></a>
-                </div>
-            </div>
-        </div>
-
-        <div class="card card-outline card-info">
-            <div class="card-header">
-                <h3 class="card-title"><i class="fas fa-folder-open"></i> Published Snapshot</h3>
-                <div class="card-tools">
-                    <a href="/dashboard/publish-content" class="btn btn-sm btn-primary">View All</a>
-                </div>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-sm table-dark mb-0">
-                        <thead>
-                            <tr>
-                                <th>Poster</th>
-                                <th>Title</th>
-                                <th>Type</th>
-                                <th>Release</th>
-                                <th>Files</th>
-                                <th>Size</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for g in published_preview %}
-                            <tr>
-                                <td style="width:72px;">
-                                    {% if g.poster %}
-                                    <img src="{{ g.poster }}" alt="{{ g.title }}" style="width:54px;height:76px;object-fit:cover;" class="rounded border border-secondary">
-                                    {% else %}
-                                    <div class="rounded border border-secondary d-flex align-items-center justify-content-center" style="width:54px;height:76px;">
-                                        <i class="fas fa-image text-muted"></i>
-                                    </div>
-                                    {% endif %}
-                                </td>
-                                <td class="font-weight-bold">{{ g.title }}</td>
-                                <td>
-                                    <span class="badge badge-secondary text-uppercase">{{ g.type }}</span>
-                                </td>
-                                <td>{{ g.release_date_label or '-' }}</td>
-                                <td>{{ g.file_count }} attached</td>
-                                <td>{{ g.total_size_label }}</td>
-                            </tr>
-                            {% else %}
-                            <tr><td colspan="6" class="text-center text-muted">No published content.</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
+                    <a href="/users" class="small-box-footer">Manage Users <i class="fas fa-arrow-circle-right"></i></a>
                 </div>
             </div>
         </div>
@@ -117,11 +68,14 @@
         <div class="card card-outline card-warning">
             <div class="card-header">
                 <h3 class="card-title"><i class="fas fa-inbox"></i> Pending Content Requests</h3>
+                <div class="card-tools">
+                    <a href="/content-requests" class="btn btn-sm btn-primary">View More</a>
+                </div>
             </div>
             <div class="card-body p-0">
                 {% if request.query_params.get('request') == 'missing_content' %}
                 <div class="alert alert-danger rounded-0 mb-0">
-                    Select a published movie/series before marking a request as fulfilled.
+                    Select a published movie or web series before marking request as fulfilled.
                 </div>
                 {% endif %}
                 <div class="table-responsive">
@@ -149,10 +103,12 @@
                                         data-request-id="{{ r.id }}"
                                         data-request-title="{{ r.title }}"
                                         data-request-type="{{ r.request_type }}"
+                                        data-return-to="/dashboard"
                                     >
                                         Fulfilled
                                     </button>
                                     <form action="/admin/request/{{ r.id }}/rejected" method="post" class="d-inline">
+                                        <input type="hidden" name="return_to" value="/dashboard">
                                         <button class="btn btn-sm btn-danger">Reject</button>
                                     </form>
                                 </td>
@@ -166,9 +122,102 @@
             </div>
         </div>
 
+        <div class="card card-outline card-success">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-check-circle"></i> Fulfilled Requests (Latest 5)</h3>
+                <div class="card-tools">
+                    <a href="/content-requests?status=fulfilled" class="btn btn-sm btn-primary">View More</a>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Requested</th>
+                                <th>Shared Content</th>
+                                <th>Status</th>
+                                <th class="text-right">View</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for r in fulfilled_content_requests %}
+                            <tr>
+                                <td>{{ r.user_phone }}</td>
+                                <td>{{ r.title }}</td>
+                                <td>{{ r.fulfilled_content_title or "-" }}</td>
+                                <td><span class="badge badge-success">FULFILLED</span></td>
+                                <td class="text-right">
+                                    {% if r.fulfilled_content_path %}
+                                    <a class="btn btn-sm btn-outline-success" href="{{ r.fulfilled_content_path }}" target="_blank">View</a>
+                                    {% else %}
+                                    <span class="text-muted">-</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="5" class="text-center text-muted">No fulfilled requests yet.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="card card-outline card-info">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-folder-open"></i> Published Content (Latest 15)</h3>
+                <div class="card-tools">
+                    <a href="/publish-content" class="btn btn-sm btn-primary">View More</a>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>Poster</th>
+                                <th>Title</th>
+                                <th>Type</th>
+                                <th>Release</th>
+                                <th>Attached</th>
+                                <th>Size</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for g in published_preview %}
+                            <tr>
+                                <td style="width:72px;">
+                                    {% if g.poster %}
+                                    <img src="{{ g.poster }}" alt="{{ g.title }}" style="width:54px;height:76px;object-fit:cover;" class="rounded border border-secondary">
+                                    {% else %}
+                                    <div class="rounded border border-secondary d-flex align-items-center justify-content-center" style="width:54px;height:76px;">
+                                        <i class="fas fa-image text-muted"></i>
+                                    </div>
+                                    {% endif %}
+                                </td>
+                                <td class="font-weight-bold">{{ g.title }}</td>
+                                <td><span class="badge badge-secondary text-uppercase">{{ g.type }}</span></td>
+                                <td>{{ g.release_date_label or "-" }}</td>
+                                <td>{{ g.file_count }} attached</td>
+                                <td>{{ g.total_size_label }}</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="6" class="text-center text-muted">No published content.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <div class="card card-outline card-warning">
             <div class="card-header">
-                <h3 class="card-title"><i class="fas fa-user-check"></i> Pending Account Requests</h3>
+                <h3 class="card-title"><i class="fas fa-user-check"></i> Pending Admin Requests</h3>
+                <div class="card-tools">
+                    <a href="/users" class="btn btn-sm btn-primary">View More</a>
+                </div>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
@@ -176,7 +225,7 @@
                         <thead>
                             <tr>
                                 <th>Phone</th>
-                                <th>Requested Name</th>
+                                <th>Name</th>
                                 <th>Requested Role</th>
                                 <th>Requested At</th>
                                 <th class="text-right">Action</th>
@@ -192,80 +241,18 @@
                                 <td class="text-right">
                                     <form action="/admin/approve_user" method="post" class="d-inline">
                                         <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
+                                        <input type="hidden" name="return_to" value="/dashboard">
                                         <button type="submit" class="btn btn-sm btn-success">Approve</button>
                                     </form>
                                     <form action="/admin/block_user" method="post" class="d-inline">
                                         <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
-                                        <button type="submit" class="btn btn-sm btn-secondary">Block</button>
-                                    </form>
-                                </td>
-                            </tr>
-                            {% else %}
-                            <tr><td colspan="5" class="text-center text-muted">No pending user approvals.</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <div class="card card-outline card-danger" id="user-db">
-            <div class="card-header">
-                <h3 class="card-title"><i class="fas fa-users-cog"></i> User Database</h3>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-sm table-dark mb-0">
-                        <thead>
-                            <tr>
-                                <th>Phone</th>
-                                <th>Name</th>
-                                <th>Status</th>
-                                <th>Type</th>
-                                <th>Joined</th>
-                                <th class="text-right">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for row in users %}
-                            <tr>
-                                <td>{{ row.phone_number }}</td>
-                                <td>{{ row.requested_name or row.first_name or "-" }}</td>
-                                <td>
-                                    {% if row.status == "approved" %}
-                                    <span class="badge badge-success">APPROVED</span>
-                                    {% elif row.status == "pending" %}
-                                    <span class="badge badge-warning">PENDING</span>
-                                    {% else %}
-                                    <span class="badge badge-secondary">BLOCKED</span>
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    <form action="/admin/user/set-role" method="post" class="form-inline">
-                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
                                         <input type="hidden" name="return_to" value="/dashboard">
-                                        <select name="role" class="custom-select custom-select-sm mr-1">
-                                            {% set role_value = (row.role or 'user')|lower %}
-                                            <option value="user" {% if role_value == 'user' %}selected{% endif %}>USER</option>
-                                            <option value="admin" {% if role_value == 'admin' %}selected{% endif %}>ADMIN</option>
-                                        </select>
-                                        <button type="submit" class="btn btn-sm btn-outline-light">Save</button>
-                                    </form>
-                                </td>
-                                <td>{{ row.created_at.strftime('%Y-%m-%d') if row.created_at else '-' }}</td>
-                                <td class="text-right">
-                                    <form action="/admin/block_user" method="post" class="d-inline">
-                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
                                         <button type="submit" class="btn btn-sm btn-secondary">Block</button>
-                                    </form>
-                                    <form action="/admin/delete_user" method="post" class="d-inline">
-                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
-                                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this user?')">Delete</button>
                                     </form>
                                 </td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="6" class="text-center text-muted">No users found.</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted">No pending admin requests.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -290,25 +277,45 @@
                 <div class="modal-body">
                     <div class="mb-2 text-muted text-sm" id="fulfillRequestMeta"></div>
                     <div class="form-group">
-                        <label>Select Published Content</label>
-                        <select id="fulfillContentSelect" class="custom-select" required>
-                            <option value="">Choose movie or web series</option>
+                        <label for="fulfillContentSearch">Search and Select Published Content</label>
+                        <input
+                            type="text"
+                            id="fulfillContentSearch"
+                            class="form-control bg-dark text-light border-secondary"
+                            placeholder="Search by title, year, type, or path"
+                            autocomplete="off"
+                        >
+                        <div id="fulfillContentList" class="list-group mt-2 border border-secondary rounded" style="max-height: 320px; overflow-y: auto;">
+                            {% if request_content_options %}
                             {% for opt in request_content_options %}
-                            <option
-                                value="{{ opt.id }}"
-                                data-title="{{ opt.title }}"
-                                data-type="{{ opt.type }}"
-                                data-path="{{ opt.path }}"
+                            <button
+                                type="button"
+                                class="list-group-item list-group-item-action bg-dark text-light border-secondary js-fulfill-option"
+                                data-id="{{ opt.id|e }}"
+                                data-title="{{ opt.title|e }}"
+                                data-type="{{ opt.type|e }}"
+                                data-path="{{ opt.path|e }}"
+                                data-search="{{ (opt.label ~ ' ' ~ opt.path ~ ' ' ~ opt.type)|lower|e }}"
                             >
-                                {{ opt.label }}
-                            </option>
+                                <div class="d-flex justify-content-between align-items-start">
+                                    <span class="font-weight-semibold">{{ opt.title }}</span>
+                                    <span class="badge badge-secondary text-uppercase">{{ opt.type }}</span>
+                                </div>
+                                <div class="small text-muted">{{ opt.label }}</div>
+                            </button>
                             {% endfor %}
-                        </select>
+                            <div id="fulfillContentNoResults" class="p-2 text-muted d-none">No matching content found.</div>
+                            {% else %}
+                            <div class="p-2 text-muted">No published content available.</div>
+                            {% endif %}
+                        </div>
+                        <div class="small mt-2 text-muted" id="fulfillSelectedSummary">No content selected.</div>
                     </div>
                     <input type="hidden" name="selected_content_id" id="selectedContentId">
                     <input type="hidden" name="selected_content_title" id="selectedContentTitle">
                     <input type="hidden" name="selected_content_type" id="selectedContentType">
                     <input type="hidden" name="selected_content_path" id="selectedContentPath">
+                    <input type="hidden" name="return_to" id="selectedReturnTo" value="/dashboard">
                 </div>
                 <div class="modal-footer border-secondary">
                     <button type="button" class="btn btn-outline-light" data-dismiss="modal">Cancel</button>
@@ -323,41 +330,87 @@
 (() => {
     const modalEl = document.getElementById("fulfillRequestModal");
     const formEl = document.getElementById("fulfillRequestForm");
-    const selectEl = document.getElementById("fulfillContentSelect");
+    const searchEl = document.getElementById("fulfillContentSearch");
     const metaEl = document.getElementById("fulfillRequestMeta");
     const idEl = document.getElementById("selectedContentId");
     const titleEl = document.getElementById("selectedContentTitle");
     const typeEl = document.getElementById("selectedContentType");
     const pathEl = document.getElementById("selectedContentPath");
+    const returnToEl = document.getElementById("selectedReturnTo");
+    const summaryEl = document.getElementById("fulfillSelectedSummary");
+    const noResultsEl = document.getElementById("fulfillContentNoResults");
+    const optionEls = Array.from(document.querySelectorAll(".js-fulfill-option"));
+    let selectedOption = null;
 
-    function syncSelected() {
-        const selected = selectEl.options[selectEl.selectedIndex];
-        if (!selected || !selected.value) {
-            idEl.value = "";
-            titleEl.value = "";
-            typeEl.value = "";
-            pathEl.value = "";
-            return;
-        }
-        idEl.value = selected.value;
-        titleEl.value = selected.dataset.title || "";
-        typeEl.value = selected.dataset.type || "";
-        pathEl.value = selected.dataset.path || "";
+    function clearSelection() {
+        selectedOption = null;
+        optionEls.forEach((el) => el.classList.remove("active"));
+        idEl.value = "";
+        titleEl.value = "";
+        typeEl.value = "";
+        pathEl.value = "";
+        summaryEl.textContent = "No content selected.";
+        summaryEl.classList.remove("text-warning");
+        summaryEl.classList.add("text-muted");
     }
 
-    selectEl.addEventListener("change", syncSelected);
+    function selectOption(optionEl) {
+        selectedOption = optionEl;
+        optionEls.forEach((el) => el.classList.toggle("active", el === optionEl));
+        idEl.value = optionEl.dataset.id || "";
+        titleEl.value = optionEl.dataset.title || "";
+        typeEl.value = optionEl.dataset.type || "";
+        pathEl.value = optionEl.dataset.path || "";
+        summaryEl.textContent = `${titleEl.value} (${(typeEl.value || "content").toUpperCase()}) selected`;
+        summaryEl.classList.remove("text-muted", "text-warning");
+        summaryEl.classList.add("text-info");
+    }
+
+    function filterOptions() {
+        const query = (searchEl.value || "").trim().toLowerCase();
+        let visibleCount = 0;
+        optionEls.forEach((el) => {
+            const searchable = (el.dataset.search || "").toLowerCase();
+            const visible = !query || searchable.includes(query);
+            el.classList.toggle("d-none", !visible);
+            if (visible) visibleCount += 1;
+        });
+        if (noResultsEl) {
+            noResultsEl.classList.toggle("d-none", visibleCount > 0);
+        }
+    }
+
+    optionEls.forEach((el) => {
+        el.addEventListener("click", () => selectOption(el));
+    });
+
+    searchEl.addEventListener("input", filterOptions);
+
+    formEl.addEventListener("submit", (event) => {
+        if (!idEl.value) {
+            event.preventDefault();
+            summaryEl.textContent = "Select one published content before confirming.";
+            summaryEl.classList.remove("text-muted", "text-info");
+            summaryEl.classList.add("text-warning");
+            searchEl.focus();
+        }
+    });
 
     document.querySelectorAll(".js-open-fulfill").forEach((btn) => {
         btn.addEventListener("click", () => {
             const requestId = btn.dataset.requestId || "";
             const requestTitle = btn.dataset.requestTitle || "";
             const requestType = (btn.dataset.requestType || "").toUpperCase();
+            const returnTo = btn.dataset.returnTo || "/dashboard";
             if (!requestId) return;
             formEl.action = `/admin/request/${requestId}/fulfilled`;
             metaEl.textContent = `${requestType} request: ${requestTitle}`;
-            selectEl.value = "";
-            syncSelected();
+            returnToEl.value = returnTo;
+            searchEl.value = "";
+            filterOptions();
+            clearSelection();
             $(modalEl).modal("show");
+            setTimeout(() => searchEl.focus(), 50);
         });
     });
 })();

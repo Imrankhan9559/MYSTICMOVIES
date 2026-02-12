@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import APIRouter, Request, Form, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
+from beanie.operators import In
 
 from app.core.config import settings
 from app.db.models import FileSystemItem, User, TokenSetting, WatchlistEntry, ContentRequest, SiteSettings
@@ -394,23 +395,47 @@ def _group_slug(title: str, year: str) -> str:
 
 
 def _youtube_key(url: str) -> str:
-    if not url:
+    raw = (url or "").strip()
+    if not raw:
         return ""
+
+    # Already a plain YouTube video key
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", raw):
+        return raw
+
+    # Embedded iframe or HTML snippets: extract src first
+    src_match = re.search(r"""src=["']([^"']+)["']""", raw, re.I)
+    if src_match:
+        raw = src_match.group(1).strip()
+
+    if raw.startswith("//"):
+        raw = "https:" + raw
+    if raw.startswith("www."):
+        raw = "https://" + raw
+
     try:
-        parsed = urllib.parse.urlparse(url)
+        parsed = urllib.parse.urlparse(raw)
         host = (parsed.netloc or "").lower()
         if "youtu.be" in host:
-            return parsed.path.lstrip("/").split("?")[0].strip()
+            key = parsed.path.lstrip("/").split("?")[0].strip()
+            return key if re.fullmatch(r"[A-Za-z0-9_-]{11}", key) else ""
         if "youtube" in host:
             if parsed.path.startswith("/embed/"):
-                return parsed.path.split("/embed/")[-1].split("?")[0].strip()
+                key = parsed.path.split("/embed/")[-1].split("?")[0].strip()
+                return key if re.fullmatch(r"[A-Za-z0-9_-]{11}", key) else ""
             if parsed.path.startswith("/shorts/"):
-                return parsed.path.split("/shorts/")[-1].split("?")[0].strip()
+                key = parsed.path.split("/shorts/")[-1].split("?")[0].strip()
+                return key if re.fullmatch(r"[A-Za-z0-9_-]{11}", key) else ""
             params = urllib.parse.parse_qs(parsed.query)
             if "v" in params and params["v"]:
-                return params["v"][0]
+                key = (params["v"][0] or "").strip()
+                return key if re.fullmatch(r"[A-Za-z0-9_-]{11}", key) else ""
     except Exception:
-        return ""
+        pass
+    # Fallback for raw URL/text that still contains a YouTube key
+    match = re.search(r"(?:v=|\/embed\/|youtu\.be\/|\/shorts\/)([A-Za-z0-9_-]{11})", raw, re.I)
+    if match:
+        return match.group(1)
     return ""
 
 
@@ -695,7 +720,7 @@ async def content_series(request: Request, q: str = ""):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
-    cards = await _build_catalog(user, is_admin, limit=1200)
+    cards = await _build_catalog(user, is_admin, limit=3000)
     cards = [c for c in cards if c["type"] == "series"]
     q = (q or "").strip().lower()
     if q:
@@ -755,10 +780,11 @@ async def content_details(request: Request, content_key: str):
 
     site = await _site_settings()
     group = await _ensure_group_assets(group)
-    raw_trailer_key = (group.get("trailer_key") or "").strip()
-    if raw_trailer_key and ("http" in raw_trailer_key or "/" in raw_trailer_key or "?" in raw_trailer_key):
-        raw_trailer_key = _youtube_key(raw_trailer_key)
-    group["trailer_embed"] = raw_trailer_key or _youtube_key(group.get("trailer_url"))
+    raw_trailer_key = _youtube_key(group.get("trailer_key") or "")
+    trailer_embed = raw_trailer_key or _youtube_key(group.get("trailer_url") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{11}", trailer_embed or ""):
+        trailer_embed = ""
+    group["trailer_embed"] = trailer_embed
     link_token = await _get_link_token()
 
     viewer_name = _viewer_name(user)
@@ -830,7 +856,15 @@ async def content_details(request: Request, content_key: str):
 
     watchlisted = False
     if user:
-        found = await WatchlistEntry.find_one(WatchlistEntry.user_phone == user.phone_number, WatchlistEntry.item_id == group["id"])
+        slug_key = (group.get("slug") or "").strip()
+        keys = [group.get("id", "")]
+        if slug_key:
+            keys.append(f"slug:{slug_key}")
+        keys = [k for k in keys if k]
+        found = await WatchlistEntry.find_one(
+            WatchlistEntry.user_phone == user.phone_number,
+            In(WatchlistEntry.item_id, keys)
+        )
         watchlisted = found is not None
 
     return templates.TemplateResponse("content_details.html", {
@@ -913,25 +947,51 @@ async def toggle_watchlist(request: Request, item_id: str):
     if not user:
         return JSONResponse({"error": "Login required"}, status_code=401)
 
-    resolved_item_id = (item_id or "").strip()
-    if not re.fullmatch(r"[0-9a-fA-F]{24}", resolved_item_id):
-        is_admin = _is_admin(user)
-        catalog = await _build_catalog(user, is_admin, limit=800)
-        for group in catalog:
-            if (group.get("slug") or "") == resolved_item_id.lower():
-                resolved_item_id = group["id"]
-                break
-    if not re.fullmatch(r"[0-9a-fA-F]{24}", resolved_item_id):
+    raw_key = (item_id or "").strip()
+    if not raw_key:
         return JSONResponse({"error": "Content not found"}, status_code=404)
 
-    row = await WatchlistEntry.find_one(
+    primary_key = ""
+    legacy_id = ""
+    if re.fullmatch(r"[0-9a-fA-F]{24}", raw_key):
+        legacy_id = raw_key
+        primary_key = raw_key
+        # Prefer stable slug key when possible.
+        is_admin = _is_admin(user)
+        catalog = await _build_catalog(user, is_admin, limit=3000)
+        for group in catalog:
+            if group.get("id") == raw_key or any((itm.get("id") == raw_key) for itm in (group.get("items") or [])):
+                slug_val = (group.get("slug") or "").strip()
+                if slug_val:
+                    primary_key = f"slug:{slug_val}"
+                break
+    else:
+        slug = raw_key.lower()
+        primary_key = f"slug:{slug}"
+        # Resolve legacy object id so old entries can still be removed cleanly.
+        is_admin = _is_admin(user)
+        catalog = await _build_catalog(user, is_admin, limit=3000)
+        for group in catalog:
+            if (group.get("slug") or "") == slug:
+                legacy_id = group.get("id") or ""
+                break
+        if not legacy_id:
+            return JSONResponse({"error": "Content not found"}, status_code=404)
+
+    lookup_keys = [primary_key]
+    if legacy_id and legacy_id not in lookup_keys:
+        lookup_keys.append(legacy_id)
+
+    existing_rows = await WatchlistEntry.find(
         WatchlistEntry.user_phone == user.phone_number,
-        WatchlistEntry.item_id == resolved_item_id,
-    )
-    if row:
-        await row.delete()
+        In(WatchlistEntry.item_id, lookup_keys),
+    ).to_list()
+    if existing_rows:
+        for row in existing_rows:
+            await row.delete()
         return {"status": "removed"}
-    row = WatchlistEntry(user_phone=user.phone_number, item_id=resolved_item_id)
+
+    row = WatchlistEntry(user_phone=user.phone_number, item_id=primary_key)
     await row.insert()
     return {"status": "added"}
 
@@ -944,9 +1004,16 @@ async def content_watchlist(request: Request):
     is_admin = _is_admin(user)
     site = await _site_settings()
     rows = await WatchlistEntry.find(WatchlistEntry.user_phone == user.phone_number).sort("-created_at").to_list()
-    ids = {r.item_id for r in rows}
+    object_ids = set()
+    slug_ids = set()
+    for row in rows:
+        key = (row.item_id or "").strip()
+        if key.startswith("slug:"):
+            slug_ids.add(key.split("slug:", 1)[-1])
+        elif re.fullmatch(r"[0-9a-fA-F]{24}", key):
+            object_ids.add(key)
     cards = await _build_catalog(user, is_admin, limit=1200)
-    cards = [c for c in cards if c["id"] in ids]
+    cards = [c for c in cards if c["id"] in object_ids or (c.get("slug") or "") in slug_ids]
     return templates.TemplateResponse("content_list.html", {
         "request": request,
         "user": user,
@@ -996,9 +1063,18 @@ async def request_content_page(request: Request):
     is_admin = _is_admin(user)
     site = await _site_settings()
     my_requests = await ContentRequest.find(ContentRequest.user_phone == user.phone_number).sort("-created_at").limit(40).to_list()
+    catalog = await _build_catalog(user, is_admin, limit=3000)
+    by_id = {str(c.get("id")): c for c in catalog}
     for row in my_requests:
         raw_path = str(getattr(row, "fulfilled_content_path", "") or "").strip()
-        if raw_path and not raw_path.startswith("/"):
+        if not raw_path:
+            ref_id = str(getattr(row, "fulfilled_content_id", "") or "").strip()
+            match = by_id.get(ref_id)
+            if match:
+                raw_path = f"/content/details/{match.get('slug') or match.get('id')}"
+                if not getattr(row, "fulfilled_content_title", ""):
+                    setattr(row, "fulfilled_content_title", match.get("title") or "")
+        if raw_path and not raw_path.startswith("/") and not re.match(r"^https?://", raw_path, re.I):
             raw_path = "/" + raw_path.lstrip("/")
         setattr(row, "view_path", raw_path)
     return templates.TemplateResponse("request_content.html", {

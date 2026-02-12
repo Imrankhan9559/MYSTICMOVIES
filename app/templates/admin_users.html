@@ -1,0 +1,135 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="content-header">
+    <div class="container-fluid">
+        <div class="row mb-2">
+            <div class="col-sm-6">
+                <h1 class="m-0">Users</h1>
+                <div class="admin-section-note">Manage user roles, approvals, and account access.</div>
+            </div>
+            <div class="col-sm-6">
+                <ol class="breadcrumb float-sm-right">
+                    <li class="breadcrumb-item"><a href="/dashboard">Dashboard</a></li>
+                    <li class="breadcrumb-item active">Users</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</div>
+
+<section class="content">
+    <div class="container-fluid">
+        <div class="card card-outline card-warning">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-user-check"></i> Pending Admin Requests</h3>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>Phone</th>
+                                <th>Name</th>
+                                <th>Requested Role</th>
+                                <th>Requested At</th>
+                                <th class="text-right">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in pending_admin_requests %}
+                            <tr>
+                                <td>{{ row.phone_number }}</td>
+                                <td>{{ row.requested_name or row.first_name or "-" }}</td>
+                                <td><span class="badge badge-danger">{{ (row.role_requested or "user")|upper }}</span></td>
+                                <td>{{ row.requested_at.strftime('%Y-%m-%d %H:%M') if row.requested_at else "-" }}</td>
+                                <td class="text-right">
+                                    <form action="/admin/approve_user" method="post" class="d-inline">
+                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
+                                        <input type="hidden" name="return_to" value="/users">
+                                        <button type="submit" class="btn btn-sm btn-success">Approve</button>
+                                    </form>
+                                    <form action="/admin/block_user" method="post" class="d-inline">
+                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
+                                        <input type="hidden" name="return_to" value="/users">
+                                        <button type="submit" class="btn btn-sm btn-secondary">Block</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="5" class="text-center text-muted">No pending admin requests.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="card card-outline card-danger">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-users-cog"></i> User Database</h3>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>Phone</th>
+                                <th>Name</th>
+                                <th>Status</th>
+                                <th>Type</th>
+                                <th>Joined</th>
+                                <th class="text-right">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in users %}
+                            <tr>
+                                <td>{{ row.phone_number }}</td>
+                                <td>{{ row.requested_name or row.first_name or "-" }}</td>
+                                <td>
+                                    {% if row.status == "approved" %}
+                                    <span class="badge badge-success">APPROVED</span>
+                                    {% elif row.status == "pending" %}
+                                    <span class="badge badge-warning">PENDING</span>
+                                    {% else %}
+                                    <span class="badge badge-secondary">BLOCKED</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <form action="/admin/user/set-role" method="post" class="form-inline">
+                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
+                                        <input type="hidden" name="return_to" value="/users">
+                                        <select name="role" class="custom-select custom-select-sm mr-1">
+                                            {% set role_value = (row.role or 'user')|lower %}
+                                            <option value="user" {% if role_value == 'user' %}selected{% endif %}>USER</option>
+                                            <option value="admin" {% if role_value == 'admin' %}selected{% endif %}>ADMIN</option>
+                                        </select>
+                                        <button type="submit" class="btn btn-sm btn-outline-light">Save</button>
+                                    </form>
+                                </td>
+                                <td>{{ row.created_at.strftime('%Y-%m-%d') if row.created_at else "-" }}</td>
+                                <td class="text-right">
+                                    <form action="/admin/block_user" method="post" class="d-inline">
+                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
+                                        <input type="hidden" name="return_to" value="/users">
+                                        <button type="submit" class="btn btn-sm btn-secondary">Block</button>
+                                    </form>
+                                    <form action="/admin/delete_user" method="post" class="d-inline">
+                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
+                                        <input type="hidden" name="return_to" value="/users">
+                                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this user?')">Delete</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="6" class="text-center text-muted">No users found.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
