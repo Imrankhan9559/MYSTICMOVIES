@@ -2,9 +2,13 @@
 {% block content %}
 <section class="rounded-2xl border border-gray-800 bg-gradient-to-b from-gray-900 to-black p-5 sm:p-8 mb-6 relative overflow-hidden">
     {% if item.backdrop %}
-    <div class="absolute inset-0 opacity-20" style="background-image:url('{{ item.backdrop }}'); background-size:cover; background-position:center;"></div>
+    <div
+        aria-hidden="true"
+        class="absolute inset-0 opacity-20 pointer-events-none select-none z-0"
+        style="background-image:url('{{ item.backdrop }}'); background-size:cover; background-position:center;">
+    </div>
     {% endif %}
-    <div class="flex flex-col lg:flex-row gap-6">
+    <div class="flex flex-col lg:flex-row gap-6 relative z-10">
         <div class="lg:w-64">
             {% if item.poster %}
             <img src="{{ item.poster }}" alt="{{ item.title }}" class="aspect-[2/3] rounded-xl border border-gray-800 object-cover w-full">
@@ -30,20 +34,21 @@
             {% endif %}
             <div class="mt-5 flex flex-wrap gap-3">
                 {% if user %}
-                <button data-item-id="{{ item.id }}" id="watchlistToggle" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">
+                <button type="button" data-item-id="{{ item.id }}" id="watchlistToggle" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500 cursor-pointer relative z-20">
                     <i class="fas fa-bookmark mr-2"></i>{{ "Remove Watchlist" if watchlisted else "Add Watchlist" }}
                 </button>
                 {% else %}
-                <a href="/login" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">Login to Watch</a>
+                <a href="/login" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500 cursor-pointer relative z-20">Login to Watch</a>
                 {% endif %}
                 {% if item.trailer_embed or item.trailer_url %}
-                <a id="trailerJumpBtn" href="#trailer" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500">
+                <a id="trailerJumpBtn" href="#trailer" class="px-5 py-2.5 rounded-full bg-gray-800 border border-gray-700 text-gray-100 hover:border-yellow-500 cursor-pointer relative z-20">
                     <i class="fas fa-video mr-2"></i>Trailer
                 </a>
                 {% endif %}
             </div>
             <div class="mt-5 text-xs text-gray-400 flex flex-wrap gap-2">
                 {% if item.director %}<span class="px-2 py-1 bg-gray-800 rounded">Director: {{ item.director }}</span>{% endif %}
+                {% if item.industry_label %}<span class="px-2 py-1 bg-gray-800 rounded">Industry: {{ item.industry_label }}</span>{% endif %}
                 {% for g in item.genres or [] %}<span class="px-2 py-1 bg-gray-800 rounded">#{{ g }}</span>{% endfor %}
             </div>
 
@@ -54,7 +59,7 @@
                     {% for c in item.cast_profiles %}
                     <a
                         href="/content/cast?name={{ c.name | urlencode }}{% if c.id %}&tmdb_id={{ c.id }}{% endif %}&back={{ request.url.path | urlencode }}"
-                        class="flex items-center gap-3 rounded-lg border border-gray-800 bg-gray-900/60 p-2 hover:border-yellow-500 transition">
+                        class="flex items-center gap-3 rounded-lg border border-gray-800 bg-gray-900/60 p-2 hover:border-yellow-500 transition cursor-pointer relative z-20">
                         <div class="h-12 w-12 rounded-full overflow-hidden border border-gray-700 bg-gray-800 flex items-center justify-center">
                             {% if c.image %}
                             <img src="{{ c.image }}" alt="{{ c.name }}" class="h-full w-full object-cover">
@@ -77,7 +82,7 @@
                 <h3 class="text-sm font-semibold text-white mb-3">Cast</h3>
                 <div class="flex flex-wrap gap-2 text-xs text-gray-300">
                     {% for a in item.actors or [] %}
-                    <a href="/content/cast?name={{ a | urlencode }}&back={{ request.url.path | urlencode }}" class="px-2 py-1 bg-gray-800 rounded hover:border-yellow-500 border border-gray-700">{{ a }}</a>
+                    <a href="/content/cast?name={{ a | urlencode }}&back={{ request.url.path | urlencode }}" class="px-2 py-1 bg-gray-800 rounded hover:border-yellow-500 border border-gray-700 cursor-pointer relative z-20">{{ a }}</a>
                     {% endfor %}
                 </div>
             </div>
@@ -200,6 +205,46 @@
     {% else %}
     <div class="text-sm text-gray-400">No episodes available for this series yet.</div>
     {% endif %}
+</section>
+{% endif %}
+
+{% if related_cards and related_cards|length > 0 %}
+<section class="rounded-2xl border border-gray-800 bg-gray-950 p-5 sm:p-8 mb-6">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+        <div>
+            <h2 class="text-xl font-bold text-white">Related Content</h2>
+            <p class="text-xs text-gray-400 mt-1">Matched by genres, cast, director, year and industry.</p>
+        </div>
+        <div class="text-xs text-gray-400">{{ related_cards|length }} recommendations</div>
+    </div>
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+        {% for rel in related_cards %}
+        <a href="/content/details/{{ rel.slug or rel.id }}" class="group rounded-2xl border border-gray-800 bg-black/70 overflow-hidden hover:border-yellow-500/60 transition">
+            <div class="relative aspect-[2/3]">
+                {% if rel.poster %}
+                <img src="{{ rel.poster }}" alt="{{ rel.title }}" class="h-full w-full object-cover">
+                {% else %}
+                <div class="h-full w-full bg-gradient-to-br from-gray-900 via-black to-gray-800 flex items-center justify-center">
+                    <i class="fas fa-film text-yellow-400 text-4xl"></i>
+                </div>
+                {% endif %}
+                <div class="absolute inset-0 bg-gradient-to-t from-black/95 via-black/25 to-transparent"></div>
+                <div class="absolute bottom-0 left-0 right-0 p-3">
+                    <div class="text-[10px] uppercase tracking-widest text-yellow-400">{{ rel.type }}</div>
+                    <div class="text-sm font-semibold text-white line-clamp-2">{{ rel.title }}</div>
+                    <div class="text-[11px] text-gray-400 mt-1">
+                        {% if rel.year %}{{ rel.year }}{% else %}-{% endif %} | {{ rel.industry_label }}
+                    </div>
+                </div>
+            </div>
+            <div class="p-2 space-y-1">
+                {% for tag in rel.match_tags %}
+                <div class="text-[10px] text-gray-400 truncate">{{ tag }}</div>
+                {% endfor %}
+            </div>
+        </a>
+        {% endfor %}
+    </div>
 </section>
 {% endif %}
 

@@ -588,6 +588,195 @@ async def _google_person_fallback(name: str) -> dict:
         return {}
 
 
+_INDUSTRY_HINTS = {
+    "bollywood": {
+        "bollywood", "hindi", "indian", "india", "tollywood", "kollywood", "mollywood",
+        "telugu", "tamil", "malayalam", "kannada", "marathi", "punjabi", "bengali",
+    },
+    "hollywood": {
+        "hollywood", "english", "american", "usa", "u.s.", "uk", "british",
+    },
+}
+_TITLE_STOPWORDS = {
+    "the", "a", "an", "of", "and", "for", "with", "to", "in", "on", "from", "at",
+}
+
+
+def _norm_label(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _clean_values(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    cleaned = []
+    for value in values:
+        text = (value or "").strip()
+        if text:
+            cleaned.append(text)
+    return cleaned
+
+
+def _group_cast_names(group: dict) -> list[str]:
+    names: list[str] = []
+    for name in _clean_values(group.get("actors") or []):
+        names.append(name)
+    for row in group.get("cast_profiles") or []:
+        name = (row.get("name") or "").strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _group_text_blob(group: dict) -> str:
+    parts = [
+        group.get("title") or "",
+        group.get("description") or "",
+        group.get("director") or "",
+        " ".join(_clean_values(group.get("genres") or [])),
+        " ".join(_group_cast_names(group)),
+    ]
+    for item in group.get("items") or []:
+        parts.append(item.get("name") or "")
+    text = " ".join(parts).lower()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _infer_industry(group: dict) -> str:
+    text = _group_text_blob(group)
+    if not text:
+        return "other"
+    scores = {name: 0 for name in _INDUSTRY_HINTS}
+    for industry, hints in _INDUSTRY_HINTS.items():
+        for hint in hints:
+            if hint in text:
+                scores[industry] += 1
+    if scores["bollywood"] > scores["hollywood"] and scores["bollywood"] > 0:
+        return "bollywood"
+    if scores["hollywood"] > scores["bollywood"] and scores["hollywood"] > 0:
+        return "hollywood"
+    return "other"
+
+
+def _industry_label(industry: str) -> str:
+    mapping = {
+        "bollywood": "Bollywood",
+        "hollywood": "Hollywood",
+        "other": "Other",
+    }
+    return mapping.get((industry or "other").strip().lower(), "Other")
+
+
+def _year_int(value: str) -> int | None:
+    try:
+        year = int((value or "").strip())
+        if 1800 <= year <= 2100:
+            return year
+    except Exception:
+        pass
+    return None
+
+
+def _title_tokens(value: str) -> set[str]:
+    tokens = _tokenize_search(value)
+    return {t for t in tokens if t not in _TITLE_STOPWORDS and len(t) > 2}
+
+
+def _related_content_cards(target: dict, catalog: list[dict], limit: int = 12) -> list[dict]:
+    target_id = (target.get("id") or "").strip()
+    target_slug = (target.get("slug") or "").strip()
+    target_type = (target.get("type") or "").strip().lower()
+    target_industry = _infer_industry(target)
+    target_industry_label = _industry_label(target_industry)
+    target["industry_label"] = target_industry_label
+
+    target_genres = _clean_values(target.get("genres") or [])
+    target_genres_map = {_norm_label(x): x for x in target_genres}
+    target_cast = _group_cast_names(target)
+    target_cast_map = {_norm_label(x): x for x in target_cast}
+    target_director_norm = _norm_label(target.get("director") or "")
+    target_year = _year_int(target.get("year") or "")
+    target_title_tokens = _title_tokens(target.get("title") or "")
+
+    scored: list[dict] = []
+    for row in catalog:
+        row_id = (row.get("id") or "").strip()
+        row_slug = (row.get("slug") or "").strip()
+        if row_id and row_id == target_id:
+            continue
+        if target_slug and row_slug and row_slug == target_slug:
+            continue
+
+        reasons: list[str] = []
+        score = 0.0
+
+        row_genres = _clean_values(row.get("genres") or [])
+        row_genres_map = {_norm_label(x): x for x in row_genres}
+        shared_genres = [target_genres_map[key] for key in target_genres_map.keys() & row_genres_map.keys()]
+        if shared_genres:
+            score += min(12, len(shared_genres) * 3.0)
+            for genre_name in shared_genres[:2]:
+                reasons.append(f"Genre: {genre_name}")
+
+        row_cast = _group_cast_names(row)
+        row_cast_map = {_norm_label(x): x for x in row_cast}
+        shared_cast = [target_cast_map[key] for key in target_cast_map.keys() & row_cast_map.keys()]
+        if shared_cast:
+            score += min(9, len(shared_cast) * 2.5)
+            for cast_name in shared_cast[:2]:
+                reasons.append(f"Cast: {cast_name}")
+
+        row_director_norm = _norm_label(row.get("director") or "")
+        if target_director_norm and row_director_norm and row_director_norm == target_director_norm:
+            score += 3.0
+            reasons.append("Same director")
+
+        row_industry = _infer_industry(row)
+        if target_industry == row_industry and target_industry != "other":
+            score += 2.0
+            reasons.append(target_industry_label)
+        elif target_industry == row_industry and target_industry == "other":
+            score += 0.5
+
+        row_type = (row.get("type") or "").strip().lower()
+        if target_type and row_type == target_type:
+            score += 1.0
+
+        row_year = _year_int(row.get("year") or "")
+        if target_year and row_year:
+            year_gap = abs(target_year - row_year)
+            if year_gap == 0:
+                score += 1.2
+            elif year_gap <= 2:
+                score += 0.7
+            elif year_gap <= 5:
+                score += 0.3
+
+        row_title_tokens = _title_tokens(row.get("title") or "")
+        shared_title_tokens = target_title_tokens & row_title_tokens
+        if shared_title_tokens:
+            score += min(1.0, len(shared_title_tokens) * 0.35)
+
+        if score < 1.8:
+            continue
+
+        scored.append({
+            "id": row_id,
+            "slug": row_slug,
+            "title": row.get("title") or "",
+            "year": row.get("year") or "",
+            "type": row.get("type") or "",
+            "poster": row.get("poster") or "",
+            "quality": row.get("quality") or row.get("primary_quality") or "HD",
+            "industry_label": _industry_label(row_industry),
+            "score": score,
+            "match_tags": reasons[:3],
+        })
+
+    scored.sort(key=lambda item: (-item.get("score", 0.0), (item.get("title") or "").lower()))
+    return scored[:limit]
+
+
 def _item_card(item: FileSystemItem) -> dict:
     name = item.name or ""
     info = _parse_name(name)
@@ -1015,6 +1204,7 @@ async def content_details(request: Request, content_key: str):
             In(WatchlistEntry.item_id, keys)
         )
         watchlisted = found is not None
+    related_cards = _related_content_cards(group, catalog, limit=12)
 
     return templates.TemplateResponse("content_details.html", {
         "request": request,
@@ -1025,6 +1215,7 @@ async def content_details(request: Request, content_key: str):
         "qualities": qualities,
         "seasons": seasons,
         "watchlisted": watchlisted,
+        "related_cards": related_cards,
         "link_token": link_token,
         "viewer_name": viewer_name,
     })
