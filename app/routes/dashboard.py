@@ -16,7 +16,7 @@ from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from pyrogram import Client
 from beanie import PydanticObjectId
 from beanie.operators import Or, In
-from app.db.models import FileSystemItem, FilePart, User, SharedCollection, TokenSetting, WatchlistEntry, PlaybackProgress
+from app.db.models import FileSystemItem, FilePart, User, SharedCollection, TokenSetting, WatchlistEntry, PlaybackProgress, SiteSettings
 from app.core.config import settings
 from app.core.content_store import build_content_groups
 from app.core.telegram_bot import tg_client, user_client, get_pool_client, get_storage_chat_id, ensure_peer_access, get_storage_client, pick_storage_client, normalize_chat_id
@@ -56,6 +56,14 @@ async def get_current_user(request: Request):
     if not user or getattr(user, "status", "approved") != "approved":
         return None
     return user
+
+
+async def _site_settings() -> SiteSettings:
+    row = await SiteSettings.find_one(SiteSettings.key == "main")
+    if not row:
+        row = SiteSettings(key="main")
+        await row.insert()
+    return row
 
 def _normalize_phone(phone: str) -> str:
     return phone.replace(" ", "")
@@ -1269,6 +1277,7 @@ async def profile_page(request: Request):
     if not user:
         return RedirectResponse("/login")
     is_admin = _is_admin(user)
+    site = await _site_settings()
 
     catalog = await build_content_groups(user, is_admin, limit=5000, ensure_sync=True)
     grouped_by_slug: dict[str, dict[str, str]] = {}
@@ -1372,6 +1381,7 @@ async def profile_page(request: Request):
 
     return templates.TemplateResponse("profile.html", {
         "request": request,
+        "site": site,
         "user": user,
         "is_admin": is_admin,
         "watchlist_cards": watchlist_cards,

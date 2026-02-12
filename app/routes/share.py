@@ -15,7 +15,7 @@ from starlette.background import BackgroundTask
 from pyrogram import Client
 from beanie.operators import In, Or
 from beanie import PydanticObjectId
-from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress, TokenSetting, WatchParty, WatchPartyMember, WatchPartyMessage, UserActivityEvent
+from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress, TokenSetting, WatchParty, WatchPartyMember, WatchPartyMessage, UserActivityEvent, SiteSettings
 from app.core.config import settings
 from app.routes.stream import telegram_stream_generator, _align_offset, _align_range, parallel_stream_generator, _get_parallel_clients, _extract_file_size, _pick_align
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id, ensure_peer_access
@@ -27,6 +27,14 @@ from app.routes.dashboard import get_current_user
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 logger = logging.getLogger(__name__)
+
+
+async def _site_settings() -> SiteSettings:
+    row = await SiteSettings.find_one(SiteSettings.key == "main")
+    if not row:
+        row = SiteSettings(key="main")
+        await row.insert()
+    return row
 
 
 def _event_title(item: FileSystemItem | None) -> str:
@@ -470,6 +478,7 @@ async def public_view(request: Request, token: str):
         return viewer_name
     user = await get_current_user(request)
     is_admin = _is_admin(user)
+    site = await _site_settings()
     link_token = await _get_link_token()
     share_query = _share_query(link_token, viewer_name)
     share_suffix = f"?{share_query}" if share_query else ""
@@ -539,6 +548,7 @@ async def public_view(request: Request, token: str):
 
         return templates.TemplateResponse("shared_folder.html", {
             "request": request,
+            "site": site,
             "episodes": ordered_items,
             "active_item": active_item,
             "item": active_item,
@@ -645,6 +655,7 @@ async def public_view(request: Request, token: str):
 
         return templates.TemplateResponse("shared_folder.html", {
             "request": request,
+            "site": site,
             "episodes": ordered_items,
             "active_item": active_item,
             "item": active_item,
@@ -679,6 +690,7 @@ async def public_view(request: Request, token: str):
                     logger.warning(f"HLS prep failed for shared item: {e}")
         return templates.TemplateResponse("shared.html", {
             "request": request,
+            "site": site,
             "item": item,
             "display_title": _display_title(item),
             "stream_url": f"/s/stream/{token}{share_suffix}",
