@@ -23,6 +23,15 @@
         <div class="card card-outline card-dark">
             <div class="card-header">
                 <h3 class="card-title"><i class="fas fa-list"></i> Published Library</h3>
+                <div class="card-tools">
+                    <form method="get" action="/dashboard/publish-content" class="form-inline">
+                        <input type="text" name="q" value="{{ q or '' }}" class="form-control form-control-sm mr-2" placeholder="Search title, year, file">
+                        <button type="submit" class="btn btn-sm btn-primary">Search</button>
+                        {% if q %}
+                        <a href="/dashboard/publish-content" class="btn btn-sm btn-outline-light ml-2">Clear</a>
+                        {% endif %}
+                    </form>
+                </div>
             </div>
             <div class="card-body p-0">
                 {% if published_groups and published_groups|length > 0 %}
@@ -73,6 +82,9 @@
                                         <a href="/dashboard/publish-content/edit/{{ group.id }}" class="btn btn-primary">Edit</a>
                                         <form action="/dashboard/publish-content/delete" method="post" class="d-inline">
                                             <input type="hidden" name="group_id" value="{{ group.id }}">
+                                            <input type="hidden" name="group_title" value="{{ group.title }}">
+                                            <input type="hidden" name="group_type" value="{{ group.type }}">
+                                            <input type="hidden" name="return_to" value="/dashboard/publish-content">
                                             <button type="submit" class="btn btn-danger" onclick="return confirm('Delete this content and copied files?')">Delete</button>
                                         </form>
                                         <button type="button" class="btn btn-outline-light copy-link-btn" data-link="{{ group.content_full_url }}">Copy</button>

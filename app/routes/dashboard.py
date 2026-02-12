@@ -16,7 +16,7 @@ from fastapi.responses import RedirectResponse, JSONResponse, FileResponse
 from pyrogram import Client
 from beanie import PydanticObjectId
 from beanie.operators import Or, In
-from app.db.models import FileSystemItem, FilePart, User, SharedCollection, TokenSetting
+from app.db.models import FileSystemItem, FilePart, User, SharedCollection, TokenSetting, WatchlistEntry, PlaybackProgress
 from app.core.config import settings
 from app.core.telegram_bot import tg_client, user_client, get_pool_client, get_storage_chat_id, ensure_peer_access, get_storage_client, pick_storage_client, normalize_chat_id
 from app.core.telethon_storage import send_file as tl_send_file, get_message as tl_get_message, iter_download as tl_iter_download, download_media as tl_download_media, delete_message as tl_delete_message
@@ -103,6 +103,31 @@ def _parse_catalog_name(name: str) -> dict:
         "season": season,
         "episode": episode,
     }
+
+def _slugify(text: str) -> str:
+    value = (text or "").strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value)
+    return value.strip("-")
+
+def _content_slug(item: FileSystemItem) -> str:
+    parsed = _parse_catalog_name(item.name or "")
+    title = (getattr(item, "series_title", "") or getattr(item, "title", "") or parsed.get("title") or item.name or "").strip()
+    year = (getattr(item, "year", "") or parsed.get("year") or "").strip()
+    base = _slugify(title)
+    if year:
+        return f"{base}-{year}"
+    return base
+
+def _format_remaining(seconds: float) -> str:
+    try:
+        total = max(0, int(seconds))
+    except Exception:
+        return "0m left"
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    if hours > 0:
+        return f"{hours}h {minutes}m left"
+    return f"{minutes}m left"
 
 async def _get_link_token() -> str:
     token = await TokenSetting.find_one(TokenSetting.key == "link_token")
@@ -330,6 +355,8 @@ async def sync_storage_all(request: Request):
 
 def _is_admin(user: Optional[User]) -> bool:
     if not user: return False
+    if str(getattr(user, "role", "") or "").strip().lower() == "admin":
+        return True
     return _normalize_phone(user.phone_number) == _normalize_phone(getattr(settings, "ADMIN_PHONE", ""))
 
 def _can_access(user: User, item: FileSystemItem, is_admin: bool) -> bool:
@@ -1238,21 +1265,92 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
 @router.get("/profile")
 async def profile_page(request: Request):
     user = await get_current_user(request)
-    # If not resolved, still try one last lookup but do not send to register form;
-    # instead show login with a next pointer so logged-in users won't see account-request.
     if not user:
-        phone = request.cookies.get("user_phone")
-        if phone:
-            user = await User.find_one(User.phone_number == phone)
-    if not user:
-        return templates.TemplateResponse(
-            "login.html",
-            {"request": request, "step": "phone", "next_url": "/profile"}
-        )
+        return RedirectResponse("/login")
     is_admin = _is_admin(user)
     total_files = await FileSystemItem.find(FileSystemItem.owner_phone == user.phone_number, FileSystemItem.is_folder == False).count()
-    all_files = await FileSystemItem.find(FileSystemItem.owner_phone == user.phone_number, FileSystemItem.is_folder == False).sort("-created_at").to_list()
-    for item in all_files:
+
+    # Watchlist cards
+    watchlist_rows = await WatchlistEntry.find(WatchlistEntry.user_phone == user.phone_number).sort("-created_at").to_list()
+    watchlist_ids = [r.item_id for r in watchlist_rows if getattr(r, "item_id", "")]
+    watchlist_items: dict[str, FileSystemItem] = {}
+    if watchlist_ids:
+        rows = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(watchlist_ids))).to_list()
+        watchlist_items = {str(x.id): x for x in rows}
+    watchlist_cards = []
+    for row in watchlist_rows:
+        item = watchlist_items.get(str(row.item_id))
+        if not item:
+            continue
+        parsed = _parse_catalog_name(item.name or "")
+        title = (getattr(item, "series_title", "") or getattr(item, "title", "") or parsed.get("title") or item.name or "").strip()
+        year = (getattr(item, "year", "") or parsed.get("year") or "").strip()
+        watchlist_cards.append({
+            "id": str(item.id),
+            "title": title,
+            "year": year,
+            "poster": getattr(item, "poster_url", "") or "",
+            "slug": _content_slug(item),
+        })
+
+    # Continue watching + history
+    progress_rows = await PlaybackProgress.find(
+        PlaybackProgress.user_type == "user",
+        PlaybackProgress.user_key == user.phone_number
+    ).sort("-updated_at").limit(80).to_list()
+    progress_ids = list({str(p.item_id) for p in progress_rows if getattr(p, "item_id", "")})
+    progress_items: dict[str, FileSystemItem] = {}
+    if progress_ids:
+        rows = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(progress_ids))).to_list()
+        progress_items = {str(x.id): x for x in rows}
+
+    continue_cards = []
+    history_rows = []
+    for progress in progress_rows:
+        item = progress_items.get(str(progress.item_id))
+        if not item:
+            continue
+        parsed = _parse_catalog_name(item.name or "")
+        title = (getattr(item, "series_title", "") or getattr(item, "title", "") or parsed.get("title") or item.name or "").strip()
+        year = (getattr(item, "year", "") or parsed.get("year") or "").strip()
+        position = float(getattr(progress, "position", 0) or 0)
+        duration = float(getattr(progress, "duration", 0) or 0)
+        remaining = max(0.0, duration - position)
+        card = {
+            "item_id": str(item.id),
+            "title": title,
+            "year": year,
+            "poster": getattr(item, "poster_url", "") or "",
+            "slug": _content_slug(item),
+            "remaining": _format_remaining(remaining),
+            "updated_at": getattr(progress, "updated_at", None),
+            "position": position,
+            "duration": duration,
+        }
+        history_rows.append(card)
+        # Resume candidates: have meaningful position and not fully completed.
+        if duration > 0 and position > 30 and position < (duration - 45):
+            continue_cards.append(card)
+
+    continue_cards = continue_cards[:20]
+    history_rows = history_rows[:25]
+
+    # Recent user files
+    recent_files = await FileSystemItem.find(
+        FileSystemItem.owner_phone == user.phone_number,
+        FileSystemItem.is_folder == False
+    ).sort("-created_at").limit(20).to_list()
+    for item in recent_files:
         item.formatted_size = format_size(item.size)
         item.icon = get_icon_for_mime(item.mime_type)
-    return templates.TemplateResponse("profile.html", {"request": request, "user": user, "total_files": total_files, "files": all_files, "is_admin": is_admin})
+
+    return templates.TemplateResponse("profile.html", {
+        "request": request,
+        "user": user,
+        "is_admin": is_admin,
+        "total_files": total_files,
+        "watchlist_cards": watchlist_cards,
+        "continue_cards": continue_cards,
+        "history_rows": history_rows,
+        "files": recent_files,
+    })

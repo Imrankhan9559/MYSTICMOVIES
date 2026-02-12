@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, Header, Body
-from fastapi.responses import StreamingResponse, HTMLResponse, Response
+from fastapi.responses import StreamingResponse, HTMLResponse, Response, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pyrogram import Client
 from app.db.models import FileSystemItem, User, PlaybackProgress
@@ -41,6 +41,8 @@ def _normalize_phone(phone: str) -> str:
 
 def _is_admin(user: User | None) -> bool:
     if not user: return False
+    if str(getattr(user, "role", "") or "").strip().lower() == "admin":
+        return True
     return _normalize_phone(user.phone_number) == _normalize_phone(getattr(settings, "ADMIN_PHONE", ""))
 
 def _can_access(user: User, item: FileSystemItem, is_admin: bool) -> bool:
@@ -313,7 +315,7 @@ async def player_page(request: Request, item_id: str):
     
     # If not logged in, redirect to login page
     if not user: 
-        return templates.TemplateResponse("login.html", {"request": request, "step": "phone"})
+        return RedirectResponse("/login")
 
     item = await FileSystemItem.get(item_id)
     if not item: raise HTTPException(404, "File not found")

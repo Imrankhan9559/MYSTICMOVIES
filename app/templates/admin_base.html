@@ -79,6 +79,7 @@
             padding: 4px 10px;
             border-radius: 999px;
             font-size: 12px;
+            white-space: nowrap;
         }
         .admin-section-note {
             font-size: 12px;
@@ -105,10 +106,10 @@
         </ul>
         <ul class="navbar-nav ml-auto">
             <li class="nav-item d-none d-md-inline-flex align-items-center mr-3">
-                <span class="admin-hero-badge">Movies: {{ published_movies or 0 }}</span>
+                <span class="admin-hero-badge">Movies: {{ published_movies or 0 }} • {{ published_movie_files or 0 }} attached</span>
             </li>
             <li class="nav-item d-none d-md-inline-flex align-items-center mr-3">
-                <span class="admin-hero-badge">Series: {{ published_series or 0 }}</span>
+                <span class="admin-hero-badge">Series: {{ published_series or 0 }} • {{ published_series_files or 0 }} attached</span>
             </li>
             <li class="nav-item d-none d-md-inline-flex align-items-center mr-3">
                 <span class="admin-hero-badge">Pending: {{ pending_storage or 0 }}</span>
@@ -164,6 +165,18 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a href="/main-settings" class="nav-link {% if request.url.path.startswith('/main-settings') or request.url.path.startswith('/dashboard/main-settings') %}active{% endif %}">
+                            <i class="nav-icon fas fa-cogs"></i>
+                            <p>Main Settings</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="/user-playback-analytics" class="nav-link {% if request.url.path.startswith('/user-playback-analytics') %}active{% endif %}">
+                            <i class="nav-icon fas fa-chart-line"></i>
+                            <p>User Playback Analytics</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a href="/storage" class="nav-link {% if request.url.path.startswith('/storage') %}active{% endif %}">
                             <i class="nav-icon fas fa-database"></i>
                             <p>Storage</p>
@@ -173,12 +186,6 @@
                         <a href="/upload_zone" class="nav-link">
                             <i class="nav-icon fas fa-upload"></i>
                             <p>Upload Files</p>
-                        </a>
-                    </li>
-                    <li class="nav-item">
-                        <a href="/content" class="nav-link">
-                            <i class="nav-icon fas fa-film"></i>
-                            <p>Browse Catalog</p>
                         </a>
                     </li>
                 </ul>

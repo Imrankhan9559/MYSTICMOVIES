@@ -87,7 +87,7 @@
                 {% if item.trailer_embed %}
                 <div class="aspect-video rounded-xl overflow-hidden border border-gray-800 bg-black">
                     <iframe
-                        src="https://www.youtube.com/embed/{{ item.trailer_embed }}"
+                        src="https://www.youtube-nocookie.com/embed/{{ item.trailer_embed }}?rel=0&modestbranding=1"
                         title="Trailer"
                         frameborder="0"
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
@@ -211,6 +211,7 @@ if (watchBtn) {
                     window.location.href = "/login";
                     return;
                 }
+                alert("Could not update watchlist.");
                 return;
             }
             const data = await res.json();
@@ -220,6 +221,7 @@ if (watchBtn) {
                 watchBtn.innerHTML = '<i class="fas fa-bookmark mr-2"></i>Add Watchlist';
             }
         } catch (e) {
+            alert("Network error while updating watchlist.");
             return;
         }
     });

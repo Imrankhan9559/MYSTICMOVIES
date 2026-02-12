@@ -21,9 +21,9 @@
         <a href="/content/details/{{ item.slug }}" class="absolute inset-0" aria-label="Open {{ item.title }}"></a>
     </div>
     <div class="p-3 space-y-1">
-        {% if item.files and item.files|length > 0 %}
-            {% for f in item.files %}
-                <div class="text-xs text-gray-500 truncate" title="{{ f.name }}">{{ f.label }}</div>
+        {% if item.card_labels and item.card_labels|length > 0 %}
+            {% for label in item.card_labels %}
+                <div class="text-xs text-gray-500 truncate">{{ label }}</div>
             {% endfor %}
         {% else %}
         <div class="text-xs text-gray-500">No files available.</div>
@@ -37,12 +37,19 @@
         <h1 class="text-2xl sm:text-3xl font-extrabold text-white">{{ title }}</h1>
         <p class="text-gray-400 text-sm mt-1">Browse, watch, download, and send to Telegram.</p>
     </div>
-    <form action="{% if active_tab == 'movies' %}/content/movies{% elif active_tab == 'series' %}/content/web-series{% elif active_tab == 'watchlist' %}/content/watchlist{% else %}/content{% endif %}" method="get" class="flex w-full md:w-auto gap-2">
-        <input type="text" name="q" value="{{ query or '' }}" placeholder="Search movies & series..." class="w-full md:w-80 bg-gray-900 border border-gray-700 rounded-full px-4 py-2 text-sm text-white focus:outline-none focus:border-yellow-400" />
-        <button class="rounded-full px-4 py-2 bg-yellow-400 text-black font-bold text-sm hover:bg-yellow-300">
-            <i class="fas fa-search"></i>
-        </button>
-    </form>
+    <div class="flex w-full md:w-auto gap-2">
+        <form action="{% if active_tab == 'movies' %}/content/movies{% elif active_tab == 'series' %}/content/web-series{% elif active_tab == 'watchlist' %}/content/watchlist{% else %}/content{% endif %}" method="get" class="flex w-full md:w-auto gap-2">
+            <input type="text" name="q" value="{{ query or '' }}" placeholder="Search movies & series..." class="w-full md:w-80 bg-gray-900 border border-gray-700 rounded-full px-4 py-2 text-sm text-white focus:outline-none focus:border-yellow-400" />
+            <button class="rounded-full px-4 py-2 bg-yellow-400 text-black font-bold text-sm hover:bg-yellow-300">
+                <i class="fas fa-search"></i>
+            </button>
+        </form>
+        {% if user %}
+        <a href="/request-content" class="inline-flex items-center rounded-full border border-gray-700 px-4 py-2 text-sm text-gray-100 hover:border-yellow-400 hover:text-yellow-300">
+            <i class="fas fa-plus-circle mr-2"></i>Request
+        </a>
+        {% endif %}
+    </div>
 </section>
 
 <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -53,32 +60,4 @@
     {% endfor %}
 </section>
 
-{% if user %}
-<div id="requestModal" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="w-full max-w-md rounded-2xl border border-gray-700 bg-gray-900 p-6">
-        <div class="flex items-center justify-between mb-4">
-            <h3 class="text-lg font-bold text-white">Request Movie / Series</h3>
-            <button class="text-gray-400 hover:text-white" onclick="document.getElementById('requestModal').classList.add('hidden')"><i class="fas fa-times"></i></button>
-        </div>
-        <form action="/content/request" method="post" class="space-y-3">
-            <div>
-                <label class="text-xs text-gray-400">Title</label>
-                <input name="title" required class="w-full mt-1 bg-black border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="e.g. Interstellar" />
-            </div>
-            <div>
-                <label class="text-xs text-gray-400">Type</label>
-                <select name="request_type" class="w-full mt-1 bg-black border border-gray-700 rounded-lg px-3 py-2 text-sm text-white">
-                    <option value="movie">Movie</option>
-                    <option value="series">Series</option>
-                </select>
-            </div>
-            <div>
-                <label class="text-xs text-gray-400">Note</label>
-                <textarea name="note" rows="3" class="w-full mt-1 bg-black border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Preferred language/quality"></textarea>
-            </div>
-            <button class="w-full rounded-lg bg-yellow-400 text-black font-bold py-2 hover:bg-yellow-300">Submit Request</button>
-        </form>
-    </div>
-</div>
-{% endif %}
 {% endblock %}

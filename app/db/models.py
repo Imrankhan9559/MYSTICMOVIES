@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from beanie import Document, init_beanie
 from pydantic import BaseModel, Field, ConfigDict
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -10,6 +10,8 @@ class User(Document):
     session_string: str
     first_name: Optional[str] = None
     telegram_user_id: Optional[int] = None
+    role: str = "user"  # user | admin
+    role_requested: Optional[str] = None
     status: str = "approved"  # pending | approved | blocked
     requested_name: Optional[str] = None
     requested_at: Optional[datetime] = None
@@ -167,6 +169,22 @@ class ContentRequest(Document):
     class Settings:
         name = "content_requests"
 
+
+class UserActivityEvent(Document):
+    user_key: str = ""
+    user_phone: Optional[str] = None
+    user_name: Optional[str] = None
+    user_type: str = "guest"  # user | public | guest
+    action: str
+    item_id: Optional[str] = None
+    content_title: Optional[str] = None
+    token: Optional[str] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "user_activity_events"
+
 async def init_db():
     client = AsyncIOMotorClient(settings.MONGO_URI)
     await init_beanie(
@@ -183,5 +201,6 @@ async def init_db():
             SiteSettings,
             WatchlistEntry,
             ContentRequest,
+            UserActivityEvent,
         ],
     )

@@ -1,0 +1,155 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="content-header">
+    <div class="container-fluid">
+        <div class="row mb-2">
+            <div class="col-sm-6">
+                <h1 class="m-0">User Playback Analytics</h1>
+                <div class="admin-section-note">Per-user activity for downloads, Telegram opens, watch-together, and watch progress.</div>
+            </div>
+            <div class="col-sm-6">
+                <ol class="breadcrumb float-sm-right">
+                    <li class="breadcrumb-item"><a href="/dashboard">Dashboard</a></li>
+                    <li class="breadcrumb-item active">Playback Analytics</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</div>
+
+<section class="content">
+    <div class="container-fluid">
+        <div class="card card-outline card-info">
+            <div class="card-body">
+                <form method="get" action="/user-playback-analytics" class="form-row align-items-end">
+                    <div class="form-group col-md-7 mb-2">
+                        <label>Search users/content/action</label>
+                        <input name="q" class="form-control" value="{{ q or '' }}" placeholder="phone, name, title, action">
+                    </div>
+                    <div class="form-group col-md-3 mb-2">
+                        <label>User Key (exact)</label>
+                        <input name="user_key" class="form-control" value="{{ selected_user or '' }}" placeholder="optional">
+                    </div>
+                    <div class="form-group col-md-2 mb-2">
+                        <button class="btn btn-primary btn-block" type="submit">Apply</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div class="card card-outline card-secondary">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-users"></i> Per User Summary</h3>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>User</th>
+                                <th>Phone</th>
+                                <th class="text-right">Downloads</th>
+                                <th class="text-right">Telegram</th>
+                                <th class="text-right">Watch Together</th>
+                                <th class="text-right">Events</th>
+                                <th class="text-right">Playback Sessions</th>
+                                <th class="text-right">Watch Minutes</th>
+                                <th>Last Seen</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in users_analytics %}
+                            <tr>
+                                <td><a href="/user-playback-analytics?user_key={{ row.user_key }}">{{ row.user_name or row.user_key }}</a></td>
+                                <td>{{ row.user_phone or '-' }}</td>
+                                <td class="text-right">{{ row.downloads or 0 }}</td>
+                                <td class="text-right">{{ row.telegram or 0 }}</td>
+                                <td class="text-right">{{ row.watch_together or 0 }}</td>
+                                <td class="text-right">{{ row.events or 0 }}</td>
+                                <td class="text-right">{{ row.sessions or 0 }}</td>
+                                <td class="text-right">{{ row.watch_minutes or 0 }}</td>
+                                <td>{{ row.last_seen.strftime('%Y-%m-%d %H:%M') if row.last_seen else '-' }}</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="9" class="text-center text-muted">No analytics data found.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-lg-6">
+                <div class="card card-outline card-warning">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-list"></i> Activity Events</h3>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-sm table-dark mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>User</th>
+                                        <th>Action</th>
+                                        <th>Content</th>
+                                        <th>Time</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for row in events_view %}
+                                    <tr>
+                                        <td>{{ row.user_name or row.user_key }}</td>
+                                        <td class="text-uppercase text-warning">{{ row.action }}</td>
+                                        <td>{{ row.content_title or '-' }}</td>
+                                        <td>{{ row.created_at.strftime('%Y-%m-%d %H:%M') if row.created_at else '-' }}</td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="4" class="text-center text-muted">No events.</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="card card-outline card-success">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-play-circle"></i> Playback Progress</h3>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-sm table-dark mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>User</th>
+                                        <th>Content</th>
+                                        <th class="text-right">Progress</th>
+                                        <th class="text-right">Watched</th>
+                                        <th>Updated</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for row in progress_view %}
+                                    <tr>
+                                        <td>{{ row.user_key }}</td>
+                                        <td>{{ row.title }}</td>
+                                        <td class="text-right">{{ row.progress_pct }}%</td>
+                                        <td class="text-right">{{ row.position_min }} min</td>
+                                        <td>{{ row.updated_at.strftime('%Y-%m-%d %H:%M') if row.updated_at else '-' }}</td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="5" class="text-center text-muted">No playback rows.</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

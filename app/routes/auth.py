@@ -38,6 +38,19 @@ def _is_admin_phone(phone: str) -> bool:
     admin_phone = _normalize_phone(getattr(settings, "ADMIN_PHONE", "") or "")
     return bool(admin_phone) and _normalize_phone(phone) == admin_phone
 
+def _user_role(user: User | None) -> str:
+    return (str(getattr(user, "role", "") or "").strip().lower() if user else "")
+
+async def _can_use_admin_login_phone(phone: str) -> bool:
+    if _is_admin_phone(phone):
+        return True
+    row = await User.find_one(User.phone_number == phone)
+    if not row:
+        return False
+    if row.status != "approved":
+        return False
+    return _user_role(row) == "admin"
+
 async def _check_login_allowed(phone: str):
     user = await User.find_one(User.phone_number == phone)
     if not user:
@@ -50,12 +63,22 @@ async def _check_login_allowed(phone: str):
 
 @router.get("/login")
 async def login_page(request: Request):
-    """Renders the login page."""
-    return templates.TemplateResponse("login.html", {"request": request, "step": "phone"})
+    """User login page (Google)."""
+    return templates.TemplateResponse("login.html", {"request": request})
+
+@router.get("/admin-login")
+async def admin_login_page(request: Request):
+    """Admin login page (Telegram OTP)."""
+    return templates.TemplateResponse("admin_login.html", {"request": request, "step": "phone"})
 
 @router.get("/register")
 async def register_page(request: Request):
-    """Renders the account request page."""
+    """Backward compatibility alias."""
+    return RedirectResponse("/create-account-admin", status_code=302)
+
+@router.get("/create-account-admin")
+async def create_account_admin_page(request: Request):
+    """Admin account request page."""
     return templates.TemplateResponse("register.html", {"request": request})
 
 @router.get("/logout")
@@ -116,6 +139,7 @@ async def google_callback(request: Request, response: Response, code: str = "", 
             existing.requested_name = name
             existing.email = email
             existing.auth_provider = "google"
+            existing.role = "user"
             await existing.save()
         else:
             await User(
@@ -128,6 +152,7 @@ async def google_callback(request: Request, response: Response, code: str = "", 
                 requested_at=datetime.now(),
                 email=email,
                 auth_provider="google",
+                role="user",
             ).insert()
         response = RedirectResponse(url="/content")
         response.set_cookie(
@@ -146,8 +171,8 @@ async def send_code(phone: str = Form(...)):
     """Step 1: Connect to Telegram and send OTP."""
     try:
         phone = _normalize_phone(phone)
-        if not _is_admin_phone(phone):
-            return JSONResponse({"error": "Admin login only. Users should sign in with Google."}, status_code=403)
+        if not await _can_use_admin_login_phone(phone):
+            return JSONResponse({"error": "Admin login only. Use /create-account-admin and wait for approval."}, status_code=403)
 
         # Create a temporary client just for this auth flow
         client = Client(
@@ -177,8 +202,8 @@ async def send_code(phone: str = Form(...)):
 async def verify_code(response: Response, phone: str = Form(...), code: str = Form(...)):
     """Step 2: Verify OTP and Login."""
     phone = _normalize_phone(phone)
-    if not _is_admin_phone(phone):
-        return JSONResponse({"error": "Admin login only. Users should sign in with Google."}, status_code=403)
+    if not await _can_use_admin_login_phone(phone):
+        return JSONResponse({"error": "Admin login only."}, status_code=403)
 
     if phone not in temp_auth_data:
         return JSONResponse({"error": "Session expired. Try again."}, status_code=400)
@@ -222,8 +247,8 @@ async def verify_code(response: Response, phone: str = Form(...), code: str = Fo
 async def verify_password(response: Response, phone: str = Form(...), password: str = Form(...)):
     """Step 3 (Optional): Verify 2FA Password."""
     phone = _normalize_phone(phone)
-    if not _is_admin_phone(phone):
-        return JSONResponse({"error": "Admin login only. Users should sign in with Google."}, status_code=403)
+    if not await _can_use_admin_login_phone(phone):
+        return JSONResponse({"error": "Admin login only."}, status_code=403)
 
     if phone not in temp_auth_data:
         return JSONResponse({"error": "Session expired."}, status_code=400)
@@ -281,7 +306,8 @@ async def register_send_code(name: str = Form(...), phone: str = Form(...)):
         temp_auth_data[phone] = {
             "phone_code_hash": sent_code.phone_code_hash,
             "client": client,
-            "requested_name": name.strip()
+            "requested_name": name.strip(),
+            "role_requested": "admin"
         }
 
         return JSONResponse({"status": "success", "message": "Code sent"})
@@ -307,7 +333,7 @@ async def register_verify_code(phone: str = Form(...), code: str = Form(...)):
         await client.disconnect()
         del temp_auth_data[phone]
 
-        await save_pending_user(phone, session_string, user_info, requested_name)
+        await save_pending_user(phone, session_string, user_info, requested_name, role_requested=(data.get("role_requested") or "admin"))
         return JSONResponse({"status": "pending", "message": "Verified. Waiting for admin approval."})
 
     except errors.SessionPasswordNeeded:
@@ -332,7 +358,7 @@ async def register_verify_password(phone: str = Form(...), password: str = Form(
         await client.disconnect()
         del temp_auth_data[phone]
 
-        await save_pending_user(phone, session_string, user_info, requested_name)
+        await save_pending_user(phone, session_string, user_info, requested_name, role_requested=(data.get("role_requested") or "admin"))
         return JSONResponse({"status": "pending", "message": "Verified. Waiting for admin approval."})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=400)
@@ -351,20 +377,24 @@ async def save_user_to_db(phone, session_string, user_info):
                 status="approved",
                 requested_name=first_name,
                 requested_at=datetime.now(),
+                role="admin",
             )
             await existing_user.insert()
         else:
             raise ValueError("Account not found. Request access first.")
     if existing_user.status != "approved":
         raise ValueError("Account pending approval.")
+    if not _is_admin_phone(phone) and _user_role(existing_user) != "admin":
+        raise ValueError("This account is not approved for admin login.")
 
     first_name = user_info.first_name if hasattr(user_info, 'first_name') else "User"
     existing_user.session_string = session_string
     existing_user.first_name = first_name
     existing_user.telegram_user_id = getattr(user_info, "id", None)
+    existing_user.role = "admin"
     await existing_user.save()
 
-async def save_pending_user(phone, session_string, user_info, requested_name: str):
+async def save_pending_user(phone, session_string, user_info, requested_name: str, role_requested: str = "admin"):
     """Save account request as pending."""
     existing_user = await User.find_one(User.phone_number == phone)
     first_name = user_info.first_name if hasattr(user_info, 'first_name') else "User"
@@ -376,6 +406,7 @@ async def save_pending_user(phone, session_string, user_info, requested_name: st
         existing_user.status = "pending"
         existing_user.requested_name = requested_name
         existing_user.requested_at = now
+        existing_user.role_requested = role_requested
         await existing_user.save()
     else:
         new_user = User(
@@ -385,6 +416,7 @@ async def save_pending_user(phone, session_string, user_info, requested_name: st
             telegram_user_id=getattr(user_info, "id", None),
             status="pending",
             requested_name=requested_name,
-            requested_at=now
+            requested_at=now,
+            role_requested=role_requested
         )
         await new_user.insert()

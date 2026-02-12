@@ -9,7 +9,6 @@
     {% set _site = site if site else None %}
     {% set accent = _site.accent_color if _site else '#facc15' %}
     {% set bg = _site.bg_color if _site else '#070b12' %}
-    {% set card = _site.card_color if _site else '#111827' %}
     <style>
         :root {
             color-scheme: dark;
@@ -26,15 +25,15 @@
                 {{ bg }};
         }
         .brand-glow {
-            text-shadow: 0 0 18px rgba(250, 204, 21, 0.25);
+            text-shadow: 0 0 18px rgba(250, 204, 21, 0.22);
         }
         .fade-in-up {
-            animation: fadeInUp 0.55s ease both;
+            animation: fadeInUp 0.5s ease both;
         }
         @keyframes fadeInUp {
             from {
                 opacity: 0;
-                transform: translateY(12px);
+                transform: translateY(10px);
             }
             to {
                 opacity: 1;
@@ -58,36 +57,83 @@
     </style>
 </head>
 <body class="text-gray-100">
-    <header class="sticky top-0 z-50 border-b border-yellow-600/20 bg-black/80 backdrop-blur-xl">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
-            <a href="/" class="flex items-center gap-2 font-extrabold tracking-wide">
-                <span class="text-white text-xl sm:text-2xl">{{ (_site.site_name or 'Mystic') if _site else 'Mystic' }}</span>
-                <span class="text-yellow-400 text-xl sm:text-2xl brand-glow">{{ 'Movies' if _site else 'Movies' }}</span>
-            </a>
-            <nav class="hidden md:flex items-center gap-5 text-sm">
-                <a href="/" class="text-gray-300 hover:text-yellow-300 transition">Home</a>
-                <a href="/content" class="text-gray-300 hover:text-yellow-300 transition">Content</a>
-                <a href="/content/movies" class="text-gray-300 hover:text-yellow-300 transition">Movies</a>
-                <a href="/content/web-series" class="text-gray-300 hover:text-yellow-300 transition">Web Series</a>
+    <header class="sticky top-0 z-50 border-b border-yellow-600/20 bg-black/85 backdrop-blur-xl">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3">
+            <div class="flex items-center gap-3 lg:gap-5">
+                <button id="mobileMenuBtn" class="lg:hidden inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-700 text-gray-200 hover:border-yellow-500">
+                    <i class="fas fa-bars"></i>
+                </button>
+
+                <a href="/" class="shrink-0 font-extrabold tracking-wide flex items-center gap-2">
+                    <span class="text-white text-xl sm:text-2xl">{{ (_site.site_name or 'MysticMovies') if _site else 'MysticMovies' }}</span>
+                </a>
+
+                <nav class="hidden lg:flex items-center gap-5 text-sm">
+                    <a href="/" class="text-gray-300 hover:text-yellow-300 transition">Home</a>
+                    <a href="/content" class="text-gray-300 hover:text-yellow-300 transition">Content</a>
+                    <a href="/request-content" class="text-gray-300 hover:text-yellow-300 transition">Request Content</a>
+                    {% if is_admin %}
+                    <a href="/dashboard" class="text-gray-300 hover:text-yellow-300 transition">Dashboard</a>
+                    <a href="/storage" class="text-gray-300 hover:text-yellow-300 transition">Storage</a>
+                    {% endif %}
+                </nav>
+
+                <div class="flex-1 hidden md:block">
+                    <div class="relative max-w-xl">
+                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-500">
+                            <i class="fas fa-search"></i>
+                        </div>
+                        <input
+                            id="globalSearchInput"
+                            type="text"
+                            placeholder="Search published content..."
+                            class="w-full rounded-full border border-gray-700 bg-gray-900/90 pl-10 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400"
+                            autocomplete="off">
+                        <div id="globalSearchDropdown" class="hidden absolute mt-2 w-full rounded-2xl border border-gray-700 bg-black/95 shadow-2xl overflow-hidden"></div>
+                    </div>
+                </div>
+
+                <div class="ml-auto flex items-center gap-2 sm:gap-3">
+                    {% if user %}
+                    <a href="/profile" class="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-gray-900 border border-gray-700 hover:border-yellow-500 transition">
+                        <i class="fas fa-user text-yellow-400"></i>
+                        <span class="text-xs sm:text-sm">{{ user.first_name or "Profile" }}</span>
+                    </a>
+                    {% else %}
+                    <a href="/login" class="px-4 py-2 rounded-full bg-yellow-400 text-black font-bold text-xs sm:text-sm hover:bg-yellow-300 transition">Login</a>
+                    {% endif %}
+                </div>
+            </div>
+
+            <div class="mt-3 md:hidden">
+                <div class="relative">
+                    <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-500">
+                        <i class="fas fa-search"></i>
+                    </div>
+                    <input
+                        id="globalSearchInputMobile"
+                        type="text"
+                        placeholder="Search published content..."
+                        class="w-full rounded-full border border-gray-700 bg-gray-900/90 pl-10 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400"
+                        autocomplete="off">
+                    <div id="globalSearchDropdownMobile" class="hidden absolute mt-2 w-full rounded-2xl border border-gray-700 bg-black/95 shadow-2xl overflow-hidden"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="mobileMenuPanel" class="hidden lg:hidden border-t border-gray-800 bg-black/95">
+            <nav class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-col gap-2 text-sm">
+                <a href="/" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Home</a>
+                <a href="/content" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Content</a>
+                <a href="/request-content" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Request Content</a>
+                {% if user %}
+                <a href="/profile" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Profile</a>
+                {% endif %}
                 {% if is_admin %}
-                <a href="/dashboard" class="text-gray-300 hover:text-yellow-300 transition">Dashboard</a>
-                <a href="/storage" class="text-gray-300 hover:text-yellow-300 transition">Storage</a>
+                <a href="/dashboard" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Dashboard</a>
+                <a href="/storage" class="px-3 py-2 rounded-lg hover:bg-gray-900 text-gray-200">Storage</a>
                 {% endif %}
             </nav>
-            <div class="flex items-center gap-2 sm:gap-3">
-                {% if user %}
-                <a href="/content/watchlist" class="hidden sm:inline-flex px-4 py-2 rounded-full border border-gray-700 text-gray-200 hover:border-yellow-500 hover:text-yellow-300 transition text-xs sm:text-sm">
-                    Watchlist
-                </a>
-                <a href="/profile" class="inline-flex items-center gap-2 px-3 py-2 rounded-full bg-gray-900 border border-gray-700 hover:border-yellow-500 transition">
-                    <i class="fas fa-user text-yellow-400"></i>
-                    <span class="text-xs sm:text-sm">{{ user.first_name or "Profile" }}</span>
-                </a>
-                {% else %}
-                <a href="/login" class="px-4 py-2 rounded-full bg-yellow-400 text-black font-bold text-xs sm:text-sm hover:bg-yellow-300 transition">Login</a>
-                <a href="/register" class="px-4 py-2 rounded-full border border-gray-700 text-gray-100 text-xs sm:text-sm hover:border-yellow-500 hover:text-yellow-300 transition">Create Account</a>
-                {% endif %}
-            </div>
         </div>
     </header>
 
@@ -97,15 +143,115 @@
 
     <footer class="mt-12 border-t border-gray-900 bg-black/60">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 py-6 text-xs text-gray-500 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div>© 2026 {{ _site.footer_text if _site else 'MysticMovies' }}. Stream. Download. Telegram.</div>
+            <div>(c) 2026 {{ _site.footer_text if _site else 'MysticMovies' }}. Stream. Download. Telegram.</div>
             <div class="flex items-center gap-3">
                 <a href="/content" class="hover:text-yellow-300 transition">Content</a>
+                <a href="/request-content" class="hover:text-yellow-300 transition">Request Content</a>
                 {% if is_admin %}
                 <a href="/dashboard" class="hover:text-yellow-300 transition">Dashboard</a>
-                <a href="/storage" class="hover:text-yellow-300 transition">Storage</a>
                 {% endif %}
             </div>
         </div>
     </footer>
+
+    <script>
+        const mobileMenuBtn = document.getElementById("mobileMenuBtn");
+        const mobileMenuPanel = document.getElementById("mobileMenuPanel");
+        if (mobileMenuBtn && mobileMenuPanel) {
+            mobileMenuBtn.addEventListener("click", () => {
+                mobileMenuPanel.classList.toggle("hidden");
+            });
+        }
+
+        function bindGlobalSearch(inputEl, dropdownEl) {
+            if (!inputEl || !dropdownEl) return;
+            let timer = null;
+            let latestItems = [];
+
+            function esc(value) {
+                return String(value || "")
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;")
+                    .replace(/\"/g, "&quot;")
+                    .replace(/'/g, "&#39;");
+            }
+
+            function hideDropdown() {
+                dropdownEl.classList.add("hidden");
+                dropdownEl.innerHTML = "";
+            }
+
+            function renderItems(items) {
+                latestItems = items || [];
+                if (!items || items.length === 0) {
+                    hideDropdown();
+                    return;
+                }
+                dropdownEl.innerHTML = items.map(item => {
+                    const poster = item.poster
+                        ? `<img src="${esc(item.poster)}" alt="${esc(item.title)}" class="h-14 w-10 rounded object-cover border border-gray-700">`
+                        : `<div class="h-14 w-10 rounded border border-gray-700 bg-gray-900 flex items-center justify-center text-yellow-400"><i class="fas fa-film text-xs"></i></div>`;
+                    return `
+                        <a href="/content/details/${esc(item.slug)}" class="flex items-center gap-3 px-3 py-2 border-b border-gray-900 hover:bg-gray-900/80">
+                            ${poster}
+                            <div class="min-w-0">
+                                <div class="text-sm text-white truncate">${esc(item.title)}</div>
+                                <div class="text-xs text-gray-400">${esc(item.year || "-")} | ${esc((item.type || "").toUpperCase())}</div>
+                            </div>
+                        </a>
+                    `;
+                }).join("");
+                dropdownEl.classList.remove("hidden");
+            }
+
+            inputEl.addEventListener("input", () => {
+                const q = (inputEl.value || "").trim();
+                if (timer) clearTimeout(timer);
+                if (q.length < 2) {
+                    hideDropdown();
+                    return;
+                }
+                timer = setTimeout(async () => {
+                    try {
+                        const res = await fetch(`/content/search/suggestions?q=${encodeURIComponent(q)}`, { credentials: "same-origin" });
+                        if (!res.ok) {
+                            hideDropdown();
+                            return;
+                        }
+                        const data = await res.json();
+                        renderItems(data.items || []);
+                    } catch (e) {
+                        hideDropdown();
+                    }
+                }, 180);
+            });
+
+            inputEl.addEventListener("blur", () => {
+                setTimeout(hideDropdown, 180);
+            });
+
+            inputEl.addEventListener("keydown", (e) => {
+                if (e.key !== "Enter") return;
+                const q = (inputEl.value || "").trim();
+                if (!q) return;
+                e.preventDefault();
+                if (latestItems.length > 0 && latestItems[0].slug) {
+                    window.location.href = `/content/details/${latestItems[0].slug}`;
+                    return;
+                }
+                window.location.href = `/content?q=${encodeURIComponent(q)}`;
+            });
+        }
+
+        bindGlobalSearch(
+            document.getElementById("globalSearchInput"),
+            document.getElementById("globalSearchDropdown")
+        );
+        bindGlobalSearch(
+            document.getElementById("globalSearchInputMobile"),
+            document.getElementById("globalSearchDropdownMobile")
+        );
+    </script>
 </body>
 </html>

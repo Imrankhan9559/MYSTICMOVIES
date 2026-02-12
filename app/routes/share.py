@@ -14,7 +14,7 @@ from starlette.background import BackgroundTask
 from pyrogram import Client
 from beanie.operators import In, Or
 from beanie import PydanticObjectId
-from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress, TokenSetting, WatchParty, WatchPartyMember, WatchPartyMessage
+from app.db.models import FileSystemItem, User, SharedCollection, PlaybackProgress, TokenSetting, WatchParty, WatchPartyMember, WatchPartyMessage, UserActivityEvent
 from app.core.config import settings
 from app.routes.stream import telegram_stream_generator, _align_offset, _align_range, parallel_stream_generator, _get_parallel_clients, _extract_file_size, _pick_align
 from app.core.telegram_bot import tg_client, get_pool_client, get_storage_client, get_storage_chat_id, pick_storage_client, normalize_chat_id, ensure_peer_access
@@ -26,6 +26,51 @@ from app.routes.dashboard import get_current_user
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 logger = logging.getLogger(__name__)
+
+
+def _event_title(item: FileSystemItem | None) -> str:
+    if not item:
+        return ""
+    return (
+        (getattr(item, "series_title", "") or "").strip()
+        or (getattr(item, "title", "") or "").strip()
+        or (item.name or "").strip()
+    )
+
+
+async def _log_activity(
+    action: str,
+    request: Request | None = None,
+    viewer_name: str = "",
+    token: str = "",
+    item: FileSystemItem | None = None,
+    items: List[FileSystemItem] | None = None,
+    meta: dict | None = None,
+) -> None:
+    try:
+        user = await get_current_user(request) if request else None
+        user_type = "user" if user else ("public" if viewer_name else "guest")
+        user_phone = user.phone_number if user else None
+        user_name = (
+            (user.requested_name or user.first_name or user.phone_number)
+            if user else (viewer_name or None)
+        )
+        chosen = item or (items[0] if items else None)
+        event = UserActivityEvent(
+            action=(action or "").strip().lower(),
+            user_type=user_type,
+            user_key=user_phone or user_name or "guest",
+            user_phone=user_phone,
+            user_name=user_name,
+            token=(token or "").strip() or None,
+            item_id=str(chosen.id) if chosen else None,
+            content_title=_event_title(chosen) if chosen else None,
+            meta=meta or {},
+            created_at=datetime.now(),
+        )
+        await event.insert()
+    except Exception as exc:
+        logger.debug("Activity log failed for action=%s: %s", action, exc)
 
 def _natural_key(value: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", value or "")]
@@ -152,6 +197,8 @@ def _normalize_phone(phone: str) -> str:
 
 def _is_admin(user: User | None) -> bool:
     if not user: return False
+    if str(getattr(user, "role", "") or "").strip().lower() == "admin":
+        return True
     return _normalize_phone(user.phone_number) == _normalize_phone(getattr(settings, "ADMIN_PHONE", ""))
 
 def _order_items(items: List[FileSystemItem], preferred_ids: List[str] | None = None) -> List[FileSystemItem]:
@@ -359,7 +406,7 @@ async def create_bundle(request: Request, item_ids: List[str] = Body(...)):
 @router.get("/s/{token}")
 async def public_view(request: Request, token: str):
     # Strict gate: require valid link token and viewer name
-    viewer_name = await _require_token_and_username(request, "https://mysticmovies.rf.gd/login")
+    viewer_name = await _require_token_and_username(request, "/login")
     if isinstance(viewer_name, RedirectResponse):
         return viewer_name
     user = await get_current_user(request)
@@ -588,7 +635,7 @@ async def watch_party_view(request: Request, token: str):
     token_doc = await TokenSetting.find_one(TokenSetting.key == "link_token")
     provided = (request.query_params.get("t") or "").strip()
     if not token_doc or token_doc.value != provided:
-        return RedirectResponse("https://mysticmovies.rf.gd/login")
+        return RedirectResponse("/login")
     viewer_name = (request.query_params.get("u") or request.query_params.get("U") or "").strip()
     party = await _get_or_create_party(token, viewer_name) if viewer_name else None
 
@@ -648,6 +695,17 @@ async def watch_party_view(request: Request, token: str):
                 except Exception as e:
                     logger.warning(f"HLS prep failed for watch party item: {e}")
 
+        if viewer_name:
+            await _log_activity(
+                action="watch_together_open",
+                request=request,
+                viewer_name=viewer_name,
+                token=token,
+                item=active_item,
+                items=ordered_items,
+                meta={"kind": "folder"},
+            )
+
         return templates.TemplateResponse("watch_party.html", {
             "request": request,
             "episodes": ordered_items,
@@ -692,6 +750,16 @@ async def watch_party_view(request: Request, token: str):
                     active_hls = hls_url_for(str(item.id))
             except Exception as e:
                 logger.warning(f"HLS prep failed for watch party item: {e}")
+
+    if viewer_name:
+        await _log_activity(
+            action="watch_together_open",
+            request=request,
+            viewer_name=viewer_name,
+            token=token,
+            item=item,
+            meta={"kind": "bundle_or_file"},
+        )
 
     return templates.TemplateResponse("watch_party.html", {
         "request": request,
@@ -940,12 +1008,22 @@ async def public_download_by_id(item_id: str, request: Request, range: str = Hea
 
 @router.get("/d/{token}")
 async def public_download_token(request: Request, token: str, range: str = Header(None)):
-    viewer_name = await _require_token_and_username(request, "https://mysticmovies.rf.gd/login")
+    viewer_name = await _require_token_and_username(request, "/login")
     if isinstance(viewer_name, RedirectResponse):
         return viewer_name
     kind, items = await _resolve_shared_items(token)
     if not kind or not items:
         raise HTTPException(404)
+
+    await _log_activity(
+        action="download_request",
+        request=request,
+        viewer_name=viewer_name,
+        token=token,
+        item=items[0] if items else None,
+        items=items,
+        meta={"kind": kind, "item_count": len(items)},
+    )
 
     if kind == "file":
         return await public_stream_by_id(str(items[0].id), request, range, download=True)
@@ -982,12 +1060,21 @@ async def public_download_token(request: Request, token: str, range: str = Heade
 
 @router.get("/t/{token}")
 async def telegram_redirect(token: str, request: Request):
-    viewer_name = await _require_token_and_username(request, "https://mysticmovies.rf.gd/login")
+    viewer_name = await _require_token_and_username(request, "/login")
     if isinstance(viewer_name, RedirectResponse):
         return viewer_name
     kind, items = await _resolve_shared_items(token)
     if not kind:
         raise HTTPException(404)
+    await _log_activity(
+        action="telegram_request",
+        request=request,
+        viewer_name=viewer_name,
+        token=token,
+        item=items[0] if items else None,
+        items=items,
+        meta={"kind": kind, "item_count": len(items)},
+    )
     bot_username = (getattr(settings, "BOT_USERNAME", "") or "").lstrip("@")
     if not bot_username:
         return HTMLResponse("Bot username is not configured.", status_code=400)
@@ -1027,6 +1114,12 @@ async def watch_party_join(payload: dict = Body(...)):
     else:
         await WatchPartyMember(token=token, user_name=user_name).insert()
     role = "host" if party.host_name == user_name else "viewer"
+    await _log_activity(
+        action="watch_together_join",
+        viewer_name=user_name,
+        token=token,
+        meta={"role": role},
+    )
     return {"role": role, "host_name": party.host_name, "room_code": party.room_code}
 
 

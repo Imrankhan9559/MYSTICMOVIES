@@ -1,4 +1,3 @@
-
 {% extends "admin_base.html" %}
 
 {% block content %}
@@ -6,8 +5,8 @@
     <div class="container-fluid">
         <div class="row mb-2">
             <div class="col-sm-6">
-                <h1 class="m-0">Main Control</h1>
-                <div class="admin-section-note">Manage movies and web series, publish catalog, and review activity.</div>
+                <h1 class="m-0">Dashboard</h1>
+                <div class="admin-section-note">Manage published content, users, and approvals.</div>
             </div>
             <div class="col-sm-6">
                 <ol class="breadcrumb float-sm-right">
@@ -27,218 +26,97 @@
                     <div class="inner">
                         <h3>{{ published_movies or 0 }}</h3>
                         <p>Published Movies</p>
+                        <div class="admin-section-note">{{ published_movie_files or 0 }} Attached</div>
                     </div>
                     <div class="icon"><i class="fas fa-film"></i></div>
-                    <a href="#published-catalog" class="small-box-footer">View <i class="fas fa-arrow-circle-right"></i></a>
+                    <a href="/dashboard/publish-content" class="small-box-footer">Open <i class="fas fa-arrow-circle-right"></i></a>
                 </div>
             </div>
             <div class="col-lg-3 col-6">
                 <div class="small-box bg-dark">
                     <div class="inner">
                         <h3>{{ published_series or 0 }}</h3>
-                        <p>Published Series</p>
+                        <p>Published Web Series</p>
+                        <div class="admin-section-note">{{ published_series_files or 0 }} Attached</div>
                     </div>
                     <div class="icon"><i class="fas fa-tv"></i></div>
-                    <a href="#published-catalog" class="small-box-footer">View <i class="fas fa-arrow-circle-right"></i></a>
+                    <a href="/dashboard/publish-content" class="small-box-footer">Open <i class="fas fa-arrow-circle-right"></i></a>
                 </div>
             </div>
             <div class="col-lg-3 col-6">
                 <div class="small-box bg-dark">
                     <div class="inner">
                         <h3>{{ pending_storage or 0 }}</h3>
-                        <p>Storage Pending</p>
+                        <p>Pending in Storage</p>
                     </div>
-                    <div class="icon"><i class="fas fa-magic"></i></div>
-                    <a href="/dashboard/add-content" class="small-box-footer">Manage <i class="fas fa-arrow-circle-right"></i></a>
+                    <div class="icon"><i class="fas fa-database"></i></div>
+                    <a href="/dashboard/add-content" class="small-box-footer">Publish <i class="fas fa-arrow-circle-right"></i></a>
                 </div>
             </div>
             <div class="col-lg-3 col-6">
                 <div class="small-box bg-dark">
                     <div class="inner">
-                        <h3>{{ total_files or 0 }}</h3>
-                        <p>Total Files</p>
+                        <h3>{{ total_users or 0 }}</h3>
+                        <p>Total Users</p>
                     </div>
-                    <div class="icon"><i class="fas fa-database"></i></div>
-                    <a href="/storage" class="small-box-footer">Open Storage <i class="fas fa-arrow-circle-right"></i></a>
+                    <div class="icon"><i class="fas fa-users"></i></div>
+                    <a href="#user-db" class="small-box-footer">Manage <i class="fas fa-arrow-circle-right"></i></a>
                 </div>
             </div>
         </div>
-        <div class="row">
-            <div class="col-lg-6">
-                <div class="card card-outline card-info">
-                    <div class="card-header">
-                        <h3 class="card-title"><i class="fas fa-key"></i> Link Token</h3>
-                        <div class="card-tools">
-                            <button type="button" onclick="navigator.clipboard.writeText('{{ link_token }}')" class="btn btn-sm btn-primary">Copy</button>
-                            <form action="/admin/token/regenerate" method="post" class="d-inline">
-                                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Regenerate token? All share links need updated t= value.')">Regenerate</button>
-                            </form>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        <div class="text-muted text-sm">Current token</div>
-                        <div class="font-weight-bold text-monospace">{{ link_token or 'not-set' }}</div>
-                        <div class="admin-section-note mt-2">Copy this value when creating share links.</div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-lg-6">
-                <div class="card card-outline card-warning">
-                    <div class="card-header">
-                        <h3 class="card-title"><i class="fas fa-database"></i> TMDB Metadata</h3>
-                        <div class="card-tools">
-                            <form action="/admin/tmdb/refresh" method="post" class="d-inline">
-                                <button type="submit" class="btn btn-sm btn-warning" {% if not tmdb_configured %}disabled{% endif %}>
-                                    Refresh TMDB Metadata
-                                </button>
-                            </form>
-                        </div>
-                    </div>
-                    <div class="card-body">
-                        {% if tmdb_configured %}
-                            <span class="badge badge-success">TMDB_API_KEY configured</span>
-                        {% else %}
-                            <span class="badge badge-danger">TMDB_API_KEY missing</span>
-                            <div class="admin-section-note mt-2">Set it in `.env` (local) or Render Environment Variables.</div>
-                        {% endif %}
-                        {% if tmdb_status == "refresh_started" %}
-                            <div class="admin-section-note mt-2 text-warning">Refresh started. Check a content page in 1-2 minutes.</div>
-                        {% elif tmdb_status == "missing" %}
-                            <div class="admin-section-note mt-2 text-danger">Cannot refresh without TMDB_API_KEY.</div>
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="row">
-            <div class="col-lg-7">
-                <div class="card card-outline card-secondary">
-                    <div class="card-header">
-                        <h3 class="card-title"><i class="fas fa-robot"></i> Bot Pool Health</h3>
-                        <div class="card-tools">
-                            <span class="badge badge-info">Live check</span>
-                        </div>
-                    </div>
-                    <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table table-sm table-dark mb-0">
-                                <thead>
-                                    <tr>
-                                        <th>Bot</th>
-                                        <th>Status</th>
-                                        <th>Detail</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {% for b in bots %}
-                                    <tr>
-                                        <td class="text-monospace">{{ b.label }}</td>
-                                        <td>
-                                            {% if b.ok %}
-                                                <span class="badge badge-success">OK</span>
-                                            {% else %}
-                                                <span class="badge badge-danger">FAIL</span>
-                                            {% endif %}
-                                        </td>
-                                        <td class="text-muted">{{ b.detail }}</td>
-                                    </tr>
-                                    {% else %}
-                                    <tr><td colspan="3" class="text-center text-muted">No bots configured</td></tr>
-                                    {% endfor %}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-lg-5">
-                <div class="card card-outline card-info">
-                    <div class="card-header">
-                        <h3 class="card-title"><i class="fas fa-sliders-h"></i> Bot Controls</h3>
-                    </div>
-                    <div class="card-body">
-                        <form action="/admin/bots/update_tokens" method="post">
-                            <div class="form-group">
-                                <label>Pool Tokens (comma or newline)</label>
-                                <textarea name="bot_tokens" rows="3" class="form-control" placeholder="123:ABC, 456:DEF">{{ pool_tokens }}</textarea>
-                            </div>
-                            <button type="submit" class="btn btn-primary btn-block">Save & Reload Pool</button>
-                        </form>
-                        <hr />
-                        <form action="/admin/bots/speedtest" method="post">
-                            <div class="form-group">
-                                <label><i class="fas fa-tachometer-alt"></i> Speed Test (downloads ~1MB)</label>
-                            </div>
-                            <button type="submit" class="btn btn-success btn-block">Run Speed Test</button>
-                            {% if speed_result %}
-                                {% if speed_result.ok %}
-                                    <div class="admin-section-note mt-2">~{{ (speed_result.mb_per_s or 0)|round(2) }} MB/s ({{ (speed_result.bytes/1024/1024)|round(2) }} MB in {{ speed_result.seconds|round(2) }}s)</div>
-                                {% else %}
-                                    <div class="admin-section-note mt-2 text-danger">Failed: {{ speed_result.error }}</div>
-                                {% endif %}
-                            {% endif %}
-                        </form>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="card card-outline card-warning">
-            <div class="card-header">
-                <h3 class="card-title"><i class="fas fa-palette"></i> Site Settings</h3>
-                <div class="card-tools">
-                    <span class="badge badge-warning">Theme & Hero</span>
-                </div>
-            </div>
-            <div class="card-body">
-                <form action="/admin/site/save" method="post">
-                    <div class="form-row">
-                        <div class="form-group col-md-6">
-                            <label>Site Name</label>
-                            <input name="site_name" value="{{ site.site_name if site else 'mysticmovies' }}" class="form-control" />
-                        </div>
-                        <div class="form-group col-md-6">
-                            <label>Accent Color</label>
-                            <input name="accent_color" value="{{ site.accent_color if site else '#facc15' }}" class="form-control" />
-                        </div>
-                        <div class="form-group col-md-6">
-                            <label>Background Color</label>
-                            <input name="bg_color" value="{{ site.bg_color if site else '#070b12' }}" class="form-control" />
-                        </div>
-                        <div class="form-group col-md-6">
-                            <label>Card Color</label>
-                            <input name="card_color" value="{{ site.card_color if site else '#111827' }}" class="form-control" />
-                        </div>
-                        <div class="form-group col-md-12">
-                            <label>Hero Title</label>
-                            <input name="hero_title" value="{{ site.hero_title if site else '' }}" class="form-control" />
-                        </div>
-                        <div class="form-group col-md-12">
-                            <label>Hero Subtitle</label>
-                            <input name="hero_subtitle" value="{{ site.hero_subtitle if site else '' }}" class="form-control" />
-                        </div>
-                        <div class="form-group col-md-6">
-                            <label>Hero CTA Text</label>
-                            <input name="hero_cta_text" value="{{ site.hero_cta_text if site else 'Browse Content' }}" class="form-control" />
-                        </div>
-                        <div class="form-group col-md-6">
-                            <label>Hero CTA Link</label>
-                            <input name="hero_cta_link" value="{{ site.hero_cta_link if site else '/content' }}" class="form-control" />
-                        </div>
-                        <div class="form-group col-md-12">
-                            <label>Footer Text</label>
-                            <input name="footer_text" value="{{ site.footer_text if site else 'MysticMovies' }}" class="form-control" />
-                        </div>
-                    </div>
-                    <button class="btn btn-warning">Save Site Settings</button>
-                </form>
-            </div>
-        </div>
+
         <div class="card card-outline card-info">
             <div class="card-header">
-                <h3 class="card-title"><i class="fas fa-inbox"></i> Content Requests</h3>
+                <h3 class="card-title"><i class="fas fa-folder-open"></i> Published Snapshot</h3>
                 <div class="card-tools">
-                    <span class="badge badge-info">User Requests</span>
+                    <a href="/dashboard/publish-content" class="btn btn-sm btn-primary">View All</a>
                 </div>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-sm table-dark mb-0">
+                        <thead>
+                            <tr>
+                                <th>Poster</th>
+                                <th>Title</th>
+                                <th>Type</th>
+                                <th>Release</th>
+                                <th>Files</th>
+                                <th>Size</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for g in published_preview %}
+                            <tr>
+                                <td style="width:72px;">
+                                    {% if g.poster %}
+                                    <img src="{{ g.poster }}" alt="{{ g.title }}" style="width:54px;height:76px;object-fit:cover;" class="rounded border border-secondary">
+                                    {% else %}
+                                    <div class="rounded border border-secondary d-flex align-items-center justify-content-center" style="width:54px;height:76px;">
+                                        <i class="fas fa-image text-muted"></i>
+                                    </div>
+                                    {% endif %}
+                                </td>
+                                <td class="font-weight-bold">{{ g.title }}</td>
+                                <td>
+                                    <span class="badge badge-secondary text-uppercase">{{ g.type }}</span>
+                                </td>
+                                <td>{{ g.release_date_label or '-' }}</td>
+                                <td>{{ g.file_count }} attached</td>
+                                <td>{{ g.total_size_label }}</td>
+                            </tr>
+                            {% else %}
+                            <tr><td colspan="6" class="text-center text-muted">No published content.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="card card-outline card-warning">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-inbox"></i> Pending Content Requests</h3>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
@@ -255,10 +133,10 @@
                         <tbody>
                             {% for r in pending_content_requests %}
                             <tr>
-                                <td class="text-xs">{{ r.user_phone }}</td>
+                                <td>{{ r.user_phone }}</td>
                                 <td class="text-uppercase">{{ r.request_type }}</td>
                                 <td>{{ r.title }}</td>
-                                <td class="text-muted">{{ r.note or '-' }}</td>
+                                <td class="text-muted">{{ r.note or "-" }}</td>
                                 <td class="text-right">
                                     <form action="/admin/request/{{ r.id }}/fulfilled" method="post" class="d-inline">
                                         <button class="btn btn-sm btn-success">Fulfilled</button>
@@ -269,235 +147,114 @@
                                 </td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="5" class="text-center text-muted">No pending requests</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted">No pending requests.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
                 </div>
             </div>
         </div>
-        <div class="card card-outline card-secondary">
-            <div class="card-header">
-                <h3 class="card-title"><i class="fas fa-tags"></i> Catalog Metadata</h3>
-                <div class="card-tools">
-                    <span class="badge badge-secondary">Tag Movies or Series</span>
-                </div>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-sm table-dark mb-0">
-                        <thead>
-                            <tr>
-                                <th>File</th>
-                                <th>Type</th>
-                                <th>Series/Season/Episode</th>
-                                <th>Quality</th>
-                                <th class="text-right">Save</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for item in content_items %}
-                            <tr>
-                                <form action="/admin/content/update" method="post">
-                                    <input type="hidden" name="item_id" value="{{ item.id }}">
-                                    <td class="text-truncate" style="max-width: 240px;" title="{{ item.name }}">{{ item.name }}</td>
-                                    <td>
-                                        <select name="catalog_type" class="custom-select custom-select-sm">
-                                            <option value="movie" {% if item.catalog_type == "movie" %}selected{% endif %}>Movie</option>
-                                            <option value="series" {% if item.catalog_type == "series" %}selected{% endif %}>Series</option>
-                                        </select>
-                                    </td>
-                                    <td>
-                                        <input name="series_title" value="{{ item.series_title or '' }}" placeholder="Series title" class="form-control form-control-sm mb-1">
-                                        <div class="form-row">
-                                            <div class="col">
-                                                <input name="season" value="{{ item.season or '' }}" placeholder="S" class="form-control form-control-sm">
-                                            </div>
-                                            <div class="col">
-                                                <input name="episode" value="{{ item.episode or '' }}" placeholder="E" class="form-control form-control-sm">
-                                            </div>
-                                        </div>
-                                    </td>
-                                    <td>
-                                        <input name="quality" value="{{ item.quality or '' }}" placeholder="1080P" class="form-control form-control-sm">
-                                    </td>
-                                    <td class="text-right">
-                                        <button class="btn btn-sm btn-primary">Save</button>
-                                    </td>
-                                    <input type="hidden" name="title" value="{{ item.title or '' }}">
-                                    <input type="hidden" name="description" value="{{ item.description or '' }}">
-                                    <input type="hidden" name="year" value="{{ item.year or '' }}">
-                                    <input type="hidden" name="genres" value="{{ (item.genres or [])|join(',') }}">
-                                    <input type="hidden" name="actors" value="{{ (item.actors or [])|join(',') }}">
-                                    <input type="hidden" name="director" value="{{ item.director or '' }}">
-                                    <input type="hidden" name="trailer_url" value="{{ item.trailer_url or '' }}">
-                                </form>
-                            </tr>
-                            {% else %}
-                            <tr><td colspan="5" class="text-center text-muted">No files found</td></tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        <div class="row">
-            <div class="col-md-4">
-                <div class="info-box bg-dark">
-                    <span class="info-box-icon bg-info"><i class="fas fa-users"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Users</span>
-                        <span class="info-box-number">{{ total_users }}</span>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="info-box bg-dark">
-                    <span class="info-box-icon bg-warning"><i class="fas fa-file-archive"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Total Files</span>
-                        <span class="info-box-number">{{ total_files }}</span>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-4">
-                <div class="info-box bg-dark">
-                    <span class="info-box-icon bg-danger"><i class="fas fa-server"></i></span>
-                    <div class="info-box-content">
-                        <span class="info-box-text">Database</span>
-                        <span class="info-box-number">MongoDB</span>
-                    </div>
-                </div>
-            </div>
-        </div>
+
         <div class="card card-outline card-warning">
             <div class="card-header">
-                <h3 class="card-title"><i class="fas fa-user-check"></i> Pending Requests</h3>
-                <div class="card-tools">
-                    <span class="badge badge-warning">Approval Needed</span>
-                </div>
+                <h3 class="card-title"><i class="fas fa-user-check"></i> Pending Account Requests</h3>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
                     <table class="table table-sm table-dark mb-0">
                         <thead>
                             <tr>
-                                <th>Phone Number</th>
+                                <th>Phone</th>
                                 <th>Requested Name</th>
+                                <th>Requested Role</th>
                                 <th>Requested At</th>
-                                <th class="text-right">Actions</th>
+                                <th class="text-right">Action</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {% for user in pending_users %}
+                            {% for row in pending_users %}
                             <tr>
-                                <td>{{ user.phone_number }}</td>
-                                <td>{{ user.requested_name or user.first_name or "User" }}</td>
-                                <td>{{ user.requested_at.strftime('%Y-%m-%d') if user.requested_at else '-' }}</td>
+                                <td>{{ row.phone_number }}</td>
+                                <td>{{ row.requested_name or row.first_name or "-" }}</td>
+                                <td><span class="badge badge-danger">{{ (row.role_requested or "user")|upper }}</span></td>
+                                <td>{{ row.requested_at.strftime('%Y-%m-%d %H:%M') if row.requested_at else "-" }}</td>
                                 <td class="text-right">
                                     <form action="/admin/approve_user" method="post" class="d-inline">
-                                        <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
+                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
                                         <button type="submit" class="btn btn-sm btn-success">Approve</button>
                                     </form>
                                     <form action="/admin/block_user" method="post" class="d-inline">
-                                        <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
+                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
                                         <button type="submit" class="btn btn-sm btn-secondary">Block</button>
                                     </form>
                                 </td>
                             </tr>
                             {% else %}
-                            <tr><td colspan="4" class="text-center text-muted">No pending requests</td></tr>
+                            <tr><td colspan="5" class="text-center text-muted">No pending user approvals.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
                 </div>
             </div>
         </div>
-        <div class="card card-outline card-danger">
+
+        <div class="card card-outline card-danger" id="user-db">
             <div class="card-header">
-                <h3 class="card-title"><i class="fas fa-database"></i> User Database</h3>
-                <div class="card-tools">
-                    <span class="badge badge-danger">Restricted Access</span>
-                </div>
+                <h3 class="card-title"><i class="fas fa-users-cog"></i> User Database</h3>
             </div>
             <div class="card-body p-0">
                 <div class="table-responsive">
                     <table class="table table-sm table-dark mb-0">
                         <thead>
                             <tr>
-                                <th>Phone Number</th>
+                                <th>Phone</th>
+                                <th>Name</th>
                                 <th>Status</th>
-                                <th>Joined Date</th>
+                                <th>Type</th>
+                                <th>Joined</th>
                                 <th class="text-right">Actions</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {% for user in users %}
+                            {% for row in users %}
                             <tr>
-                                <td>{{ user.phone_number }}</td>
+                                <td>{{ row.phone_number }}</td>
+                                <td>{{ row.requested_name or row.first_name or "-" }}</td>
                                 <td>
-                                    {% if user.status == "approved" %}
-                                        <span class="badge badge-success">APPROVED</span>
-                                    {% elif user.status == "pending" %}
-                                        <span class="badge badge-warning">PENDING</span>
+                                    {% if row.status == "approved" %}
+                                    <span class="badge badge-success">APPROVED</span>
+                                    {% elif row.status == "pending" %}
+                                    <span class="badge badge-warning">PENDING</span>
                                     {% else %}
-                                        <span class="badge badge-secondary">BLOCKED</span>
+                                    <span class="badge badge-secondary">BLOCKED</span>
                                     {% endif %}
                                 </td>
-                                <td>{{ user.created_at.strftime('%Y-%m-%d') }}</td>
+                                <td>
+                                    <form action="/admin/user/set-role" method="post" class="form-inline">
+                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
+                                        <input type="hidden" name="return_to" value="/dashboard">
+                                        <select name="role" class="custom-select custom-select-sm mr-1">
+                                            {% set role_value = (row.role or 'user')|lower %}
+                                            <option value="user" {% if role_value == 'user' %}selected{% endif %}>USER</option>
+                                            <option value="admin" {% if role_value == 'admin' %}selected{% endif %}>ADMIN</option>
+                                        </select>
+                                        <button type="submit" class="btn btn-sm btn-outline-light">Save</button>
+                                    </form>
+                                </td>
+                                <td>{{ row.created_at.strftime('%Y-%m-%d') if row.created_at else '-' }}</td>
                                 <td class="text-right">
                                     <form action="/admin/block_user" method="post" class="d-inline">
-                                        <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
+                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
                                         <button type="submit" class="btn btn-sm btn-secondary">Block</button>
                                     </form>
                                     <form action="/admin/delete_user" method="post" class="d-inline">
-                                        <input type="hidden" name="user_phone" value="{{ user.phone_number }}">
-                                        <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                        <input type="hidden" name="user_phone" value="{{ row.phone_number }}">
+                                        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Delete this user?')">Delete</button>
                                     </form>
                                 </td>
                             </tr>
-                            {% endfor %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-        <div class="card card-outline card-info">
-            <div class="card-header">
-                <h3 class="card-title"><i class="fas fa-chart-line"></i> Recent Playback Analytics</h3>
-                <div class="card-tools">
-                    <span class="badge badge-info">Last 50 Events</span>
-                </div>
-            </div>
-            <div class="card-body p-0">
-                <div class="table-responsive">
-                    <table class="table table-sm table-dark mb-0">
-                        <thead>
-                            <tr>
-                                <th>User</th>
-                                <th>Type</th>
-                                <th>Item</th>
-                                <th>Progress</th>
-                                <th>Updated</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% for p in recent_progress %}
-                            <tr>
-                                <td>{{ p.user_key }}</td>
-                                <td class="text-uppercase">{{ p.user_type }}</td>
-                                <td>{{ items_map.get(p.item_id, p.item_id) }}</td>
-                                <td>
-                                    {% if p.duration > 0 %}
-                                        {{ ((p.position / p.duration) * 100) | round(1) }}%
-                                    {% else %}
-                                        0%
-                                    {% endif %}
-                                </td>
-                                <td>{{ p.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
-                            </tr>
                             {% else %}
-                            <tr><td colspan="5" class="text-center text-muted">No analytics yet</td></tr>
+                            <tr><td colspan="6" class="text-center text-muted">No users found.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -506,49 +263,4 @@
         </div>
     </div>
 </section>
-{% endblock %}
-
-{% block page_scripts %}
-<script>
-document.querySelectorAll(".tmdb-fetch").forEach(function (btn) {
-    btn.addEventListener("click", async function () {
-        var id = btn.dataset.group;
-        var titleEl = document.getElementById("title-" + id);
-        var typeEl = document.getElementById("type-" + id);
-        var yearEl = document.getElementById("year-" + id);
-        var descEl = document.getElementById("desc-" + id);
-        var genresEl = document.getElementById("genres-" + id);
-        var actorsEl = document.getElementById("actors-" + id);
-        var directorEl = document.getElementById("director-" + id);
-        var trailerEl = document.getElementById("trailer-" + id);
-        if (!titleEl || !typeEl) return;
-        var q = titleEl.value.trim();
-        var contentType = typeEl.value;
-        if (!q) return;
-        btn.disabled = true;
-        btn.textContent = "Fetching...";
-        try {
-            var res = await fetch("/dashboard/tmdb/lookup?q=" + encodeURIComponent(q) + "&content_type=" + encodeURIComponent(contentType));
-            var data = await res.json();
-            if (!data.ok) {
-                alert(data.error || "TMDB fetch failed");
-            } else {
-                if (data.title && titleEl) titleEl.value = data.title;
-                if (data.year && yearEl) yearEl.value = data.year;
-                if (data.description && descEl) descEl.value = data.description;
-                if (data.genres && genresEl) genresEl.value = data.genres.join(", ");
-                if (data.actors && actorsEl) actorsEl.value = data.actors.join(", ");
-                if (data.director && directorEl) directorEl.value = data.director;
-                if (data.trailer_url && trailerEl) trailerEl.value = data.trailer_url;
-            }
-        } catch (e) {
-            alert("TMDB fetch failed");
-        } finally {
-            btn.disabled = false;
-            btn.textContent = "Auto Fetch TMDB";
-        }
-    });
-});
-
-</script>
 {% endblock %}

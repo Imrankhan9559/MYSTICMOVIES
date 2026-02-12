@@ -1,0 +1,184 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="content-header">
+    <div class="container-fluid">
+        <div class="row mb-2">
+            <div class="col-sm-6">
+                <h1 class="m-0">Main Settings</h1>
+                <div class="admin-section-note">Link token, TMDB tools, bot health/control, speed test, and site settings.</div>
+            </div>
+            <div class="col-sm-6">
+                <ol class="breadcrumb float-sm-right">
+                    <li class="breadcrumb-item"><a href="/dashboard">Dashboard</a></li>
+                    <li class="breadcrumb-item active">Main Settings</li>
+                </ol>
+            </div>
+        </div>
+    </div>
+</div>
+
+<section class="content">
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-lg-6">
+                <div class="card card-outline card-info">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-key"></i> Link Token</h3>
+                        <div class="card-tools">
+                            <button type="button" onclick="navigator.clipboard.writeText('{{ link_token }}')" class="btn btn-sm btn-primary">Copy</button>
+                            <form action="/admin/token/regenerate" method="post" class="d-inline">
+                                <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Regenerate token? All share links need updated t= value.')">Regenerate</button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="text-muted text-sm">Current token</div>
+                        <div class="font-weight-bold text-monospace">{{ link_token or 'not-set' }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-6">
+                <div class="card card-outline card-warning">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-database"></i> TMDB Metadata</h3>
+                        <div class="card-tools">
+                            <form action="/admin/tmdb/refresh" method="post" class="d-inline">
+                                <button type="submit" class="btn btn-sm btn-warning" {% if not tmdb_configured %}disabled{% endif %}>Refresh TMDB Metadata</button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        {% if tmdb_configured %}
+                        <span class="badge badge-success">TMDB_API_KEY configured</span>
+                        {% else %}
+                        <span class="badge badge-danger">TMDB_API_KEY missing</span>
+                        {% endif %}
+                        {% if tmdb_status == "refresh_started" %}
+                        <div class="admin-section-note mt-2 text-warning">Refresh started. Check details pages after 1-2 minutes.</div>
+                        {% elif tmdb_status == "missing" %}
+                        <div class="admin-section-note mt-2 text-danger">Cannot refresh without TMDB_API_KEY.</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row">
+            <div class="col-lg-7">
+                <div class="card card-outline card-secondary">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-robot"></i> Bot Health</h3>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-sm table-dark mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Bot</th>
+                                        <th>Status</th>
+                                        <th>Detail</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for b in bots %}
+                                    <tr>
+                                        <td class="text-monospace">{{ b.label }}</td>
+                                        <td>
+                                            {% if b.ok %}
+                                            <span class="badge badge-success">OK</span>
+                                            {% else %}
+                                            <span class="badge badge-danger">FAIL</span>
+                                            {% endif %}
+                                        </td>
+                                        <td class="text-muted">{{ b.detail }}</td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="3" class="text-center text-muted">No bots configured.</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-5">
+                <div class="card card-outline card-info">
+                    <div class="card-header">
+                        <h3 class="card-title"><i class="fas fa-sliders-h"></i> Bot Control & Speed Test</h3>
+                    </div>
+                    <div class="card-body">
+                        <form action="/admin/bots/update_tokens" method="post">
+                            <div class="form-group">
+                                <label>Pool Tokens (comma or newline)</label>
+                                <textarea name="bot_tokens" rows="3" class="form-control" placeholder="123:ABC, 456:DEF">{{ pool_tokens }}</textarea>
+                            </div>
+                            <button type="submit" class="btn btn-primary btn-block">Save & Reload Pool</button>
+                        </form>
+                        <hr />
+                        <form action="/admin/bots/speedtest" method="post">
+                            <button type="submit" class="btn btn-success btn-block">Run Speed Test</button>
+                            {% if speed_result %}
+                                {% if speed_result.ok %}
+                                <div class="admin-section-note mt-2">~{{ (speed_result.mb_per_s or 0)|round(2) }} MB/s ({{ (speed_result.bytes/1024/1024)|round(2) }} MB in {{ speed_result.seconds|round(2) }}s)</div>
+                                {% else %}
+                                <div class="admin-section-note mt-2 text-danger">Failed: {{ speed_result.error }}</div>
+                                {% endif %}
+                            {% endif %}
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card card-outline card-warning">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-palette"></i> Site Settings</h3>
+            </div>
+            <div class="card-body">
+                <form action="/admin/site/save" method="post">
+                    <div class="form-row">
+                        <div class="form-group col-md-6">
+                            <label>Site Name</label>
+                            <input name="site_name" value="{{ site.site_name if site else 'mysticmovies' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Accent Color</label>
+                            <input name="accent_color" value="{{ site.accent_color if site else '#facc15' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Background Color</label>
+                            <input name="bg_color" value="{{ site.bg_color if site else '#070b12' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Card Color</label>
+                            <input name="card_color" value="{{ site.card_color if site else '#111827' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-12">
+                            <label>Hero Title</label>
+                            <input name="hero_title" value="{{ site.hero_title if site else '' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-12">
+                            <label>Hero Subtitle</label>
+                            <input name="hero_subtitle" value="{{ site.hero_subtitle if site else '' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Hero CTA Text</label>
+                            <input name="hero_cta_text" value="{{ site.hero_cta_text if site else 'Browse Content' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Hero CTA Link</label>
+                            <input name="hero_cta_link" value="{{ site.hero_cta_link if site else '/content' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-12">
+                            <label>Footer Text</label>
+                            <input name="footer_text" value="{{ site.footer_text if site else 'MysticMovies' }}" class="form-control" />
+                        </div>
+                    </div>
+                    <button class="btn btn-warning">Save Site Settings</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}

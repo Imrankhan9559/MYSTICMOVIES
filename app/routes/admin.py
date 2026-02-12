@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from beanie.operators import In, Or
-from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting, SiteSettings, ContentRequest
+from app.db.models import User, FileSystemItem, PlaybackProgress, TokenSetting, SiteSettings, ContentRequest, UserActivityEvent
 from app.routes.dashboard import get_current_user, _cast_ids, _clone_parts, _build_search_regex
 from app.routes.content import refresh_tmdb_metadata, _parse_name, _tmdb_get, _ensure_group_assets
 from app.core.config import settings
@@ -22,6 +22,8 @@ def _normalize_phone(phone: str) -> str:
 
 def _is_admin(user: User | None) -> bool:
     if not user: return False
+    if str(getattr(user, "role", "") or "").strip().lower() == "admin":
+        return True
     return _normalize_phone(user.phone_number) == _normalize_phone(getattr(settings, "ADMIN_PHONE", ""))
 
 async def _site_settings() -> SiteSettings:
@@ -30,6 +32,40 @@ async def _site_settings() -> SiteSettings:
         row = SiteSettings(key="main")
         await row.insert()
     return row
+
+
+async def _catalog_counts(groups: list[dict] | None = None) -> dict:
+    all_groups = groups if groups is not None else await _group_published_catalog()
+    movie_groups = [g for g in all_groups if g.get("type") == "movie"]
+    series_groups = [g for g in all_groups if g.get("type") == "series"]
+    return {
+        "published_groups": all_groups,
+        "published_movies": len(movie_groups),
+        "published_series": len(series_groups),
+        "published_movie_files": sum(int(g.get("file_count") or 0) for g in movie_groups),
+        "published_series_files": sum(int(g.get("file_count") or 0) for g in series_groups),
+    }
+
+
+async def _admin_badges(groups: list[dict] | None = None) -> dict:
+    counts = await _catalog_counts(groups)
+    counts["pending_storage"] = await FileSystemItem.find({
+        "source": "storage",
+        "is_folder": False,
+        "catalog_status": {"$nin": ["published", "used"]}
+    }).count()
+    return counts
+
+
+async def _admin_context_base(user: User, groups: list[dict] | None = None) -> dict:
+    site = await _site_settings()
+    badges = await _admin_badges(groups)
+    return {
+        "user": user,
+        "is_admin": True,
+        "site": site,
+        **badges,
+    }
 
 async def _ensure_folder(owner_phone: str, name: str, parent_id: str | None, source: str = "catalog") -> FileSystemItem:
     existing = await FileSystemItem.find_one(
@@ -297,88 +333,215 @@ async def main_control_alias(request: Request):
 @router.get("/dashboard")
 async def main_control(request: Request):
     user = await get_current_user(request)
-    if not user: return RedirectResponse("/login")
+    if not user: return RedirectResponse("/admin-login")
     
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
+    published_groups = await _group_published_catalog()
+    base_ctx = await _admin_context_base(user, published_groups)
+
     total_users = await User.count()
     total_files = await FileSystemItem.find(FileSystemItem.is_folder == False).count()
-    all_users = await User.find_all().to_list()
+    all_users = await User.find_all().sort("-created_at").to_list()
     pending_users = await User.find(User.status == "pending").sort("-requested_at").to_list()
+    pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").limit(50).to_list()
 
-    recent_progress = await PlaybackProgress.find_all().sort("-updated_at").limit(50).to_list()
-    # Map item_id -> name for display
-    item_ids = list({p.item_id for p in recent_progress if getattr(p, "item_id", None)})
-    items_map = {}
-    if item_ids:
-        items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(item_ids))).to_list()
-        items_map = {str(i.id): i.name for i in items}
+    total_titles = int(base_ctx.get("published_movies") or 0) + int(base_ctx.get("published_series") or 0)
+    published_preview = published_groups[:10]
+
+    return templates.TemplateResponse("admin.html", {
+        "request": request,
+        **base_ctx,
+        "total_users": total_users,
+        "total_files": total_files,
+        "total_titles": total_titles,
+        "users": all_users,
+        "pending_users": pending_users,
+        "pending_content_requests": pending_requests,
+        "published_preview": published_preview,
+    })
+
+
+async def _render_main_settings(request: Request, user: User, speed_result: dict | None = None):
+    base_ctx = await _admin_context_base(user)
     token_doc = await TokenSetting.find_one(TokenSetting.key == "link_token")
     link_token = token_doc.value if token_doc else ""
     bots = await pool_status()
     pool_tokens = ", ".join(_get_pool_tokens())
-    site = await _site_settings()
-    pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").limit(50).to_list()
-    content_items = await FileSystemItem.find(FileSystemItem.is_folder == False).sort("-created_at").limit(120).to_list()
-
     tmdb_configured = bool(getattr(settings, "TMDB_API_KEY", ""))
     tmdb_status = (request.query_params.get("tmdb") or "").strip().lower()
+    return templates.TemplateResponse("main_settings.html", {
+        "request": request,
+        **base_ctx,
+        "link_token": link_token,
+        "bots": bots,
+        "pool_tokens": pool_tokens,
+        "tmdb_configured": tmdb_configured,
+        "tmdb_status": tmdb_status,
+        "speed_result": speed_result,
+    })
 
-    published_groups = await _group_published_catalog()
-    published_movies = await FileSystemItem.find(
-        FileSystemItem.is_folder == False,
-        FileSystemItem.catalog_status == "published",
-        FileSystemItem.catalog_type == "movie"
-    ).count()
-    published_series = await FileSystemItem.find(
-        FileSystemItem.is_folder == False,
-        FileSystemItem.catalog_status == "published",
-        FileSystemItem.catalog_type == "series"
-    ).count()
-    pending_storage = await FileSystemItem.find({
-        "source": "storage",
-        "is_folder": False,
-        "catalog_status": {"$nin": ["published", "used"]}
-    }).count()
 
-    return templates.TemplateResponse("admin.html", {
-        "request": request, "total_users": total_users, "total_files": total_files, 
-        "users": all_users, "user_email": user.phone_number, "pending_users": pending_users,
-        "recent_progress": recent_progress, "is_admin": True, "user": user, "link_token": link_token, "items_map": items_map,
-        "bots": bots, "pool_tokens": pool_tokens, "speed_result": None, "site": site,
-        "pending_content_requests": pending_requests, "content_items": content_items,
-        "tmdb_configured": tmdb_configured, "tmdb_status": tmdb_status,
-        "published_groups": published_groups,
-        "published_movies": published_movies,
-        "published_series": published_series,
-        "pending_storage": pending_storage
+@router.get("/main-settings")
+@router.get("/dashboard/main-settings")
+async def main_settings(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/admin-login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    return await _render_main_settings(request, user, speed_result=None)
+
+
+@router.get("/user-playback-analytics")
+async def user_playback_analytics(request: Request, q: str = "", user_key: str = ""):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/admin-login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    base_ctx = await _admin_context_base(user)
+    search = (q or "").strip()
+    selected_user = (user_key or "").strip()
+
+    event_query: dict | None = None
+    if search:
+        regex = _build_search_regex(search)
+        if regex:
+            event_query = {
+                "$or": [
+                    {"user_key": {"$regex": regex, "$options": "i"}},
+                    {"user_name": {"$regex": regex, "$options": "i"}},
+                    {"content_title": {"$regex": regex, "$options": "i"}},
+                    {"action": {"$regex": regex, "$options": "i"}},
+                ]
+            }
+    events = await UserActivityEvent.find(event_query or {}).sort("-created_at").limit(800).to_list()
+    if selected_user:
+        events = [e for e in events if (getattr(e, "user_key", "") or "") == selected_user]
+
+    item_ids = [e.item_id for e in events if getattr(e, "item_id", None)]
+    item_map = {}
+    if item_ids:
+        db_items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(item_ids))).to_list()
+        item_map = {str(row.id): (row.series_title or row.title or row.name) for row in db_items}
+
+    user_stats: dict[str, dict] = {}
+    for e in events:
+        key = (getattr(e, "user_key", "") or "").strip() or "guest"
+        entry = user_stats.setdefault(key, {
+            "user_key": key,
+            "user_name": getattr(e, "user_name", None) or key,
+            "user_phone": getattr(e, "user_phone", None) or "",
+            "downloads": 0,
+            "telegram": 0,
+            "watch_together": 0,
+            "events": 0,
+            "last_seen": getattr(e, "created_at", None),
+        })
+        action = (getattr(e, "action", "") or "").strip().lower()
+        if action == "download_request":
+            entry["downloads"] += 1
+        elif action == "telegram_request":
+            entry["telegram"] += 1
+        elif action.startswith("watch_together"):
+            entry["watch_together"] += 1
+        entry["events"] += 1
+        created = getattr(e, "created_at", None)
+        if created and (not entry["last_seen"] or created > entry["last_seen"]):
+            entry["last_seen"] = created
+
+    progress_query = {}
+    if selected_user:
+        progress_query = {
+            "user_type": "user",
+            "user_key": selected_user
+        }
+    progress_rows = await PlaybackProgress.find(progress_query).sort("-updated_at").limit(600).to_list()
+    progress_stats: dict[str, dict] = {}
+    for p in progress_rows:
+        key = (getattr(p, "user_key", "") or "").strip() or "guest"
+        entry = progress_stats.setdefault(key, {
+            "user_key": key,
+            "sessions": 0,
+            "watch_minutes": 0,
+            "last_seen": getattr(p, "updated_at", None),
+        })
+        entry["sessions"] += 1
+        entry["watch_minutes"] += int((getattr(p, "position", 0.0) or 0.0) // 60)
+        updated_at = getattr(p, "updated_at", None)
+        if updated_at and (not entry["last_seen"] or updated_at > entry["last_seen"]):
+            entry["last_seen"] = updated_at
+
+    for key, prog in progress_stats.items():
+        target = user_stats.setdefault(key, {
+            "user_key": key,
+            "user_name": key,
+            "user_phone": "",
+            "downloads": 0,
+            "telegram": 0,
+            "watch_together": 0,
+            "events": 0,
+            "last_seen": prog["last_seen"],
+        })
+        target["sessions"] = prog["sessions"]
+        target["watch_minutes"] = prog["watch_minutes"]
+        if prog["last_seen"] and (not target["last_seen"] or prog["last_seen"] > target["last_seen"]):
+            target["last_seen"] = prog["last_seen"]
+
+    users_analytics = sorted(
+        user_stats.values(),
+        key=lambda row: (-(row.get("events", 0) + row.get("sessions", 0)), row.get("user_key", "")),
+    )
+
+    events_view = []
+    for e in events[:300]:
+        item_id = getattr(e, "item_id", None) or ""
+        events_view.append({
+            "user_key": getattr(e, "user_key", "") or "",
+            "user_name": getattr(e, "user_name", "") or "",
+            "action": getattr(e, "action", "") or "",
+            "content_title": getattr(e, "content_title", "") or item_map.get(item_id, ""),
+            "created_at": getattr(e, "created_at", None),
+            "meta": getattr(e, "meta", {}) or {},
+        })
+
+    progress_view = []
+    for row in progress_rows[:300]:
+        item_id = getattr(row, "item_id", "") or ""
+        duration = float(getattr(row, "duration", 0.0) or 0.0)
+        position = float(getattr(row, "position", 0.0) or 0.0)
+        progress_view.append({
+            "user_key": getattr(row, "user_key", "") or "",
+            "item_id": item_id,
+            "title": item_map.get(item_id, item_id),
+            "progress_pct": round((position / duration) * 100, 1) if duration > 0 else 0.0,
+            "position_min": round(position / 60.0, 1),
+            "updated_at": getattr(row, "updated_at", None),
+        })
+
+    return templates.TemplateResponse("user_playback_analytics.html", {
+        "request": request,
+        **base_ctx,
+        "q": search,
+        "selected_user": selected_user,
+        "users_analytics": users_analytics,
+        "events_view": events_view,
+        "progress_view": progress_view,
     })
 
 @router.get("/dashboard/add-content")
 async def add_content(request: Request):
     user = await get_current_user(request)
     if not user:
-        return RedirectResponse("/login")
+        return RedirectResponse("/admin-login")
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
+    base_ctx = await _admin_context_base(user)
     tmdb_configured = bool(getattr(settings, "TMDB_API_KEY", ""))
-    pending_storage = await FileSystemItem.find({
-        "source": "storage",
-        "is_folder": False,
-        "catalog_status": {"$nin": ["published", "used"]}
-    }).count()
-    published_movies = await FileSystemItem.find(
-        FileSystemItem.is_folder == False,
-        FileSystemItem.catalog_status == "published",
-        FileSystemItem.catalog_type == "movie"
-    ).count()
-    published_series = await FileSystemItem.find(
-        FileSystemItem.is_folder == False,
-        FileSystemItem.catalog_status == "published",
-        FileSystemItem.catalog_type == "series"
-    ).count()
 
     storage_items = await FileSystemItem.find({
         "source": "storage",
@@ -401,42 +564,59 @@ async def add_content(request: Request):
             "type": catalog_type,
         })
 
-    site = await _site_settings()
     return templates.TemplateResponse("admin_add_content.html", {
         "request": request,
-        "user": user,
-        "is_admin": True,
+        **base_ctx,
         "tmdb_configured": tmdb_configured,
-        "pending_storage": pending_storage,
-        "published_movies": published_movies,
-        "published_series": published_series,
         "files": files,
-        "site": site
     })
 
 @router.get("/dashboard/publish-content")
-async def publish_content(request: Request):
+async def publish_content(request: Request, q: str = ""):
     user = await get_current_user(request)
     if not user:
-        return RedirectResponse("/login")
+        return RedirectResponse("/admin-login")
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
-    published_groups = await _group_published_catalog()
+    all_groups = await _group_published_catalog()
+    base_ctx = await _admin_context_base(user, all_groups)
+    query = (q or "").strip()
+
+    filtered_groups = all_groups
+    if query:
+        regex = _build_search_regex(query)
+        if regex:
+            needle = re.compile(regex, re.I)
+            matched = []
+            for group in all_groups:
+                searchable = [
+                    group.get("title", ""),
+                    group.get("year", ""),
+                    group.get("type", ""),
+                ]
+                searchable.extend([(row.get("name") or "") for row in group.get("items", [])])
+                if any(needle.search(text or "") for text in searchable):
+                    matched.append(group)
+            filtered_groups = matched
+        else:
+            filtered_groups = []
+
     if settings.TMDB_API_KEY:
-        for g in published_groups[:80]:
-            if not g.get("poster") and not g.get("backdrop"):
-                await _ensure_group_assets(g)
+        for g in filtered_groups[:80]:
+            try:
+                if not g.get("poster") and not g.get("backdrop"):
+                    await _ensure_group_assets(g)
+            except Exception:
+                pass
     base_url = str(request.base_url).rstrip("/")
-    for g in published_groups:
+    for g in filtered_groups:
         g["content_full_url"] = f"{base_url}{g.get('content_path', '')}"
-    site = await _site_settings()
     return templates.TemplateResponse("publish_content.html", {
         "request": request,
-        "user": user,
-        "is_admin": True,
-        "published_groups": published_groups,
-        "site": site
+        **base_ctx,
+        "published_groups": filtered_groups,
+        "q": query,
     })
 
 
@@ -444,48 +624,50 @@ async def publish_content(request: Request):
 async def publish_content_details(request: Request, group_id: str):
     user = await get_current_user(request)
     if not user:
-        return RedirectResponse("/login")
+        return RedirectResponse("/admin-login")
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
+    base_ctx = await _admin_context_base(user)
     group = await _find_group_by_item_id(group_id)
     if not group:
         return RedirectResponse("/dashboard/publish-content", status_code=303)
     if settings.TMDB_API_KEY and (not group.get("poster") or not group.get("description")):
-        await _ensure_group_assets(group)
+        try:
+            await _ensure_group_assets(group)
+        except Exception:
+            pass
     base_url = str(request.base_url).rstrip("/")
     group["content_full_url"] = f"{base_url}{group.get('content_path', '')}"
-    site = await _site_settings()
     return templates.TemplateResponse("publish_content_details.html", {
         "request": request,
-        "user": user,
-        "is_admin": True,
+        **base_ctx,
         "group": group,
-        "site": site
     })
 
 @router.get("/dashboard/publish-content/edit/{group_id}")
 async def publish_content_edit(request: Request, group_id: str):
     user = await get_current_user(request)
     if not user:
-        return RedirectResponse("/login")
+        return RedirectResponse("/admin-login")
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
+    base_ctx = await _admin_context_base(user)
     group = await _find_group_by_item_id(group_id)
     if not group:
         return RedirectResponse("/dashboard/publish-content", status_code=303)
     if settings.TMDB_API_KEY:
-        await _ensure_group_assets(group)
+        try:
+            await _ensure_group_assets(group)
+        except Exception:
+            pass
     base_url = str(request.base_url).rstrip("/")
     group["content_full_url"] = f"{base_url}{group.get('content_path', '')}"
-    site = await _site_settings()
     return templates.TemplateResponse("publish_content_edit.html", {
         "request": request,
-        "user": user,
-        "is_admin": True,
+        **base_ctx,
         "group": group,
-        "site": site,
         "return_to": f"/dashboard/publish-content/edit/{group.get('id')}"
     })
 
@@ -684,7 +866,10 @@ async def publish_content_delete(
 
     parent_ids = {str(item.parent_id) for item in deleted_items if item.parent_id}
     for parent_id in parent_ids:
-        await _cleanup_parents(parent_id)
+        try:
+            await _cleanup_parents(parent_id)
+        except Exception:
+            pass
 
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     if admin_phone:
@@ -693,7 +878,10 @@ async def publish_content_delete(
         if root:
             target_folder = await _find_folder(admin_phone, group_title, str(root.id))
             if target_folder:
-                await _cleanup_empty_tree(str(target_folder.id))
+                try:
+                    await _cleanup_empty_tree(str(target_folder.id))
+                except Exception:
+                    pass
 
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
@@ -1413,7 +1601,7 @@ async def regenerate_link_token(request: Request):
     else:
         token_doc = TokenSetting(key="link_token", value=new_val)
         await token_doc.insert()
-    return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse("/main-settings", status_code=303)
 
 @router.post("/admin/bots/update_tokens")
 async def admin_update_tokens(request: Request, bot_tokens: str = Form("")):
@@ -1422,7 +1610,7 @@ async def admin_update_tokens(request: Request, bot_tokens: str = Form("")):
         raise HTTPException(403)
     tokens = [t.strip() for t in bot_tokens.replace("\n", ",").split(",") if t.strip()]
     await reload_bot_pool(tokens)
-    return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse("/main-settings", status_code=303)
 
 @router.post("/admin/bots/speedtest")
 async def admin_speed_test(request: Request):
@@ -1433,55 +1621,7 @@ async def admin_speed_test(request: Request):
         result = await speed_test()
     except Exception as e:
         result = {"ok": False, "error": str(e)}
-
-    # rebuild page with result
-    total_users = await User.count()
-    total_files = await FileSystemItem.find(FileSystemItem.is_folder == False).count()
-    all_users = await User.find_all().to_list()
-    pending_users = await User.find(User.status == "pending").sort("-requested_at").to_list()
-    recent_progress = await PlaybackProgress.find_all().sort("-updated_at").limit(50).to_list()
-    item_ids = list({p.item_id for p in recent_progress if getattr(p, "item_id", None)})
-    items_map = {}
-    if item_ids:
-        items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(item_ids))).to_list()
-        items_map = {str(i.id): i.name for i in items}
-    token_doc = await TokenSetting.find_one(TokenSetting.key == "link_token")
-    link_token = token_doc.value if token_doc else ""
-    bots = await pool_status()
-    pool_tokens = ", ".join(_get_pool_tokens())
-    site = await _site_settings()
-    pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").limit(50).to_list()
-    content_items = await FileSystemItem.find(FileSystemItem.is_folder == False).sort("-created_at").limit(120).to_list()
-    tmdb_configured = bool(getattr(settings, "TMDB_API_KEY", ""))
-    tmdb_status = (request.query_params.get("tmdb") or "").strip().lower()
-    published_groups = await _group_published_catalog()
-    published_movies = await FileSystemItem.find(
-        FileSystemItem.is_folder == False,
-        FileSystemItem.catalog_status == "published",
-        FileSystemItem.catalog_type == "movie"
-    ).count()
-    published_series = await FileSystemItem.find(
-        FileSystemItem.is_folder == False,
-        FileSystemItem.catalog_status == "published",
-        FileSystemItem.catalog_type == "series"
-    ).count()
-    pending_storage = await FileSystemItem.find({
-        "source": "storage",
-        "is_folder": False,
-        "catalog_status": {"$nin": ["published", "used"]}
-    }).count()
-    return templates.TemplateResponse("admin.html", {
-        "request": request, "total_users": total_users, "total_files": total_files, 
-        "users": all_users, "user_email": user.phone_number, "pending_users": pending_users,
-        "recent_progress": recent_progress, "is_admin": True, "user": user, "link_token": link_token, "items_map": items_map,
-        "bots": bots, "pool_tokens": pool_tokens, "speed_result": result, "site": site,
-        "pending_content_requests": pending_requests, "content_items": content_items,
-        "tmdb_configured": tmdb_configured, "tmdb_status": tmdb_status,
-        "published_groups": published_groups,
-        "published_movies": published_movies,
-        "published_series": published_series,
-        "pending_storage": pending_storage
-    })
+    return await _render_main_settings(request, user, speed_result=result)
 
 @router.post("/admin/tmdb/refresh")
 async def admin_refresh_tmdb(request: Request):
@@ -1489,17 +1629,17 @@ async def admin_refresh_tmdb(request: Request):
     if not _is_admin(user):
         raise HTTPException(403)
     if not getattr(settings, "TMDB_API_KEY", ""):
-        return RedirectResponse("/dashboard?tmdb=missing", status_code=303)
+        return RedirectResponse("/main-settings?tmdb=missing", status_code=303)
     # Fire-and-forget; refresh can take time for large catalogs.
     asyncio.create_task(refresh_tmdb_metadata(limit=None))
-    return RedirectResponse("/dashboard?tmdb=refresh_started", status_code=303)
+    return RedirectResponse("/main-settings?tmdb=refresh_started", status_code=303)
 
 @router.get("/settings")
 async def admin_settings_redirect(request: Request):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
-    return RedirectResponse("/dashboard")
+    return RedirectResponse("/main-settings")
 
 @router.post("/admin/site/save")
 async def save_site_settings(
@@ -1529,7 +1669,7 @@ async def save_site_settings(
     site.footer_text = (footer_text or "MysticMovies").strip()
     site.updated_at = datetime.now()
     await site.save()
-    return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse("/main-settings", status_code=303)
 
 @router.post("/admin/content/update")
 async def update_content_metadata(
@@ -1601,6 +1741,27 @@ async def delete_user(request: Request, user_phone: str = Form(...)):
     
     return RedirectResponse("/dashboard", status_code=303)
 
+
+@router.post("/admin/user/set-role")
+async def set_user_role(
+    request: Request,
+    user_phone: str = Form(...),
+    role: str = Form("user"),
+    return_to: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    role_value = (role or "user").strip().lower()
+    if role_value not in ("user", "admin"):
+        role_value = "user"
+    target = await User.find_one(User.phone_number == user_phone)
+    if target:
+        target.role = role_value
+        target.role_requested = role_value
+        await target.save()
+    return RedirectResponse(return_to or "/dashboard", status_code=303)
+
 @router.post("/admin/approve_user")
 async def approve_user(request: Request, user_phone: str = Form(...)):
     user = await get_current_user(request)
@@ -1610,6 +1771,11 @@ async def approve_user(request: Request, user_phone: str = Form(...)):
     if target:
         target.status = "approved"
         target.approved_at = datetime.now()
+        requested_role = str(getattr(target, "role_requested", "") or "").strip().lower()
+        if requested_role == "admin":
+            target.role = "admin"
+        elif not getattr(target, "role", ""):
+            target.role = "user"
         await target.save()
     return RedirectResponse("/dashboard", status_code=303)
 

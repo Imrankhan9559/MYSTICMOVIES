@@ -55,6 +55,8 @@ def _normalize_phone(phone: str) -> str:
 def _is_admin(user: User | None) -> bool:
     if not user:
         return False
+    if str(getattr(user, "role", "") or "").strip().lower() == "admin":
+        return True
     return _normalize_phone(user.phone_number) == _normalize_phone(getattr(settings, "ADMIN_PHONE", ""))
 
 
@@ -79,6 +81,17 @@ def _infer_type(item: FileSystemItem) -> str:
 def _infer_quality(name: str) -> str:
     m = QUALITY_RE.search(name or "")
     return m.group(1).upper() if m else "HD"
+
+
+def _tokenize_search(text: str) -> list[str]:
+    return [t for t in re.split(r"[^a-zA-Z0-9]+", (text or "").lower()) if t]
+
+
+def _build_search_regex(text: str) -> str:
+    tokens = _tokenize_search(text)
+    if not tokens:
+        return ""
+    return ".*".join(re.escape(token) for token in tokens)
 
 
 def _clean_title(name: str) -> str:
@@ -387,10 +400,12 @@ def _youtube_key(url: str) -> str:
         parsed = urllib.parse.urlparse(url)
         host = (parsed.netloc or "").lower()
         if "youtu.be" in host:
-            return parsed.path.lstrip("/")
+            return parsed.path.lstrip("/").split("?")[0].strip()
         if "youtube" in host:
             if parsed.path.startswith("/embed/"):
-                return parsed.path.split("/embed/")[-1]
+                return parsed.path.split("/embed/")[-1].split("?")[0].strip()
+            if parsed.path.startswith("/shorts/"):
+                return parsed.path.split("/shorts/")[-1].split("?")[0].strip()
             params = urllib.parse.parse_qs(parsed.query)
             if "v" in params and params["v"]:
                 return params["v"][0]
@@ -532,10 +547,16 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
             qualities = sorted(g["qualities"].keys(), key=_quality_rank, reverse=True)
             g["primary_quality"] = qualities[0] if qualities else "HD"
             g["quality"] = g["primary_quality"]
+            g["card_labels"] = qualities[:3] if qualities else ["HD"]
         else:
-            g["season_count"] = len(g["seasons"])
-            g["primary_quality"] = "S" + str(min(g["seasons"].keys())) if g["seasons"] else "Series"
+            season_numbers = sorted(int(s) for s in g["seasons"].keys())
+            g["season_count"] = len(season_numbers)
+            g["primary_quality"] = f"S{season_numbers[0]:02d}" if season_numbers else "Series"
             g["quality"] = g["primary_quality"]
+            labels = [f"Season {s}" for s in season_numbers[:3]]
+            if g["season_count"] > 3:
+                labels.append(f"+{g['season_count'] - 3} more")
+            g["card_labels"] = labels or ["Series"]
         result.append(g)
     return result
 
@@ -606,8 +627,6 @@ async def home_page(request: Request):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
-    link_token = await _get_link_token()
-    viewer_name = _viewer_name(user)
     catalog = await _build_catalog(user, is_admin, limit=200)
     movies = [c for c in catalog if c["type"] == "movie"][:24]
     series = [c for c in catalog if c["type"] == "series"][:24]
@@ -615,14 +634,6 @@ async def home_page(request: Request):
     display_groups = trending + movies + series
     # Warm TMDB in background to keep homepage fast
     asyncio.create_task(_warm_group_assets(display_groups, limit=12))
-    seen = set()
-    for group in display_groups:
-        gid = group.get("id")
-        if gid in seen:
-            continue
-        seen.add(gid)
-        group["files"] = await _build_file_links(group.get("items", []), link_token, viewer_name, limit=3)
-        group["primary_link"] = group["files"][0]["view_url"] if group.get("files") else ""
     return templates.TemplateResponse("home.html", {
         "request": request,
         "user": user,
@@ -639,16 +650,11 @@ async def content_all(request: Request, q: str = ""):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
-    link_token = await _get_link_token()
-    viewer_name = _viewer_name(user)
     cards = await _build_catalog(user, is_admin, limit=800)
     q = (q or "").strip().lower()
     if q:
         cards = [c for c in cards if q in c["title"].lower()]
     asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
-    for c in cards:
-        c["files"] = await _build_file_links(c.get("items", []), link_token, viewer_name, limit=3)
-        c["primary_link"] = c["files"][0]["view_url"] if c.get("files") else ""
     return templates.TemplateResponse("content_list.html", {
         "request": request,
         "user": user,
@@ -666,17 +672,12 @@ async def content_movies(request: Request, q: str = ""):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
-    link_token = await _get_link_token()
-    viewer_name = _viewer_name(user)
     cards = await _build_catalog(user, is_admin, limit=800)
     cards = [c for c in cards if c["type"] == "movie"]
     q = (q or "").strip().lower()
     if q:
         cards = [c for c in cards if q in c["title"].lower()]
     asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
-    for c in cards:
-        c["files"] = await _build_file_links(c.get("items", []), link_token, viewer_name, limit=3)
-        c["primary_link"] = c["files"][0]["view_url"] if c.get("files") else ""
     return templates.TemplateResponse("content_list.html", {
         "request": request,
         "user": user,
@@ -694,17 +695,12 @@ async def content_series(request: Request, q: str = ""):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     settings_row = await _site_settings()
-    link_token = await _get_link_token()
-    viewer_name = _viewer_name(user)
     cards = await _build_catalog(user, is_admin, limit=1200)
     cards = [c for c in cards if c["type"] == "series"]
     q = (q or "").strip().lower()
     if q:
         cards = [c for c in cards if q in c["title"].lower()]
     asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
-    for c in cards:
-        c["files"] = await _build_file_links(c.get("items", []), link_token, viewer_name, limit=3)
-        c["primary_link"] = c["files"][0]["view_url"] if c.get("files") else ""
     return templates.TemplateResponse("content_list.html", {
         "request": request,
         "user": user,
@@ -759,7 +755,10 @@ async def content_details(request: Request, content_key: str):
 
     site = await _site_settings()
     group = await _ensure_group_assets(group)
-    group["trailer_embed"] = group.get("trailer_key") or _youtube_key(group.get("trailer_url"))
+    raw_trailer_key = (group.get("trailer_key") or "").strip()
+    if raw_trailer_key and ("http" in raw_trailer_key or "/" in raw_trailer_key or "?" in raw_trailer_key):
+        raw_trailer_key = _youtube_key(raw_trailer_key)
+    group["trailer_embed"] = raw_trailer_key or _youtube_key(group.get("trailer_url"))
     link_token = await _get_link_token()
 
     viewer_name = _viewer_name(user)
@@ -860,19 +859,79 @@ async def content_search(request: Request, q: str):
     return {"items": items[:25]}
 
 
+@router.get("/content/search/suggestions")
+async def content_search_suggestions(request: Request, q: str = ""):
+    user = await get_current_user(request)
+    is_admin = _is_admin(user)
+    q = (q or "").strip()
+    if len(q) < 2:
+        return {"items": []}
+
+    search_regex = _build_search_regex(q)
+    if not search_regex:
+        return {"items": []}
+
+    base_query = _content_query(user, is_admin)
+    query = {
+        "$and": [
+            base_query,
+            {"is_folder": False},
+            {
+                "$or": [
+                    {"title": {"$regex": search_regex, "$options": "i"}},
+                    {"series_title": {"$regex": search_regex, "$options": "i"}},
+                    {"name": {"$regex": search_regex, "$options": "i"}},
+                ]
+            },
+        ]
+    }
+    rows = await FileSystemItem.find(query).sort("-created_at").limit(220).to_list()
+    grouped: dict[tuple[str, str, str], dict] = {}
+    for row in rows:
+        if not _is_video(row):
+            continue
+        card = _item_card(row)
+        key = (card["title"].lower(), card["year"], card["type"])
+        if key in grouped:
+            continue
+        grouped[key] = {
+            "title": card["title"],
+            "year": card["year"],
+            "type": card["type"],
+            "poster": card["poster"],
+            "slug": _group_slug(card["title"], card["year"]),
+        }
+        if len(grouped) >= 12:
+            break
+    items = sorted(grouped.values(), key=lambda x: (x["title"] or "").lower())
+    return {"items": items[:10]}
+
+
 @router.post("/content/watchlist/toggle/{item_id}")
 async def toggle_watchlist(request: Request, item_id: str):
     user = await get_current_user(request)
     if not user:
         return JSONResponse({"error": "Login required"}, status_code=401)
+
+    resolved_item_id = (item_id or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{24}", resolved_item_id):
+        is_admin = _is_admin(user)
+        catalog = await _build_catalog(user, is_admin, limit=800)
+        for group in catalog:
+            if (group.get("slug") or "") == resolved_item_id.lower():
+                resolved_item_id = group["id"]
+                break
+    if not re.fullmatch(r"[0-9a-fA-F]{24}", resolved_item_id):
+        return JSONResponse({"error": "Content not found"}, status_code=404)
+
     row = await WatchlistEntry.find_one(
         WatchlistEntry.user_phone == user.phone_number,
-        WatchlistEntry.item_id == item_id,
+        WatchlistEntry.item_id == resolved_item_id,
     )
     if row:
         await row.delete()
         return {"status": "removed"}
-    row = WatchlistEntry(user_phone=user.phone_number, item_id=item_id)
+    row = WatchlistEntry(user_phone=user.phone_number, item_id=resolved_item_id)
     await row.insert()
     return {"status": "added"}
 
@@ -901,7 +960,13 @@ async def content_watchlist(request: Request):
 
 
 @router.post("/content/request")
-async def request_content(request: Request, title: str = Form(...), request_type: str = Form("movie"), note: str = Form("")):
+async def request_content(
+    request: Request,
+    title: str = Form(...),
+    request_type: str = Form("movie"),
+    note: str = Form(""),
+    return_to: str = Form("")
+):
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/login")
@@ -916,7 +981,28 @@ async def request_content(request: Request, title: str = Form(...), request_type
         updated_at=datetime.now(),
     )
     await row.insert()
-    return RedirectResponse("/content?requested=1", status_code=303)
+    target = (return_to or "").strip()
+    if not target.startswith("/"):
+        target = "/content"
+    sep = "&" if "?" in target else "?"
+    return RedirectResponse(f"{target}{sep}requested=1", status_code=303)
+
+
+@router.get("/request-content")
+async def request_content_page(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/login")
+    is_admin = _is_admin(user)
+    site = await _site_settings()
+    my_requests = await ContentRequest.find(ContentRequest.user_phone == user.phone_number).sort("-created_at").limit(40).to_list()
+    return templates.TemplateResponse("request_content.html", {
+        "request": request,
+        "user": user,
+        "is_admin": is_admin,
+        "site": site,
+        "requests": my_requests,
+    })
 
 
 @router.get("/content/season-download/{series_key}/{season_no}", response_class=HTMLResponse)
