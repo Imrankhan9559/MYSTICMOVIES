@@ -1,13 +1,17 @@
-import logging
+﻿import logging
 import os
 import tempfile
 import urllib.request
 import urllib.parse
 import json
 import asyncio
+import re
+from datetime import datetime
+from difflib import SequenceMatcher
 from itertools import cycle
 from pyrogram import Client, filters
 from pyrogram.handlers import MessageHandler
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.core.config import settings
 from app.db.models import FileSystemItem, FilePart, User, SharedCollection
 from beanie import PydanticObjectId
@@ -77,6 +81,436 @@ else:
 bot_pool: list[Client] = []
 _bot_cycle = None
 _bot_status_cache: list[dict] = []
+_catalog_cache_data: list[dict] = []
+_catalog_cache_ts: float = 0.0
+_catalog_cache_ttl_sec = 45.0
+
+QUALITY_RE = re.compile(r"(2160p|1440p|1080p|720p|480p|380p|360p)", re.I)
+YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
+SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
+
+QUALITY_ORDER = {
+    "2160P": 7,
+    "1440P": 6,
+    "1080P": 5,
+    "720P": 4,
+    "480P": 3,
+    "380P": 2,
+    "360P": 1,
+    "HD": 0,
+}
+
+
+def _normalize_phone(phone: str) -> str:
+    return re.sub(r"\D+", "", (phone or ""))
+
+
+def _is_admin_user(user: User | None) -> bool:
+    if not user:
+        return False
+    role = str(getattr(user, "role", "") or "").strip().lower()
+    if role == "admin":
+        return True
+    return _normalize_phone(getattr(user, "phone_number", "")) == _normalize_phone(getattr(settings, "ADMIN_PHONE", ""))
+
+
+def _site_base_url() -> str:
+    raw = (
+        getattr(settings, "SITE_URL", "")
+        or os.getenv("SITE_URL", "")
+        or os.getenv("RENDER_EXTERNAL_URL", "")
+        or "https://mysticmovies.onrender.com"
+    )
+    value = (raw or "").strip()
+    if not value:
+        value = "https://mysticmovies.onrender.com"
+    if not value.startswith("http://") and not value.startswith("https://"):
+        value = "https://" + value
+    return value.rstrip("/")
+
+
+def _site_url(path: str = "/") -> str:
+    clean_path = (path or "/").strip()
+    if not clean_path.startswith("/"):
+        clean_path = "/" + clean_path
+    return _site_base_url() + clean_path
+
+
+def _slugify(text: str) -> str:
+    value = re.sub(r"[^a-z0-9]+", "-", (text or "").strip().lower())
+    return value.strip("-")
+
+
+def _norm_text(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", " ", (value or "").strip().lower())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _extract_quality(name: str) -> str:
+    match = QUALITY_RE.search(name or "")
+    if match:
+        return match.group(1).upper()
+    return "HD"
+
+
+def _quality_rank(value: str) -> int:
+    return QUALITY_ORDER.get((value or "").strip().upper(), 0)
+
+
+def _parse_year(value: str) -> str:
+    match = YEAR_RE.search(value or "")
+    return match.group(1) if match else ""
+
+
+def _parse_season(name: str, season_value: int | None) -> int | None:
+    if season_value:
+        try:
+            return int(season_value)
+        except Exception:
+            pass
+    match = SE_RE.search(name or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _display_title(item: FileSystemItem) -> str:
+    title = (getattr(item, "series_title", "") or getattr(item, "title", "") or "").strip()
+    if title:
+        return title
+    raw = re.sub(r"\.[^.]+$", "", (item.name or "").strip())
+    raw = re.sub(r"[._]+", " ", raw)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    raw = QUALITY_RE.sub("", raw)
+    raw = re.sub(r"\bS\d{1,2}E\d{1,3}\b", "", raw, flags=re.I)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw or (item.name or "Unknown Title")
+
+
+def _content_type(item: FileSystemItem) -> str:
+    catalog_type = (getattr(item, "catalog_type", "") or "").strip().lower()
+    if catalog_type in ("movie", "series"):
+        return catalog_type
+    if getattr(item, "season", None) or getattr(item, "episode", None):
+        return "series"
+    if SE_RE.search(item.name or ""):
+        return "series"
+    return "movie"
+
+
+def _format_release_date(value: str, year: str) -> str:
+    raw = (value or "").strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            return dt.strftime("%d %b %Y")
+        except Exception:
+            pass
+    if re.fullmatch(r"\d{4}-\d{2}", raw):
+        try:
+            dt = datetime.strptime(raw + "-01", "%Y-%m-%d")
+            return dt.strftime("%d %b %Y")
+        except Exception:
+            pass
+    clean_year = (year or _parse_year(raw)).strip()
+    if re.fullmatch(r"\d{4}", clean_year):
+        return f"01 Jan {clean_year}"
+    return "Unknown"
+
+
+def _format_seasons(seasons: list[int]) -> str:
+    nums = sorted({int(s) for s in seasons if isinstance(s, int) or str(s).isdigit()})
+    if not nums:
+        return "Not listed"
+    return ", ".join(str(n) for n in nums)
+
+
+async def _google_spelling_suggestion(query: str) -> str:
+    q = (query or "").strip()
+    if not q:
+        return ""
+
+    def _fetch() -> str:
+        url = (
+            "https://suggestqueries.google.com/complete/search?client=firefox&q="
+            + urllib.parse.quote_plus(q)
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                )
+            },
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            payload = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        if isinstance(payload, list) and len(payload) > 1 and isinstance(payload[1], list):
+            for candidate in payload[1]:
+                text = (candidate or "").strip()
+                if text and _norm_text(text) != _norm_text(q):
+                    return text
+        return ""
+
+    try:
+        return await asyncio.to_thread(_fetch)
+    except Exception:
+        return ""
+
+
+async def _build_published_catalog(limit: int = 5000) -> list[dict]:
+    global _catalog_cache_data, _catalog_cache_ts
+    now = asyncio.get_event_loop().time()
+    if _catalog_cache_data and (now - _catalog_cache_ts) <= _catalog_cache_ttl_sec:
+        return _catalog_cache_data
+
+    rows = await FileSystemItem.find(
+        FileSystemItem.is_folder == False,
+        FileSystemItem.catalog_status == "published",
+    ).sort("-created_at").limit(limit).to_list()
+
+    grouped: dict[tuple[str, str, str], dict] = {}
+    for item in rows:
+        if not _is_video_item(item):
+            continue
+        title = _display_title(item)
+        if not title:
+            continue
+        year = (getattr(item, "year", "") or _parse_year(item.name or "") or "").strip()
+        ctype = _content_type(item)
+        key = (_norm_text(title), year, ctype)
+        if key not in grouped:
+            slug = _slugify(title)
+            if year:
+                slug = f"{slug}-{year}" if slug else year
+            grouped[key] = {
+                "id": str(item.id),
+                "title": title,
+                "title_norm": key[0],
+                "year": year,
+                "type": ctype,
+                "release_date": (getattr(item, "release_date", "") or "").strip(),
+                "poster": (getattr(item, "poster_url", "") or "").strip(),
+                "slug": slug,
+                "qualities": set(),
+                "seasons": set(),
+            }
+        group = grouped[key]
+        quality = (getattr(item, "quality", "") or _extract_quality(item.name or "") or "HD").upper()
+        group["qualities"].add(quality)
+        if not group["release_date"] and getattr(item, "release_date", ""):
+            group["release_date"] = (getattr(item, "release_date", "") or "").strip()
+        if not group["poster"] and getattr(item, "poster_url", ""):
+            group["poster"] = (getattr(item, "poster_url", "") or "").strip()
+        season_no = _parse_season(item.name or "", getattr(item, "season", None))
+        if ctype == "series" and season_no:
+            group["seasons"].add(season_no)
+
+    catalog = []
+    for row in grouped.values():
+        qualities = sorted(row["qualities"], key=lambda q: (-_quality_rank(q), q))
+        seasons = sorted(row["seasons"])
+        catalog.append({
+            "id": row["id"],
+            "title": row["title"],
+            "title_norm": row["title_norm"],
+            "year": row["year"],
+            "type": row["type"],
+            "release_date": row["release_date"],
+            "poster": row["poster"],
+            "slug": row["slug"],
+            "qualities": qualities,
+            "seasons": seasons,
+        })
+
+    _catalog_cache_data = catalog
+    _catalog_cache_ts = now
+    return catalog
+
+
+def _rank_catalog_matches(query: str, catalog: list[dict], limit: int = 5) -> list[dict]:
+    q_raw = (query or "").strip()
+    q_norm = _norm_text(q_raw)
+    if not q_norm:
+        return []
+    q_tokens = set(q_norm.split())
+
+    scored = []
+    for item in catalog:
+        t_norm = item.get("title_norm", "")
+        if not t_norm:
+            continue
+        t_tokens = set(t_norm.split())
+        ratio = SequenceMatcher(None, q_norm, t_norm).ratio()
+        overlap = len(q_tokens & t_tokens)
+        contains = q_norm in t_norm
+        reverse_contains = t_norm in q_norm
+        score = ratio * 100.0
+        if q_norm == t_norm:
+            score += 80
+        if contains:
+            score += 35
+        if reverse_contains:
+            score += 20
+        if overlap:
+            score += overlap * 9
+        q_year = _parse_year(q_raw)
+        if q_year and q_year == (item.get("year", "") or ""):
+            score += 8
+        if score < 40:
+            continue
+        scored.append((score, item))
+
+    scored.sort(key=lambda row: (-row[0], (row[1].get("title") or "").lower()))
+    return [row[1] for row in scored[:limit]]
+
+
+def _content_caption(item: dict, corrected_query: str = "") -> str:
+    title = item.get("title", "Unknown")
+    release_label = _format_release_date(item.get("release_date", ""), item.get("year", ""))
+    qualities = ", ".join(item.get("qualities") or ["HD"])
+    lines = []
+    if corrected_query:
+        lines.append(f"Showing results for: {corrected_query}")
+        lines.append("")
+    lines.append(f"Name: {title}")
+    lines.append(f"Release Date: {release_label}")
+    lines.append(f"Quality: {qualities}")
+    if item.get("type") == "series":
+        lines.append(f"Available Seasons: {_format_seasons(item.get('seasons') or [])}")
+    lines.append(f"Type: {(item.get('type') or 'movie').title()}")
+    return "\n".join(lines)
+
+
+def _welcome_text(display_name: str, is_admin: bool) -> str:
+    name = (display_name or "there").strip()
+    lines = [
+        f"Hi {name}, welcome to MysticMovies.",
+        "Here you can watch, download, watch together, and get files in Telegram of your movies and series for free.",
+        "Just send the file name.",
+    ]
+    if is_admin:
+        lines.append("Admin upload mode is enabled for your account.")
+    return "\n\n".join(lines)
+
+
+async def _send_welcome_message(client: Client, chat_id: int, display_name: str, is_admin: bool):
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Visit Site", url=_site_url("/"))]]
+    )
+    await client.send_message(
+        chat_id,
+        _welcome_text(display_name, is_admin),
+        reply_markup=keyboard,
+        disable_web_page_preview=True,
+    )
+
+
+def _bot_api_keyboard(buttons: list[list[dict]]) -> str:
+    return json.dumps({"inline_keyboard": buttons})
+
+
+async def _send_welcome_message_api(chat_id: int, display_name: str, is_admin: bool):
+    await _bot_api_call(
+        settings.BOT_TOKEN,
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": _welcome_text(display_name, is_admin),
+            "disable_web_page_preview": "true",
+            "reply_markup": _bot_api_keyboard(
+                [[{"text": "Visit Site", "url": _site_url("/")}]])
+        },
+    )
+
+
+async def _send_content_result(client: Client, chat_id: int, item: dict, corrected_query: str = ""):
+    title = item.get("title") or "Content"
+    view_path = f"/content/details/{item.get('slug') or item.get('id')}"
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(f"View {title[:40]}", url=_site_url(view_path))]]
+    )
+    caption = _content_caption(item, corrected_query=corrected_query)
+    poster = (item.get("poster") or "").strip()
+    if poster:
+        try:
+            await client.send_photo(chat_id, poster, caption=caption, reply_markup=keyboard)
+            return
+        except Exception:
+            pass
+    await client.send_message(chat_id, caption, reply_markup=keyboard, disable_web_page_preview=True)
+
+
+async def _send_not_found(client: Client, chat_id: int, query: str):
+    text = (
+        f"'{query}' is not uploaded yet.\n"
+        "You can request it on the website."
+    )
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Request on Website", url=_site_url("/request-content"))]]
+    )
+    await client.send_message(chat_id, text, reply_markup=keyboard, disable_web_page_preview=True)
+
+
+async def _send_content_result_api(chat_id: int, item: dict, corrected_query: str = ""):
+    title = item.get("title") or "Content"
+    view_path = f"/content/details/{item.get('slug') or item.get('id')}"
+    caption = _content_caption(item, corrected_query=corrected_query)
+    reply_markup = _bot_api_keyboard([[{"text": f"View {title[:40]}", "url": _site_url(view_path)}]])
+    poster = (item.get("poster") or "").strip()
+    if poster:
+        resp = await _bot_api_call(
+            settings.BOT_TOKEN,
+            "sendPhoto",
+            {
+                "chat_id": chat_id,
+                "photo": poster,
+                "caption": caption,
+                "reply_markup": reply_markup,
+            },
+        )
+        if resp.get("ok"):
+            return
+    await _bot_api_call(
+        settings.BOT_TOKEN,
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": caption,
+            "disable_web_page_preview": "true",
+            "reply_markup": reply_markup,
+        },
+    )
+
+
+async def _send_not_found_api(chat_id: int, query: str):
+    await _bot_api_call(
+        settings.BOT_TOKEN,
+        "sendMessage",
+        {
+            "chat_id": chat_id,
+            "text": f"'{query}' is not uploaded yet.\nYou can request it on the website.",
+            "disable_web_page_preview": "true",
+            "reply_markup": _bot_api_keyboard(
+                [[{"text": "Request on Website", "url": _site_url("/request-content")}]]
+            ),
+        },
+    )
+
+
+async def _linked_user_from_tg_id(telegram_user_id: int | None) -> User | None:
+    if not telegram_user_id:
+        return None
+    try:
+        return await User.find_one(User.telegram_user_id == int(telegram_user_id))
+    except Exception:
+        return None
+
 
 def _client_key(client: Client | None) -> str:
     if not client:
@@ -486,7 +920,7 @@ async def verify_storage_access(client: Client):
         chat = await client.get_chat(chat_id)
         logger.info(f"Storage channel reachable: {getattr(chat, 'title', '') or chat.id}")
         try:
-            test_msg = await client.send_message(chat_id, "MorganXMystic storage check ✅")
+            test_msg = await client.send_message(chat_id, "MorganXMystic storage check OK")
             await client.delete_messages(chat_id, test_msg.id)
             logger.info("Storage channel post check: OK")
         except Exception as post_err:
@@ -517,25 +951,18 @@ async def handle_private_upload(client: Client, message):
 
         # Quick ack so user knows the bot received the file
         try:
-            await client.send_message(message.chat.id, "Got it! Uploading to storage…")
+            await client.send_message(message.chat.id, "Got it! Uploading to storage...")
         except Exception:
             pass
 
         if not await ensure_peer_access(client, storage_chat_id):
             logger.warning("Storage channel not reachable by Pyrogram client; will still try Telethon upload.")
 
-        owner = None
-        owner_phone = ""
-        if message.from_user:
-            owner = await User.find_one(User.telegram_user_id == message.from_user.id)
-        if owner:
-            owner_phone = owner.phone_number
-        else:
-            # Fallback: attach to admin if user mapping not found
-            admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
-            owner_phone = admin_phone
-        if not owner_phone:
-            logger.warning("Telegram upload ignored: no matching user found.")
+        owner = await _linked_user_from_tg_id(
+            getattr(message.from_user, "id", None) if message.from_user else None
+        )
+        if not owner:
+            logger.warning("Telegram upload blocked: user is not linked.")
             try:
                 await client.send_message(
                     message.chat.id,
@@ -544,6 +971,16 @@ async def handle_private_upload(client: Client, message):
             except Exception:
                 pass
             return
+        if not _is_admin_user(owner):
+            try:
+                await client.send_message(
+                    message.chat.id,
+                    "Only admins can upload files via Telegram bot. Send a content name to search instead."
+                )
+            except Exception:
+                pass
+            return
+        owner_phone = owner.phone_number
 
         forwarded = None
         # Prefer a native copy to storage channel (fast, no download)
@@ -684,18 +1121,29 @@ async def handle_private_upload(client: Client, message):
             pass
 
 async def handle_start_command(client: Client, message):
-    """Handle deep links for shared files."""
+    """Handle /start command and shared deep links."""
     try:
         if not message.text:
             return
         parts = message.text.split(maxsplit=1)
         if len(parts) < 2:
-            await client.send_message(
+            linked_user = await _linked_user_from_tg_id(
+                getattr(message.from_user, "id", None) if message.from_user else None
+            )
+            display_name = (
+                (getattr(message.from_user, "first_name", "") or "").strip()
+                or (getattr(linked_user, "first_name", "") or "").strip()
+                or "there"
+            )
+            await _send_welcome_message(
+                client,
                 message.chat.id,
-                "Send me a file and I’ll add it to your Bot Uploads folder."
+                display_name,
+                _is_admin_user(linked_user),
             )
             return
-        payload = parts[1]
+
+        payload = parts[1].strip()
         if payload.startswith("share_"):
             token = payload.replace("share_", "", 1)
             items = await _resolve_shared_items(token)
@@ -727,15 +1175,82 @@ async def handle_start_command(client: Client, message):
                 await client.send_message(message.chat.id, f"Sent {sent} file(s).")
             if unavailable:
                 await client.send_message(message.chat.id, "Some files were not available from storage.")
+            return
+
+        linked_user = await _linked_user_from_tg_id(
+            getattr(message.from_user, "id", None) if message.from_user else None
+        )
+        display_name = (
+            (getattr(message.from_user, "first_name", "") or "").strip()
+            or (getattr(linked_user, "first_name", "") or "").strip()
+            or "there"
+        )
+        await _send_welcome_message(
+            client,
+            message.chat.id,
+            display_name,
+            _is_admin_user(linked_user),
+        )
     except Exception as e:
         logger.error(f"Start command failed: {e}")
+
+
+async def handle_text_query(client: Client, message):
+    raw_query = (message.text or "").strip()
+    if not raw_query:
+        return
+
+    query = raw_query[:120]
+    catalog = await _build_published_catalog()
+    results = _rank_catalog_matches(query, catalog, limit=5)
+    corrected = ""
+
+    if not results:
+        await client.send_message(message.chat.id, "Searching on the web for spelling correction...")
+        suggestion = await _google_spelling_suggestion(query)
+        if suggestion:
+            corrected = suggestion
+            results = _rank_catalog_matches(suggestion, catalog, limit=5)
+
+    if not results:
+        await _send_not_found(client, message.chat.id, query)
+        return
+
+    best = results[0]
+    await _send_content_result(
+        client,
+        message.chat.id,
+        best,
+        corrected_query=corrected if corrected and _norm_text(corrected) != _norm_text(query) else "",
+    )
 
 
 async def handle_bot_message(client: Client, message):
     """Single entrypoint for bot messages to avoid filter mismatches."""
     try:
+        if getattr(getattr(message, "chat", None), "type", "") != "private":
+            return
         if message.text and message.text.strip().startswith("/start"):
             await handle_start_command(client, message)
+            return
+        if message.text:
+            if message.text.strip().startswith("/"):
+                linked_user = await _linked_user_from_tg_id(
+                    getattr(message.from_user, "id", None) if message.from_user else None
+                )
+                display_name = (
+                    (getattr(message.from_user, "first_name", "") or "").strip()
+                    or (getattr(linked_user, "first_name", "") or "").strip()
+                    or "there"
+                )
+                await _send_welcome_message(
+                    client,
+                    message.chat.id,
+                    display_name,
+                    _is_admin_user(linked_user),
+                )
+                return
+            await handle_text_query(client, message)
             return
         if message.document or message.video or message.audio or message.photo:
             await handle_private_upload(client, message)
@@ -789,9 +1304,19 @@ async def _bot_api_call(token: str, method: str, params: dict | None = None) -> 
 async def _handle_bot_api_message(message: dict):
     try:
         chat = message.get("chat") or {}
+        if (chat.get("type") or "") != "private":
+            return
+
         chat_id = chat.get("id")
         msg_id = message.get("message_id")
         text = (message.get("text") or "").strip()
+        from_user = message.get("from") or {}
+        linked_user = await _linked_user_from_tg_id(from_user.get("id"))
+        display_name = (
+            (from_user.get("first_name") or "").strip()
+            or (getattr(linked_user, "first_name", "") or "").strip()
+            or "there"
+        )
 
         if text.startswith("/start"):
             parts = text.split(maxsplit=1)
@@ -860,14 +1385,42 @@ async def _handle_bot_api_message(message: dict):
                         )
                     return
 
-            await _bot_api_call(
-                settings.BOT_TOKEN,
-                "sendMessage",
-                {"chat_id": chat_id, "text": "Send me a file and I’ll add it to your Bot Uploads folder."}
+            await _send_welcome_message_api(chat_id, display_name, _is_admin_user(linked_user))
+            return
+
+        if text:
+            if text.startswith("/"):
+                await _send_welcome_message_api(chat_id, display_name, _is_admin_user(linked_user))
+                return
+
+            query = text[:120]
+            catalog = await _build_published_catalog()
+            results = _rank_catalog_matches(query, catalog, limit=5)
+            corrected = ""
+
+            if not results:
+                await _bot_api_call(
+                    settings.BOT_TOKEN,
+                    "sendMessage",
+                    {"chat_id": chat_id, "text": "Searching on the web for spelling correction..."}
+                )
+                suggestion = await _google_spelling_suggestion(query)
+                if suggestion:
+                    corrected = suggestion
+                    results = _rank_catalog_matches(suggestion, catalog, limit=5)
+
+            if not results:
+                await _send_not_found_api(chat_id, query)
+                return
+
+            best = results[0]
+            await _send_content_result_api(
+                chat_id,
+                best,
+                corrected_query=corrected if corrected and _norm_text(corrected) != _norm_text(query) else "",
             )
             return
 
-        # Only handle media uploads
         media = None
         media_type = None
         if message.get("document"):
@@ -885,6 +1438,22 @@ async def _handle_bot_api_message(message: dict):
         else:
             return
 
+        if not linked_user:
+            await _bot_api_call(
+                settings.BOT_TOKEN,
+                "sendMessage",
+                {"chat_id": chat_id, "text": "Please login on the website first so I can link your Telegram account."}
+            )
+            return
+
+        if not _is_admin_user(linked_user):
+            await _bot_api_call(
+                settings.BOT_TOKEN,
+                "sendMessage",
+                {"chat_id": chat_id, "text": "Only admins can upload files via Telegram bot. Send a content name to search instead."}
+            )
+            return
+
         storage_chat_id = normalize_chat_id(get_storage_chat_id())
         if not storage_chat_id or storage_chat_id == "me":
             await _bot_api_call(
@@ -897,7 +1466,7 @@ async def _handle_bot_api_message(message: dict):
         await _bot_api_call(
             settings.BOT_TOKEN,
             "sendMessage",
-            {"chat_id": chat_id, "text": "Got it! Uploading to storage…"}
+            {"chat_id": chat_id, "text": "Got it! Uploading to storage..."}
         )
 
         copy_resp = await _bot_api_call(
@@ -914,21 +1483,8 @@ async def _handle_bot_api_message(message: dict):
             return
 
         forwarded_msg_id = copy_resp["result"]["message_id"]
+        owner_phone = linked_user.phone_number
 
-        owner = None
-        from_user = message.get("from") or {}
-        if from_user.get("id"):
-            owner = await User.find_one(User.telegram_user_id == from_user.get("id"))
-        owner_phone = owner.phone_number if owner else (getattr(settings, "ADMIN_PHONE", "") or "")
-        if not owner_phone:
-            await _bot_api_call(
-                settings.BOT_TOKEN,
-                "sendMessage",
-                {"chat_id": chat_id, "text": "Please login on the website first so I can link your account."}
-            )
-            return
-
-        # Ensure Bot Uploads folder exists for this user
         folder = await FileSystemItem.find_one(
             FileSystemItem.owner_phone == owner_phone,
             FileSystemItem.parent_id == None,
@@ -941,6 +1497,17 @@ async def _handle_bot_api_message(message: dict):
                 FileSystemItem.parent_id == None,
                 FileSystemItem.is_folder == True,
                 FileSystemItem.name == "Telegram Uploads"
+            )
+            if legacy:
+                legacy.name = "Bot Uploads"
+                await legacy.save()
+                folder = legacy
+        if not folder:
+            legacy = await FileSystemItem.find_one(
+                FileSystemItem.owner_phone == owner_phone,
+                FileSystemItem.parent_id == None,
+                FileSystemItem.is_folder == True,
+                FileSystemItem.name == "Telegram Shared"
             )
             if legacy:
                 legacy.name = "Bot Uploads"
@@ -996,7 +1563,6 @@ async def _handle_bot_api_message(message: dict):
                 )
         except Exception:
             pass
-
 
 async def _bot_api_poll_loop():
     if not settings.BOT_TOKEN:
@@ -1135,3 +1701,5 @@ async def stop_telegram():
         _forget_bot_handlers(tg_client)
         _bot_handler_clients.clear()
         _telegram_started = False
+
+
