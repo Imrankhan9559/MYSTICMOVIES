@@ -21,6 +21,7 @@ from app.utils.file_utils import format_size
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+CATALOG_ITEMS_PER_PAGE = 24
 
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg")
 QUALITY_RE = re.compile(r"(2160p|1440p|1080p|720p|480p|380p|360p)", re.I)
@@ -925,6 +926,164 @@ async def _warm_group_assets(groups: list[dict], limit: int = 16):
         warmed += 1
 
 
+def _normalize_filter_type(value: str) -> str:
+    raw = (value or "").strip().lower()
+    if raw in {"movies", "movie", "films"}:
+        return "movies"
+    if raw in {"series", "web-series", "webseries", "tv", "shows"}:
+        return "series"
+    return "all"
+
+
+def _release_sort_score(card: dict) -> int:
+    release_raw = (card.get("release_date") or "").strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d-%m-%Y", "%d/%m/%Y", "%d %b %Y", "%d %B %Y"):
+        try:
+            dt = datetime.strptime(release_raw, fmt)
+            return int(dt.strftime("%Y%m%d"))
+        except Exception:
+            pass
+    year = (card.get("year") or "").strip()
+    if re.fullmatch(r"\d{4}", year):
+        return int(f"{year}0101")
+    return 0
+
+
+def _card_matches_query(card: dict, query: str) -> bool:
+    q = (query or "").strip().lower()
+    if not q:
+        return True
+    haystack = " ".join([
+        card.get("title") or "",
+        card.get("year") or "",
+        card.get("type") or "",
+        card.get("description") or "",
+        " ".join(card.get("genres") or []),
+        " ".join(card.get("actors") or []),
+    ]).lower()
+    tokens = [token for token in re.split(r"[^a-z0-9]+", q) if token]
+    return all(token in haystack for token in tokens)
+
+
+def _decorate_catalog_cards(cards: list[dict]) -> list[dict]:
+    for card in cards:
+        content_type = (card.get("type") or "").strip().lower()
+        if content_type == "movie":
+            quality_set: set[str] = set()
+            for quality in (card.get("qualities") or {}).keys():
+                q = (quality or "").strip().upper()
+                if q:
+                    quality_set.add(q)
+            for row in card.get("items") or []:
+                q = (row.get("quality") or "").strip().upper()
+                if q:
+                    quality_set.add(q)
+            qualities = sorted(quality_set, key=_quality_rank, reverse=True)
+            card["quality_row"] = qualities[:4]
+            card["season_text"] = ""
+        else:
+            season_numbers = []
+            for season_no in (card.get("seasons") or {}).keys():
+                try:
+                    season_numbers.append(int(season_no))
+                except Exception:
+                    continue
+            season_numbers = sorted(set(season_numbers))
+            card["quality_row"] = []
+            if not season_numbers:
+                card["season_text"] = "Season: 1"
+            elif len(season_numbers) > 10:
+                card["season_text"] = "Season: 1 to 10"
+            else:
+                card["season_text"] = "Season: " + " - ".join(str(num) for num in season_numbers)
+    return cards
+
+
+def _paginate_cards(cards: list[dict], page: int, per_page: int = CATALOG_ITEMS_PER_PAGE) -> tuple[list[dict], int, int, int]:
+    total_items = len(cards)
+    total_pages = max(1, (total_items + per_page - 1) // per_page)
+    current_page = max(1, min(int(page or 1), total_pages))
+    start = (current_page - 1) * per_page
+    end = start + per_page
+    return cards[start:end], total_items, total_pages, current_page
+
+
+async def _render_catalog_page(
+    request: Request,
+    filter_type: str,
+    q: str = "",
+    page: int = 1,
+    title_override: str = "",
+    cards_override: list[dict] | None = None,
+    active_tab: str = "all",
+    page_base_url: str = "",
+):
+    user = await get_current_user(request)
+    is_admin = _is_admin(user)
+    settings_row = await _site_settings()
+    normalized_filter = _normalize_filter_type(filter_type)
+    search_query = (q or "").strip()
+    search_mode = bool(search_query)
+
+    cards = cards_override[:] if cards_override is not None else await _build_catalog(user, is_admin, limit=4000)
+    if normalized_filter == "movies":
+        cards = [c for c in cards if (c.get("type") or "").lower() == "movie"]
+    elif normalized_filter == "series":
+        cards = [c for c in cards if (c.get("type") or "").lower() == "series"]
+    if search_mode:
+        cards = [c for c in cards if _card_matches_query(c, search_query)]
+
+    cards = sorted(
+        cards,
+        key=lambda row: (_release_sort_score(row), (row.get("title") or "").lower()),
+        reverse=True,
+    )
+    cards = _decorate_catalog_cards(cards)
+    asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
+
+    paged_cards, total_items, total_pages, current_page = _paginate_cards(cards, page)
+    page_start = max(1, current_page - 2)
+    page_end = min(total_pages, current_page + 2)
+
+    if not page_base_url:
+        if search_mode:
+            page_base_url = f"/content/f/{normalized_filter}/search_content/{urllib.parse.quote(search_query)}"
+        else:
+            page_base_url = f"/content/f/{normalized_filter}"
+
+    if title_override:
+        title_value = title_override
+    elif search_mode:
+        title_value = f'Search Results: "{search_query}"'
+    elif normalized_filter == "movies":
+        title_value = "Latest Movies"
+    elif normalized_filter == "series":
+        title_value = "Latest Web Series"
+    else:
+        title_value = "Latest Uploads"
+
+    return templates.TemplateResponse("content_list.html", {
+        "request": request,
+        "user": user,
+        "is_admin": is_admin,
+        "site": settings_row,
+        "title": title_value,
+        "cards": paged_cards,
+        "all_cards_count": len(cards),
+        "active_tab": active_tab,
+        "filter_type": normalized_filter,
+        "search_mode": search_mode,
+        "search_query": search_query,
+        "total_items": total_items,
+        "total_pages": total_pages,
+        "current_page": current_page,
+        "page_start": page_start,
+        "page_end": page_end,
+        "page_base_url": page_base_url,
+        "query": search_query,
+    })
+
+
 @router.get("/")
 async def home_page(request: Request):
     user = await get_current_user(request)
@@ -949,71 +1108,103 @@ async def home_page(request: Request):
 
 
 @router.get("/content")
-async def content_all(request: Request, q: str = ""):
-    user = await get_current_user(request)
-    is_admin = _is_admin(user)
-    settings_row = await _site_settings()
-    cards = await _build_catalog(user, is_admin, limit=800)
-    q = (q or "").strip().lower()
-    if q:
-        cards = [c for c in cards if q in c["title"].lower()]
-    asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
-    return templates.TemplateResponse("content_list.html", {
-        "request": request,
-        "user": user,
-        "is_admin": is_admin,
-        "site": settings_row,
-        "title": "All Content",
-        "cards": cards,
-        "active_tab": "all",
-        "query": q,
-    })
+async def content_all(
+    request: Request,
+    q: str = "",
+    page: int = 1,
+    filter: str = "",
+    search_content: str = "",
+):
+    # Backward compatibility with old query style URLs:
+    # /content?filter=movies&search_content=abc&page=2 -> /content/f/movies/search_content/abc?page=2
+    legacy_filter = (filter or "").strip()
+    legacy_search = (search_content or "").strip()
+    if legacy_filter or legacy_search:
+        normalized_filter = _normalize_filter_type(legacy_filter or "all")
+        final_query = legacy_search or (q or "").strip()
+        if final_query:
+            clean_url = f"/content/f/{normalized_filter}/search_content/{urllib.parse.quote(final_query)}"
+        else:
+            clean_url = f"/content/f/{normalized_filter}"
+        if page > 1:
+            clean_url = f"{clean_url}?page={page}"
+        return RedirectResponse(clean_url, status_code=307)
+    if (q or "").strip():
+        clean_url = f"/content/f/all/search_content/{urllib.parse.quote((q or '').strip())}"
+        if page > 1:
+            clean_url = f"{clean_url}?page={page}"
+        return RedirectResponse(clean_url, status_code=307)
+    return await _render_catalog_page(
+        request=request,
+        filter_type="all",
+        q=q,
+        page=page,
+        active_tab="all",
+    )
 
 
 @router.get("/content/movies")
-async def content_movies(request: Request, q: str = ""):
-    user = await get_current_user(request)
-    is_admin = _is_admin(user)
-    settings_row = await _site_settings()
-    cards = await _build_catalog(user, is_admin, limit=800)
-    cards = [c for c in cards if c["type"] == "movie"]
-    q = (q or "").strip().lower()
-    if q:
-        cards = [c for c in cards if q in c["title"].lower()]
-    asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
-    return templates.TemplateResponse("content_list.html", {
-        "request": request,
-        "user": user,
-        "is_admin": is_admin,
-        "site": settings_row,
-        "title": "Movies",
-        "cards": cards,
-        "active_tab": "movies",
-        "query": q,
-    })
+async def content_movies(request: Request, q: str = "", page: int = 1):
+    if (q or "").strip():
+        clean_url = f"/content/f/movies/search_content/{urllib.parse.quote((q or '').strip())}"
+        if page > 1:
+            clean_url = f"{clean_url}?page={page}"
+        return RedirectResponse(clean_url, status_code=307)
+    return await _render_catalog_page(
+        request=request,
+        filter_type="movies",
+        q=q,
+        page=page,
+        active_tab="movies",
+    )
 
 
 @router.get("/content/web-series")
-async def content_series(request: Request, q: str = ""):
-    user = await get_current_user(request)
-    is_admin = _is_admin(user)
-    settings_row = await _site_settings()
-    cards = await _build_catalog(user, is_admin, limit=3000)
-    cards = [c for c in cards if c["type"] == "series"]
-    q = (q or "").strip().lower()
-    if q:
-        cards = [c for c in cards if q in c["title"].lower()]
-    asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
-    return templates.TemplateResponse("content_list.html", {
-        "request": request,
-        "user": user,
-        "is_admin": is_admin,
-        "site": settings_row,
-        "title": "Web Series",
-        "cards": cards,
-        "active_tab": "series",
-        "query": q,
-    })
+async def content_series(request: Request, q: str = "", page: int = 1):
+    if (q or "").strip():
+        clean_url = f"/content/f/series/search_content/{urllib.parse.quote((q or '').strip())}"
+        if page > 1:
+            clean_url = f"{clean_url}?page={page}"
+        return RedirectResponse(clean_url, status_code=307)
+    return await _render_catalog_page(
+        request=request,
+        filter_type="series",
+        q=q,
+        page=page,
+        active_tab="series",
+    )
+
+
+@router.get("/content/f/{filter_type}")
+async def content_by_filter(request: Request, filter_type: str, page: int = 1):
+    normalized_filter = _normalize_filter_type(filter_type)
+    return await _render_catalog_page(
+        request=request,
+        filter_type=normalized_filter,
+        q="",
+        page=page,
+        active_tab=normalized_filter,
+        page_base_url=f"/content/f/{normalized_filter}",
+    )
+
+
+@router.get("/content/f/{filter_type}/search_content/{search_query:path}")
+async def content_by_filter_search(
+    request: Request,
+    filter_type: str,
+    search_query: str,
+    page: int = 1,
+):
+    normalized_filter = _normalize_filter_type(filter_type)
+    decoded_query = urllib.parse.unquote(search_query or "")
+    return await _render_catalog_page(
+        request=request,
+        filter_type=normalized_filter,
+        q=decoded_query,
+        page=page,
+        active_tab=normalized_filter,
+        page_base_url=f"/content/f/{normalized_filter}/search_content/{urllib.parse.quote(decoded_query)}",
+    )
 
 
 @router.get("/content/details/{content_key}")
@@ -1396,7 +1587,7 @@ async def toggle_watchlist(request: Request, item_id: str):
 
 
 @router.get("/content/watchlist")
-async def content_watchlist(request: Request):
+async def content_watchlist(request: Request, page: int = 1):
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/login")
@@ -1422,17 +1613,16 @@ async def content_watchlist(request: Request):
             continue
         if any((itm.get("id") or "") in object_ids for itm in (card.get("items") or [])):
             filtered_cards.append(card)
-    cards = filtered_cards
-    return templates.TemplateResponse("content_list.html", {
-        "request": request,
-        "user": user,
-        "is_admin": is_admin,
-        "site": site,
-        "title": "My Watchlist",
-        "cards": cards,
-        "active_tab": "watchlist",
-        "query": "",
-    })
+    return await _render_catalog_page(
+        request=request,
+        filter_type="all",
+        q="",
+        page=page,
+        title_override="My Watchlist",
+        cards_override=filtered_cards,
+        active_tab="watchlist",
+        page_base_url="/content/watchlist",
+    )
 
 
 @router.post("/content/request")
