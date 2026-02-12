@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 
-<div id="publicApp" class="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-4" data-token="{{ token }}" data-username="{{ viewer_name }}" data-item-id="{{ item.id }}">
+<div id="publicApp" class="min-h-screen bg-black flex flex-col items-center justify-center p-4" data-token="{{ token }}" data-username="{{ viewer_name }}" data-item-id="{{ item.id }}">
     <div id="viewerGate" class="viewer-gate hidden">
         <div class="viewer-card">
             <div class="viewer-title">Who's watching?</div>
@@ -12,22 +12,21 @@
         </div>
     </div>
     
-    <div class="w-full max-w-4xl bg-gray-800 rounded-xl shadow-2xl overflow-hidden border border-gray-700 relative">
+    <div class="w-full max-w-4xl bg-zinc-950 rounded-xl shadow-2xl overflow-hidden border border-zinc-800 relative">
         
-        <div class="bg-gray-900 p-4 border-b border-gray-700 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div class="bg-black p-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div class="flex items-center text-white">
                 <i class="fas {{ item.icon }} text-red-500 text-2xl mr-3"></i>
                 <div>
-                    <h1 class="font-bold text-lg truncate max-w-full sm:max-w-md">{{ item.name }}</h1>
-                    <p class="text-xs text-gray-400">Shared via MorganXMystic Cloud</p>
+                    <h1 class="font-bold text-lg truncate max-w-full sm:max-w-md">{{ display_title or item.name }}</h1>
                 </div>
             </div>
             <div class="flex flex-wrap gap-2 w-full sm:w-auto justify-start sm:justify-end">
-                <a href="{{ stream_url }}" download="{{ item.name }}" class="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded text-sm font-bold transition shadow-lg w-full sm:w-auto text-center">
+                <a href="{{ download_url or stream_url }}" class="px-4 py-2 rounded bg-zinc-900 border border-zinc-700 text-sm text-gray-100 hover:border-yellow-500 font-bold transition w-full sm:w-auto text-center">
                     <i class="fas fa-download mr-1"></i> Download
                 </a>
-                {% if bot_username and item.share_token %}
-                <a href="https://t.me/{{ bot_username }}?start=share_{{ item.share_token }}_t_{{ link_token }}" target="_blank" class="bg-blue-700 hover:bg-blue-600 text-white px-4 py-2 rounded text-sm font-bold transition shadow-lg w-full sm:w-auto text-center">
+                {% if telegram_url %}
+                <a href="{{ telegram_url }}" class="px-4 py-2 rounded bg-zinc-900 border border-zinc-700 text-sm text-gray-100 hover:border-yellow-500 font-bold transition w-full sm:w-auto text-center">
                     <i class="fab fa-telegram mr-1"></i> Telegram
                 </a>
                 {% endif %}
@@ -60,23 +59,21 @@
                         <i class="fas fa-file-archive text-6xl text-gray-600 mb-4"></i>
                         <p class="text-gray-400 text-lg">Preview not available</p>
                         <p class="text-sm text-gray-500 mb-6">{{ item.formatted_size }}</p>
-                        <a href="{{ stream_url }}" class="bg-red-600 hover:bg-red-500 text-white px-8 py-3 rounded-full font-bold text-lg transition shadow-red-glow">
+                        <a href="{{ download_url or stream_url }}" class="bg-red-600 hover:bg-red-500 text-white px-8 py-3 rounded-full font-bold text-lg transition shadow-red-glow">
                             Download File
                         </a>
                     </div>
                 {% endif %}
             </div>
 
-            <div class="w-full lg:w-80 bg-gray-900 border-t lg:border-t-0 lg:border-l border-gray-800 max-h-[70vh] overflow-y-auto">
-                <div class="px-4 py-3 text-xs uppercase tracking-wider text-gray-400 border-b border-gray-800">
+            <div class="w-full lg:w-80 bg-zinc-950 border-t lg:border-t-0 lg:border-l border-zinc-800 max-h-[70vh] overflow-y-auto">
+                <div class="px-4 py-3 text-xs uppercase tracking-wider text-gray-400 border-b border-zinc-800">
                     Episodes
                 </div>
                 <div class="p-3 space-y-2">
                     {% for ep in episodes %}
-                        {% set viewer_q = ("&u=" ~ viewer_name) if viewer_name else "" %}
-                        {% set token_q = ("&t=" ~ link_token) %}
-                        <a href="/s/{{ token }}?e={{ ep.id }}{{ viewer_q }}{{ token_q }}" class="flex items-center gap-3 p-2 rounded-lg transition border {% if ep.id|string == item.id|string %}bg-gray-800 border-red-500{% else %}bg-gray-900 border-gray-800 hover:border-gray-600{% endif %}">
-                            <div class="w-9 h-9 rounded bg-gray-800 flex items-center justify-center">
+                        <a href="/s/{{ token }}?e={{ ep.id }}&t={{ link_token }}{% if viewer_name %}&U={{ viewer_name|urlencode }}{% endif %}" class="flex items-center gap-3 p-2 rounded-lg transition border {% if ep.id|string == item.id|string %}bg-zinc-900 border-red-500{% else %}bg-black border-zinc-800 hover:border-zinc-600{% endif %}">
+                            <div class="w-9 h-9 rounded bg-zinc-900 flex items-center justify-center">
                                 <i class="fas {{ ep.icon }} text-red-500"></i>
                             </div>
                             <div class="flex-1 min-w-0">
@@ -92,19 +89,18 @@
             </div>
         </div>
 
-        <div class="bg-gray-900 p-4 border-t border-gray-700 flex flex-col md:flex-row md:items-center gap-4">
-            <div class="flex-1 text-xs text-gray-400">Shared via MorganXMystic</div>
-            <div class="flex flex-wrap gap-2 w-full md:w-auto md:justify-end">
-                <select id="publicQuality" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
+        <div class="bg-zinc-950 p-4 border-t border-zinc-800 flex flex-col md:flex-row md:items-center gap-4">
+            <div class="flex flex-wrap gap-2 w-full md:w-auto md:justify-end md:ml-auto">
+                <select id="publicQuality" class="bg-zinc-900 border border-zinc-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
                     <option value="-1">Quality: Original</option>
                 </select>
-                <select id="publicSubtitle" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
+                <select id="publicSubtitle" class="bg-zinc-900 border border-zinc-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
                     <option value="-1">Subtitles: Off</option>
                 </select>
-                <select id="publicAudio" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
+                <select id="publicAudio" class="bg-zinc-900 border border-zinc-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
                     <option value="-1">Audio: Default</option>
                 </select>
-                <select id="publicSpeed" class="bg-gray-800 border border-gray-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
+                <select id="publicSpeed" class="bg-zinc-900 border border-zinc-700 text-white text-xs rounded px-3 py-2 w-full sm:w-auto">
                     <option value="1">Speed: 1x</option>
                     <option value="1.25">1.25x</option>
                     <option value="1.5">1.5x</option>
@@ -113,46 +109,15 @@
             </div>
         </div>
 
-        <div class="bg-gray-800 p-4 border-t border-gray-700 text-sm text-gray-400 flex flex-col sm:flex-row sm:justify-between gap-2">
+        <div class="bg-zinc-950 p-4 border-t border-zinc-800 text-sm text-gray-400 flex flex-col sm:flex-row sm:justify-between gap-2">
             <span>Size: <span class="text-white">{{ item.formatted_size }}</span></span>
             <span>Type: <span class="text-white uppercase">{{ item.mime_type.split('/')[1] if '/' in item.mime_type else 'FILE' }}</span></span>
-        </div>
-    </div>
-
-    <div class="mt-8 w-full max-w-4xl transform hover:scale-[1.01] transition duration-300">
-        <div class="bg-gradient-to-r from-red-900 to-black p-1 rounded-xl shadow-lg">
-            <div class="bg-gray-900 rounded-lg p-6 flex flex-col md:flex-row items-center justify-between">
-                <div class="mb-4 md:mb-0 text-center md:text-left">
-                    <h2 class="text-2xl font-bold text-white mb-1">
-                        {{ banner_title or "Enjoy streaming securely" }}
-                    </h2>
-                    <p class="text-gray-400 text-sm">
-                        {{ banner_sub or "Access your content from anywhere." }}
-                    </p>
-                </div>
-                
-                {% if not hide_auth %}
-                <a href="{{ banner_link or '/login' }}" class="group relative px-8 py-3 bg-red-600 rounded-full text-white font-bold overflow-hidden shadow-lg transition-all hover:bg-red-500 hover:shadow-red-500/50">
-                    <span class="relative z-10 flex items-center">
-                        Create Free Account <i class="fas fa-arrow-right ml-2 group-hover:translate-x-1 transition"></i>
-                    </span>
-                    <div class="absolute top-0 -left-full w-full h-full bg-gradient-to-r from-transparent via-white/20 to-transparent skew-x-12 group-hover:animate-shine"></div>
-                </a>
-                {% endif %}
-            </div>
         </div>
     </div>
 
 </div>
 
 <style>
-    @keyframes shine {
-        100% { left: 125%; }
-    }
-    .group-hover\:animate-shine:hover {
-        animation: shine 0.75s;
-    }
-
     .viewer-gate {
         position: fixed;
         inset: 0;
@@ -170,7 +135,7 @@
 
     .viewer-card {
         width: min(420px, 90vw);
-        background: rgba(17, 24, 39, 0.95);
+        background: rgba(12, 12, 12, 0.95);
         border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 18px;
         padding: 24px;
@@ -196,7 +161,7 @@
         padding: 10px 12px;
         border-radius: 12px;
         border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(5, 8, 18, 0.9);
+        background: rgba(10, 10, 10, 0.92);
         color: #fff;
         font-size: 14px;
     }
@@ -271,7 +236,7 @@ viewerSubmit?.addEventListener("click", async () => {
     if (!raw) return;
     const resolved = await resolveViewerName(raw);
     const episodePart = currentEpisode ? `&e=${encodeURIComponent(currentEpisode)}` : "";
-    window.location.href = `/s/${token}?u=${encodeURIComponent(resolved)}${episodePart}`;
+    window.location.href = `/s/${token}?U=${encodeURIComponent(resolved)}&t={{ link_token }}${episodePart}`;
 });
 
 const itemId = publicApp.dataset.itemId;

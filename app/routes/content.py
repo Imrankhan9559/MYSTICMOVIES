@@ -45,8 +45,58 @@ SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
 SEASON_TAG_RE = re.compile(r"\bS\d{1,2}E\d{1,3}\b|\bS\d{1,2}\b|\bE\d{1,3}\b|\bSeason\s?\d{1,2}\b|\bEpisode\s?\d{1,3}\b", re.I)
 
 def _quality_rank(q: str) -> int:
-    order = {"2160P": 5, "1440P": 4, "1080P": 3, "720P": 2, "480P": 1, "380P": 0, "360P": 0}
-    return order.get((q or "").upper(), 0)
+    norm = re.sub(r"\s+", "", (q or "").upper())
+    direct = {
+        "8K": 8000,
+        "4320P": 4320,
+        "4K": 4000,
+        "UHD": 2160,
+        "2160P": 2160,
+        "2K": 2000,
+        "1440P": 1440,
+        "FHD": 1080,
+        "1080P": 1080,
+        "HD": 720,
+        "720P": 720,
+        "480P": 480,
+        "380P": 380,
+        "360P": 360,
+        "240P": 240,
+        "144P": 144,
+    }
+    if norm in direct:
+        return direct[norm]
+    k_match = re.search(r"(\d+)K", norm)
+    if k_match:
+        return int(k_match.group(1)) * 1000
+    p_match = re.search(r"(\d{3,4})P", norm)
+    if p_match:
+        return int(p_match.group(1))
+    return 0
+
+
+def _compact_quality_label(value: str) -> str:
+    raw = (value or "").strip().upper()
+    if not raw:
+        return ""
+    norm = re.sub(r"\s+", "", raw)
+    if "8K" in norm or "4320P" in norm:
+        return "8K"
+    if "4K" in norm or "2160P" in norm or "UHD" in norm:
+        return "4K"
+    if "2K" in norm or "1440P" in norm:
+        return "2K"
+    p_match = re.search(r"(1080|720|480|380|360|240|144)P", norm)
+    if p_match:
+        return f"{p_match.group(1)}P"
+    if "FHD" in norm:
+        return "1080P"
+    if norm == "HD":
+        return "HD"
+    token = re.split(r"[\s/_|,-]+", raw)[0].strip()
+    if len(token) > 8:
+        token = token[:8]
+    return token
 
 def _viewer_name(user: User | None) -> str:
     if not user:
@@ -1077,15 +1127,15 @@ def _decorate_catalog_cards(cards: list[dict]) -> list[dict]:
         if content_type == "movie":
             quality_set: set[str] = set()
             for quality in (card.get("qualities") or {}).keys():
-                q = (quality or "").strip().upper()
+                q = _compact_quality_label(quality)
                 if q:
                     quality_set.add(q)
             for row in card.get("items") or []:
-                q = (row.get("quality") or "").strip().upper()
+                q = _compact_quality_label(row.get("quality") or "")
                 if q:
                     quality_set.add(q)
-            qualities = sorted(quality_set, key=_quality_rank, reverse=True)
-            card["quality_row"] = qualities[:4]
+            qualities = sorted(quality_set, key=lambda value: (-_quality_rank(value), value))
+            card["quality_row"] = qualities
             card["season_text"] = ""
         else:
             season_numbers = []

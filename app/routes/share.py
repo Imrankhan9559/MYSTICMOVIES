@@ -5,6 +5,7 @@ import os
 import shutil
 import tempfile
 import logging
+import urllib.parse
 from datetime import datetime
 from typing import List
 from fastapi import APIRouter, Request, HTTPException, Body, Header
@@ -36,6 +37,64 @@ def _event_title(item: FileSystemItem | None) -> str:
         or (getattr(item, "title", "") or "").strip()
         or (item.name or "").strip()
     )
+
+
+QUALITY_HINT_RE = re.compile(
+    r"(8k|4k|2k|4320p|2160p|1440p|1080p|720p|480p|380p|360p|240p|144p)",
+    re.I,
+)
+
+
+def _quality_label(value: str) -> str:
+    raw = (value or "").strip().upper()
+    if not raw:
+        return ""
+    compact = re.sub(r"\s+", "", raw)
+    if "8K" in compact or "4320P" in compact:
+        return "8K"
+    if "4K" in compact or "2160P" in compact or "UHD" in compact:
+        return "4K"
+    if "2K" in compact or "1440P" in compact:
+        return "2K"
+    p_match = re.search(r"(1080|720|480|380|360|240|144)P", compact)
+    if p_match:
+        return f"{p_match.group(1)}P"
+    if "FHD" in compact:
+        return "1080P"
+    if compact == "HD":
+        return "HD"
+    token = re.split(r"[\s/_|,-]+", raw)[0].strip()
+    return token[:8] if len(token) > 8 else token
+
+
+def _item_quality(item: FileSystemItem | None) -> str:
+    if not item:
+        return ""
+    from_meta = _quality_label((getattr(item, "quality", "") or "").strip())
+    if from_meta:
+        return from_meta
+    name = (item.name or "").strip()
+    m = QUALITY_HINT_RE.search(name)
+    return _quality_label(m.group(1)) if m else ""
+
+
+def _display_title(item: FileSystemItem | None) -> str:
+    if not item:
+        return "Shared Content"
+    title = _event_title(item) or (item.name or "").strip() or "Shared Content"
+    quality = _item_quality(item)
+    if quality and quality.lower() not in title.lower():
+        return f"{title} ({quality})"
+    return title
+
+
+def _share_query(link_token: str, viewer_name: str) -> str:
+    params: list[str] = []
+    if link_token:
+        params.append(f"t={urllib.parse.quote(link_token, safe='')}")
+    if viewer_name:
+        params.append(f"U={urllib.parse.quote(viewer_name, safe='')}")
+    return "&".join(params)
 
 
 async def _log_activity(
@@ -412,6 +471,8 @@ async def public_view(request: Request, token: str):
     user = await get_current_user(request)
     is_admin = _is_admin(user)
     link_token = await _get_link_token()
+    share_query = _share_query(link_token, viewer_name)
+    share_suffix = f"?{share_query}" if share_query else ""
     hide_auth = user is None
     banner_title = "Want Unlimited Cloud Storage?"
     banner_sub = "Store videos, files, and folders without limits. Stream anywhere, anytime."
@@ -481,7 +542,10 @@ async def public_view(request: Request, token: str):
             "episodes": ordered_items,
             "active_item": active_item,
             "item": active_item,
-            "stream_url": f"/s/stream/file/{active_item.id}?t={link_token}&u={viewer_name}",
+            "display_title": _display_title(active_item),
+            "stream_url": f"/s/stream/file/{active_item.id}{share_suffix}",
+            "download_url": f"/d/{token}{share_suffix}",
+            "telegram_url": f"/t/{token}{share_suffix}",
             "hls_url": active_hls,
             "bundle_name": folder.name or (collection.name if collection else "Shared Folder"),
             "viewer_name": viewer_name,
@@ -493,7 +557,7 @@ async def public_view(request: Request, token: str):
             "banner_title": banner_title,
             "banner_sub": banner_sub,
             "banner_link": banner_link,
-            "link_token": link_token
+            "link_token": link_token,
         })
 
     # Bundle Check
@@ -584,14 +648,18 @@ async def public_view(request: Request, token: str):
             "episodes": ordered_items,
             "active_item": active_item,
             "item": active_item,
-            "stream_url": f"/s/stream/file/{active_item.id}",
+            "display_title": _display_title(active_item),
+            "stream_url": f"/s/stream/file/{active_item.id}{share_suffix}",
+            "download_url": f"/d/{token}{share_suffix}",
+            "telegram_url": f"/t/{token}{share_suffix}",
             "hls_url": active_hls,
             "bundle_name": collection.name,
             "viewer_name": viewer_name,
             "token": token,
             "is_admin": is_admin,
             "user": user,
-            "bot_username": getattr(settings, "BOT_USERNAME", "")
+            "bot_username": getattr(settings, "BOT_USERNAME", ""),
+            "link_token": link_token,
         })
 
     # Single File Check
@@ -612,7 +680,10 @@ async def public_view(request: Request, token: str):
         return templates.TemplateResponse("shared.html", {
             "request": request,
             "item": item,
-            "stream_url": f"/s/stream/{token}?t={link_token}&u={viewer_name}",
+            "display_title": _display_title(item),
+            "stream_url": f"/s/stream/{token}{share_suffix}",
+            "download_url": f"/d/{token}{share_suffix}",
+            "telegram_url": f"/t/{token}{share_suffix}",
             "hls_url": active_hls,
             "viewer_name": viewer_name,
             "token": token,
@@ -776,7 +847,9 @@ async def watch_party_view(request: Request, token: str):
 @router.get("/s/{token}/u={username}")
 async def public_view_with_user(token: str, username: str):
     link_token = await _get_link_token()
-    return RedirectResponse(url=f"/s/{token}?u={username}&t={link_token}")
+    safe_user = urllib.parse.quote(username, safe="")
+    safe_token = urllib.parse.quote(link_token, safe="")
+    return RedirectResponse(url=f"/s/{token}?U={safe_user}&t={safe_token}")
 
 @router.get("/s/stream/file/{item_id}")
 async def public_stream_by_id(item_id: str, request: Request, range: str = Header(None), download: bool = False):
