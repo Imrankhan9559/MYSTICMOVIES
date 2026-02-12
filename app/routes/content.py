@@ -996,6 +996,11 @@ async def request_content_page(request: Request):
     is_admin = _is_admin(user)
     site = await _site_settings()
     my_requests = await ContentRequest.find(ContentRequest.user_phone == user.phone_number).sort("-created_at").limit(40).to_list()
+    for row in my_requests:
+        raw_path = str(getattr(row, "fulfilled_content_path", "") or "").strip()
+        if raw_path and not raw_path.startswith("/"):
+            raw_path = "/" + raw_path.lstrip("/")
+        setattr(row, "view_path", raw_path)
     return templates.TemplateResponse("request_content.html", {
         "request": request,
         "user": user,

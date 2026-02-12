@@ -375,6 +375,24 @@ async def main_control(request: Request):
     all_users = await User.find_all().sort("-created_at").to_list()
     pending_users = await User.find(User.status == "pending").sort("-requested_at").to_list()
     pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").limit(50).to_list()
+    request_content_options = []
+    for g in published_groups:
+        content_path = (g.get("content_path") or "").strip()
+        if not content_path.startswith("/content/details/"):
+            continue
+        title = (g.get("title") or "").strip()
+        year = (g.get("year") or "").strip()
+        ctype = (g.get("type") or "").strip().lower()
+        label = f"{title} ({year or '-'}) [{(ctype or 'movie').upper()}]"
+        request_content_options.append({
+            "id": g.get("id"),
+            "title": title,
+            "type": ctype,
+            "year": year,
+            "path": content_path,
+            "label": label,
+        })
+    request_content_options.sort(key=lambda x: ((x.get("title") or "").lower(), x.get("year") or ""))
 
     total_titles = int(base_ctx.get("published_movies") or 0) + int(base_ctx.get("published_series") or 0)
     published_preview = published_groups[:10]
@@ -388,6 +406,7 @@ async def main_control(request: Request):
         "users": all_users,
         "pending_users": pending_users,
         "pending_content_requests": pending_requests,
+        "request_content_options": request_content_options,
         "published_preview": published_preview,
     })
 
@@ -1752,7 +1771,15 @@ async def update_content_metadata(
     return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/request/{request_id}/{action}")
-async def update_content_request(request: Request, request_id: str, action: str):
+async def update_content_request(
+    request: Request,
+    request_id: str,
+    action: str,
+    selected_content_id: str = Form(""),
+    selected_content_title: str = Form(""),
+    selected_content_type: str = Form(""),
+    selected_content_path: str = Form(""),
+):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(403)
@@ -1762,6 +1789,31 @@ async def update_content_request(request: Request, request_id: str, action: str)
     action = (action or "").lower()
     if action not in ("fulfilled", "rejected", "pending"):
         raise HTTPException(400)
+
+    selected_content_id = (selected_content_id or "").strip()
+    selected_content_title = (selected_content_title or "").strip()
+    selected_content_type = (selected_content_type or "").strip().lower()
+    selected_content_path = (selected_content_path or "").strip()
+
+    if action == "fulfilled":
+        if selected_content_id and (not selected_content_path or not selected_content_title):
+            picked = await _find_group_by_item_id(selected_content_id)
+            if picked:
+                selected_content_title = selected_content_title or (picked.get("title") or "")
+                selected_content_type = selected_content_type or (picked.get("type") or "")
+                selected_content_path = selected_content_path or (picked.get("content_path") or "")
+        if not selected_content_path.startswith("/content/details/"):
+            return RedirectResponse("/dashboard?request=missing_content", status_code=303)
+        row.fulfilled_content_id = selected_content_id or None
+        row.fulfilled_content_title = selected_content_title or None
+        row.fulfilled_content_type = selected_content_type or None
+        row.fulfilled_content_path = selected_content_path
+    else:
+        row.fulfilled_content_id = None
+        row.fulfilled_content_title = None
+        row.fulfilled_content_type = None
+        row.fulfilled_content_path = None
+
     row.status = action
     row.updated_at = datetime.now()
     await row.save()

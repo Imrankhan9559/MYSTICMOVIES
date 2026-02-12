@@ -119,6 +119,11 @@
                 <h3 class="card-title"><i class="fas fa-inbox"></i> Pending Content Requests</h3>
             </div>
             <div class="card-body p-0">
+                {% if request.query_params.get('request') == 'missing_content' %}
+                <div class="alert alert-danger rounded-0 mb-0">
+                    Select a published movie/series before marking a request as fulfilled.
+                </div>
+                {% endif %}
                 <div class="table-responsive">
                     <table class="table table-sm table-dark mb-0">
                         <thead>
@@ -138,9 +143,15 @@
                                 <td>{{ r.title }}</td>
                                 <td class="text-muted">{{ r.note or "-" }}</td>
                                 <td class="text-right">
-                                    <form action="/admin/request/{{ r.id }}/fulfilled" method="post" class="d-inline">
-                                        <button class="btn btn-sm btn-success">Fulfilled</button>
-                                    </form>
+                                    <button
+                                        type="button"
+                                        class="btn btn-sm btn-success js-open-fulfill"
+                                        data-request-id="{{ r.id }}"
+                                        data-request-title="{{ r.title }}"
+                                        data-request-type="{{ r.request_type }}"
+                                    >
+                                        Fulfilled
+                                    </button>
                                     <form action="/admin/request/{{ r.id }}/rejected" method="post" class="d-inline">
                                         <button class="btn btn-sm btn-danger">Reject</button>
                                     </form>
@@ -263,4 +274,92 @@
         </div>
     </div>
 </section>
+{% endblock %}
+
+{% block page_scripts %}
+<div class="modal fade" id="fulfillRequestModal" tabindex="-1" role="dialog" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+        <div class="modal-content bg-dark border border-secondary">
+            <div class="modal-header border-secondary">
+                <h5 class="modal-title">Mark Request as Fulfilled</h5>
+                <button type="button" class="close text-white" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <form id="fulfillRequestForm" method="post">
+                <div class="modal-body">
+                    <div class="mb-2 text-muted text-sm" id="fulfillRequestMeta"></div>
+                    <div class="form-group">
+                        <label>Select Published Content</label>
+                        <select id="fulfillContentSelect" class="custom-select" required>
+                            <option value="">Choose movie or web series</option>
+                            {% for opt in request_content_options %}
+                            <option
+                                value="{{ opt.id }}"
+                                data-title="{{ opt.title }}"
+                                data-type="{{ opt.type }}"
+                                data-path="{{ opt.path }}"
+                            >
+                                {{ opt.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <input type="hidden" name="selected_content_id" id="selectedContentId">
+                    <input type="hidden" name="selected_content_title" id="selectedContentTitle">
+                    <input type="hidden" name="selected_content_type" id="selectedContentType">
+                    <input type="hidden" name="selected_content_path" id="selectedContentPath">
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-outline-light" data-dismiss="modal">Cancel</button>
+                    <button type="submit" class="btn btn-success">Confirm Fulfilled</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+(() => {
+    const modalEl = document.getElementById("fulfillRequestModal");
+    const formEl = document.getElementById("fulfillRequestForm");
+    const selectEl = document.getElementById("fulfillContentSelect");
+    const metaEl = document.getElementById("fulfillRequestMeta");
+    const idEl = document.getElementById("selectedContentId");
+    const titleEl = document.getElementById("selectedContentTitle");
+    const typeEl = document.getElementById("selectedContentType");
+    const pathEl = document.getElementById("selectedContentPath");
+
+    function syncSelected() {
+        const selected = selectEl.options[selectEl.selectedIndex];
+        if (!selected || !selected.value) {
+            idEl.value = "";
+            titleEl.value = "";
+            typeEl.value = "";
+            pathEl.value = "";
+            return;
+        }
+        idEl.value = selected.value;
+        titleEl.value = selected.dataset.title || "";
+        typeEl.value = selected.dataset.type || "";
+        pathEl.value = selected.dataset.path || "";
+    }
+
+    selectEl.addEventListener("change", syncSelected);
+
+    document.querySelectorAll(".js-open-fulfill").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const requestId = btn.dataset.requestId || "";
+            const requestTitle = btn.dataset.requestTitle || "";
+            const requestType = (btn.dataset.requestType || "").toUpperCase();
+            if (!requestId) return;
+            formEl.action = `/admin/request/${requestId}/fulfilled`;
+            metaEl.textContent = `${requestType} request: ${requestTitle}`;
+            selectEl.value = "";
+            syncSelected();
+            $(modalEl).modal("show");
+        });
+    });
+})();
+</script>
 {% endblock %}

@@ -163,6 +163,10 @@ class ContentRequest(Document):
     request_type: str = "movie"  # movie | series
     note: Optional[str] = None
     status: str = "pending"      # pending | fulfilled | rejected
+    fulfilled_content_id: Optional[str] = None
+    fulfilled_content_title: Optional[str] = None
+    fulfilled_content_type: Optional[str] = None
+    fulfilled_content_path: Optional[str] = None
     created_at: datetime = datetime.now()
     updated_at: datetime = datetime.now()
     model_config = ConfigDict(extra='allow')
