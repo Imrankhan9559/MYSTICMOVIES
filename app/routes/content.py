@@ -14,6 +14,7 @@ from fastapi.templating import Jinja2Templates
 from app.core.config import settings
 from app.db.models import FileSystemItem, User, TokenSetting, WatchlistEntry, ContentRequest, SiteSettings
 from app.routes.dashboard import get_current_user
+from app.utils.file_utils import format_size
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -766,12 +767,18 @@ async def content_details(request: Request, content_key: str):
 
     qualities = []
     if group["type"] == "movie":
-        for q, v in group["qualities"].items():
+        movie_qualities = sorted(
+            group["qualities"].items(),
+            key=lambda x: (-_quality_rank(x[0]), x[0]),
+        )
+        for q, v in movie_qualities:
             token = await _ensure_share_token(v["file_id"])
             query = f"?{share_params}" if share_params else ""
+            size_bytes = int(v.get("size") or 0)
             qualities.append({
                 "label": q,
-                "size": v["size"],
+                "size": size_bytes,
+                "size_label": format_size(size_bytes),
                 "view_url": f"/s/{token}{query}" if token and share_params else "",
                 "download_url": f"/d/{token}{query}" if token and share_params else "",
                 "telegram_url": f"/t/{token}{query}" if token and share_params else "",
@@ -782,28 +789,44 @@ async def content_details(request: Request, content_key: str):
 
     seasons = []
     if group["type"] == "series":
-        for s_no, eps in sorted(group["seasons"].items(), key=lambda x: x[0]):
-            # aggregate sizes per quality
-            quality_totals = {}
-            for ep_no, variants in eps.items():
-                for q, v in variants.items():
-                    quality_totals[q] = quality_totals.get(q, 0) + (v["size"] or 0)
-                    if "token" not in v:
-                        v["token"] = await _ensure_share_token(v["file_id"])
-                    if v.get("token") and share_params:
-                        query = f"?{share_params}"
-                        v["view_url"] = f"/s/{v['token']}{query}"
-                        v["download_url"] = f"/d/{v['token']}{query}"
-                        v["telegram_url"] = f"/t/{v['token']}{query}"
-                        v["watch_url"] = f"/w/{v['token']}{query}"
+        for s_no, eps in sorted(group["seasons"].items(), key=lambda x: int(x[0])):
+            season_titles = (group.get("episode_titles", {}) or {}).get(s_no, {})
+            season_qualities = set()
+            episodes_payload = []
+            for ep_no, variants in sorted(eps.items(), key=lambda x: int(x[0])):
+                quality_rows = []
+                max_size = 0
+                for q, v in sorted(variants.items(), key=lambda x: (-_quality_rank(x[0]), x[0])):
+                    token = await _ensure_share_token(v["file_id"])
+                    query = f"?{share_params}" if share_params else ""
+                    size_bytes = int(v.get("size") or 0)
+                    max_size = max(max_size, size_bytes)
+                    season_qualities.add(q)
+                    quality_rows.append({
+                        "label": q,
+                        "size": size_bytes,
+                        "size_label": format_size(size_bytes),
+                        "view_url": f"/s/{token}{query}" if token and share_params else "",
+                        "download_url": f"/d/{token}{query}" if token and share_params else "",
+                        "telegram_url": f"/t/{token}{query}" if token and share_params else "",
+                        "watch_url": f"/w/{token}{query}" if token and share_params else "",
+                        "admin_url": f"/player/{v['file_id']}",
+                        "file_id": v["file_id"],
+                    })
+                episode_num = int(ep_no)
+                episodes_payload.append({
+                    "episode": episode_num,
+                    "title": season_titles.get(episode_num, "") or season_titles.get(str(episode_num), ""),
+                    "qualities": quality_rows,
+                    "quality_count": len(quality_rows),
+                    "display_size": max_size,
+                    "display_size_label": format_size(max_size),
+                })
             seasons.append({
                 "season": s_no,
-                "qualities": [
-                    {"label": q, "size": size}
-                    for q, size in sorted(quality_totals.items(), key=lambda x: x[0], reverse=True)
-                ],
-                "episodes": eps,
-                "episode_titles": (group.get("episode_titles", {}) or {}).get(s_no, {}),
+                "qualities": sorted(season_qualities, key=lambda q: (-_quality_rank(q), q)),
+                "episode_count": len(episodes_payload),
+                "episodes": episodes_payload,
             })
 
     watchlisted = False
