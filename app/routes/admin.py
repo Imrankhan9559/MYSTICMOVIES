@@ -322,6 +322,35 @@ async def _find_group_by_item_id(item_id: str) -> dict | None:
                 return g
     return None
 
+
+async def _find_group_identity(
+    group_id: str = "",
+    group_title: str = "",
+    group_year: str = "",
+    group_type: str = "",
+) -> dict | None:
+    group_id = (group_id or "").strip()
+    if group_id:
+        found = await _find_group_by_item_id(group_id)
+        if found:
+            return found
+
+    title = (group_title or "").strip().lower()
+    year = (group_year or "").strip()
+    ctype = (group_type or "").strip().lower()
+    if not title:
+        return None
+    groups = await _group_published_catalog()
+    for g in groups:
+        if (g.get("title", "") or "").strip().lower() != title:
+            continue
+        if year and (g.get("year", "") or "").strip() != year:
+            continue
+        if ctype and (g.get("type", "") or "").strip().lower() != ctype:
+            continue
+        return g
+    return None
+
 @router.get("/admin")
 async def admin_redirect(request: Request):
     return RedirectResponse("/dashboard")
@@ -453,12 +482,7 @@ async def user_playback_analytics(request: Request, q: str = "", user_key: str =
         if created and (not entry["last_seen"] or created > entry["last_seen"]):
             entry["last_seen"] = created
 
-    progress_query = {}
-    if selected_user:
-        progress_query = {
-            "user_type": "user",
-            "user_key": selected_user
-        }
+    progress_query = {"user_key": selected_user} if selected_user else {}
     progress_rows = await PlaybackProgress.find(progress_query).sort("-updated_at").limit(600).to_list()
     progress_stats: dict[str, dict] = {}
     for p in progress_rows:
@@ -605,7 +629,7 @@ async def publish_content(request: Request, q: str = ""):
     if settings.TMDB_API_KEY:
         for g in filtered_groups[:80]:
             try:
-                if not g.get("poster") and not g.get("backdrop"):
+                if not g.get("poster") or not g.get("backdrop"):
                     await _ensure_group_assets(g)
             except Exception:
                 pass
@@ -621,7 +645,13 @@ async def publish_content(request: Request, q: str = ""):
 
 
 @router.get("/dashboard/publish-content/details/{group_id}")
-async def publish_content_details(request: Request, group_id: str):
+async def publish_content_details(
+    request: Request,
+    group_id: str,
+    group_title: str = "",
+    group_year: str = "",
+    group_type: str = "",
+):
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/admin-login")
@@ -629,7 +659,7 @@ async def publish_content_details(request: Request, group_id: str):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
     base_ctx = await _admin_context_base(user)
-    group = await _find_group_by_item_id(group_id)
+    group = await _find_group_identity(group_id, group_title, group_year, group_type)
     if not group:
         return RedirectResponse("/dashboard/publish-content", status_code=303)
     if settings.TMDB_API_KEY and (not group.get("poster") or not group.get("description")):
@@ -646,7 +676,13 @@ async def publish_content_details(request: Request, group_id: str):
     })
 
 @router.get("/dashboard/publish-content/edit/{group_id}")
-async def publish_content_edit(request: Request, group_id: str):
+async def publish_content_edit(
+    request: Request,
+    group_id: str,
+    group_title: str = "",
+    group_year: str = "",
+    group_type: str = "",
+):
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/admin-login")
@@ -654,7 +690,7 @@ async def publish_content_edit(request: Request, group_id: str):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
     base_ctx = await _admin_context_base(user)
-    group = await _find_group_by_item_id(group_id)
+    group = await _find_group_identity(group_id, group_title, group_year, group_type)
     if not group:
         return RedirectResponse("/dashboard/publish-content", status_code=303)
     if settings.TMDB_API_KEY:
@@ -833,6 +869,7 @@ async def publish_content_delete(
     request: Request,
     group_id: str = Form(""),
     group_title: str = Form(""),
+    group_year: str = Form(""),
     group_type: str = Form("movie"),
     return_to: str = Form("")
 ):
@@ -842,8 +879,10 @@ async def publish_content_delete(
     group = await _find_group_by_item_id(group_id) if group_id else None
     if group:
         group_title = (group.get("title") or group_title or "").strip()
+        group_year = (group.get("year") or group_year or "").strip()
         group_type = (group.get("type") or group_type or "movie").strip().lower()
     group_title = (group_title or "").strip()
+    group_year = (group_year or "").strip()
     group_type = (group_type or "movie").strip().lower()
     if not group_title:
         return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
@@ -856,11 +895,14 @@ async def publish_content_delete(
             if deleted_items:
                 await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(ids))).delete()
     if not deleted_items:
-        deleted_items = await FileSystemItem.find(
+        query_items = [
             FileSystemItem.catalog_status == "published",
             FileSystemItem.catalog_type == group_type,
             Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
-        ).to_list()
+        ]
+        if group_year:
+            query_items.append(FileSystemItem.year == group_year)
+        deleted_items = await FileSystemItem.find(*query_items).to_list()
         if deleted_items:
             await FileSystemItem.find(In(FileSystemItem.id, _cast_ids([str(x.id) for x in deleted_items]))).delete()
 

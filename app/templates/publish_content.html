@@ -83,6 +83,7 @@
                                         <form action="/dashboard/publish-content/delete" method="post" class="d-inline">
                                             <input type="hidden" name="group_id" value="{{ group.id }}">
                                             <input type="hidden" name="group_title" value="{{ group.title }}">
+                                            <input type="hidden" name="group_year" value="{{ group.year }}">
                                             <input type="hidden" name="group_type" value="{{ group.type }}">
                                             <input type="hidden" name="return_to" value="/dashboard/publish-content">
                                             <button type="submit" class="btn btn-danger" onclick="return confirm('Delete this content and copied files?')">Delete</button>
