@@ -1,6 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
 <style>
+    html,
+    body {
+        background: #000 !important;
+    }
+    .site-main {
+        background: #000;
+    }
     :root {
         --bg-body: #050505;
         --bg-card: #111111;
@@ -14,6 +21,12 @@
     .content-shell {
         margin-left: calc(50% - 50vw);
         margin-right: calc(50% - 50vw);
+        background: #000;
+    }
+    .search-stack {
+        position: relative;
+        width: min(760px, 100%);
+        margin: 0 auto;
     }
     .hero-section {
         margin-top: 8px;
@@ -66,12 +79,17 @@
         padding: 6px 6px 6px 18px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
         transition: all 0.3s ease;
-        max-width: 760px;
-        margin: 0 auto;
+        width: 100%;
+        margin: 0;
     }
     .search-bar-container:focus-within {
         border-color: var(--gold-primary);
         box-shadow: 0 0 25px var(--gold-glow);
+    }
+    .search-input,
+    .search-btn,
+    .search-clear-btn {
+        outline: none;
     }
     .search-input {
         flex: 1;
@@ -86,6 +104,31 @@
         outline: none;
         box-shadow: none;
         border: none;
+    }
+    .search-clear-btn {
+        width: 30px;
+        height: 30px;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        color: #9c9c9c;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        margin-right: 8px;
+        transition: all 0.2s ease;
+    }
+    .search-clear-btn.active {
+        display: inline-flex;
+    }
+    .search-clear-btn:hover {
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+    }
+    .search-btn:focus-visible,
+    .search-clear-btn:focus-visible {
+        box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.24);
     }
     .search-btn {
         background: var(--gold-primary);
@@ -123,27 +166,6 @@
     .loading-dots span:nth-child(3) { animation-delay: 0.2s; }
     @keyframes bounce {
         to { transform: translateY(-5px); opacity: 0.5; }
-    }
-    .tags-container {
-        display: flex;
-        justify-content: center;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 24px;
-    }
-    .tag-pill {
-        background: rgba(255, 255, 255, 0.05);
-        border: 1px solid #333;
-        color: var(--text-muted);
-        padding: 6px 15px;
-        border-radius: 15px;
-        font-size: 11px;
-        cursor: pointer;
-        transition: all 0.25s ease;
-    }
-    .tag-pill:hover {
-        border-color: var(--gold-primary);
-        color: var(--gold-primary);
     }
     .catalog-section {
         padding: 42px 0 88px;
@@ -323,13 +345,17 @@
     }
     #dynamic-search-dropdown {
         position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        width: 100%;
         z-index: 200;
         background: #111;
         border: 1px solid var(--gold-primary);
-        border-top: none;
-        border-radius: 0 0 15px 15px;
+        border-radius: 14px;
         box-shadow: 0 20px 50px rgba(0, 0, 0, 0.9);
         overflow: hidden;
+        max-height: 340px;
+        overflow-y: auto;
         display: none;
         text-align: left;
     }
@@ -404,33 +430,33 @@
                 <a href="/content/f/series{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="filter-btn {{ 'active' if filter_type == 'series' else '' }}">Web Series</a>
             </div>
 
-            <div class="search-bar-container" id="searchBarContainer">
-                <i class="fas fa-search text-gray-500 ml-2"></i>
-                <input
-                    type="text"
-                    id="mainInput"
-                    class="search-input"
-                    placeholder="Search in {{ filter_type|capitalize }}..."
-                    value="{{ search_query or '' }}"
-                    autocomplete="off">
+            <div class="search-stack">
+                <div class="search-bar-container" id="searchBarContainer">
+                    <i class="fas fa-search text-gray-500 ml-2"></i>
+                    <input
+                        type="text"
+                        id="mainInput"
+                        class="search-input"
+                        placeholder="Search by title, cast, year..."
+                        value="{{ search_query or '' }}"
+                        autocomplete="off"
+                        aria-label="Search content">
 
-                <div class="loading-dots" id="loadingDots"><span></span><span></span><span></span></div>
+                    <button id="clearSearchBtn" class="search-clear-btn" type="button" aria-label="Clear search">
+                        <i class="fas fa-xmark"></i>
+                    </button>
 
-                <button id="mainSearchBtn" class="search-btn" type="button">
-                    <span>Search</span>
-                    <i class="fas fa-arrow-right"></i>
-                </button>
+                    <div class="loading-dots" id="loadingDots"><span></span><span></span><span></span></div>
+
+                    <button id="mainSearchBtn" class="search-btn" type="button">
+                        <span>Search</span>
+                        <i class="fas fa-arrow-right"></i>
+                    </button>
+                </div>
+
+                <div id="dynamic-search-dropdown"></div>
             </div>
 
-            <div id="dynamic-search-dropdown"></div>
-
-            <div class="tags-container">
-                <a href="/content/f/{{ filter_type }}/search_content/Bollywood{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="tag-pill">Bollywood</a>
-                <a href="/content/f/{{ filter_type }}/search_content/Hollywood{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="tag-pill">Hollywood</a>
-                <a href="/content/f/{{ filter_type }}/search_content/Anime{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="tag-pill">Anime</a>
-                <a href="/content/f/{{ filter_type }}/search_content/Netflix{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="tag-pill">Netflix</a>
-                <a href="/content/f/{{ filter_type }}/search_content/2025{{ '?sort=' ~ sort_by if sort_by != 'release_new' else '' }}" class="tag-pill">2025</a>
-            </div>
         </div>
     </div>
 
@@ -529,6 +555,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const inputContainer = document.getElementById("searchBarContainer");
     const loadingDots = document.getElementById("loadingDots");
     const mainBtn = document.getElementById("mainSearchBtn");
+    const clearBtn = document.getElementById("clearSearchBtn");
     const dropdown = document.getElementById("dynamic-search-dropdown");
     const sortSelect = document.getElementById("sortSelect");
     const filterType = "{{ filter_type or 'all' }}";
@@ -548,18 +575,18 @@ document.addEventListener("DOMContentLoaded", function () {
         });
     }
 
-    function repositionDropdown() {
-        if (!dropdown || dropdown.style.display === "none") return;
-        const rect = inputContainer.getBoundingClientRect();
-        const scrollY = window.pageYOffset || document.documentElement.scrollTop;
-        dropdown.style.top = (rect.bottom + scrollY + 2) + "px";
-        dropdown.style.left = rect.left + "px";
-        dropdown.style.width = rect.width + "px";
+    function updateClearButton() {
+        if (!clearBtn || !input) return;
+        const hasText = (input.value || "").trim().length > 0;
+        clearBtn.classList.toggle("active", hasText);
     }
 
     function executeSearch() {
         const q = (input?.value || "").trim();
-        if (!q) return;
+        if (!q) {
+            input?.focus();
+            return;
+        }
         const sortValue = (sortSelect?.value || "release_new").trim();
         const suffix = sortValue !== "release_new" ? `?sort=${encodeURIComponent(sortValue)}` : "";
         window.location.href = `/content/f/${encodeURIComponent(filterType)}/search_content/${encodeURIComponent(q)}${suffix}`;
@@ -574,6 +601,7 @@ document.addEventListener("DOMContentLoaded", function () {
         input.addEventListener("input", function () {
             const query = this.value.trim();
             clearTimeout(debounceTimer);
+            updateClearButton();
             if (!dropdown) return;
             if (query.length < 2) {
                 dropdown.style.display = "none";
@@ -613,23 +641,39 @@ document.addEventListener("DOMContentLoaded", function () {
                     }).join("");
 
                     dropdown.style.display = "block";
-                    repositionDropdown();
                 } catch (e) {
                     loadingDots.style.display = "none";
                     dropdown.style.display = "none";
                 }
             }, 260);
         });
+
+        input.addEventListener("keydown", function (e) {
+            if (e.key === "Escape" && dropdown) {
+                dropdown.style.display = "none";
+            }
+        });
     }
 
-    window.addEventListener("scroll", repositionDropdown);
-    window.addEventListener("resize", repositionDropdown);
+    if (clearBtn) {
+        clearBtn.addEventListener("click", function () {
+            if (!input) return;
+            input.value = "";
+            updateClearButton();
+            if (dropdown) dropdown.style.display = "none";
+            if (loadingDots) loadingDots.style.display = "none";
+            input.focus();
+        });
+    }
+
     document.addEventListener("click", function (e) {
         if (!dropdown || !inputContainer) return;
         if (!inputContainer.contains(e.target) && !dropdown.contains(e.target)) {
             dropdown.style.display = "none";
         }
     });
+
+    updateClearButton();
 });
 </script>
 {% endblock %}

@@ -11,7 +11,8 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pyrogram import Client, errors
 from app.core.config import settings
 from app.core.content_store import sync_content_catalog
-from app.db.models import User, ContentItem
+from app.db.models import User, ContentItem, SiteSettings
+from app.routes.dashboard import get_current_user
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -89,13 +90,26 @@ async def _latest_login_cards(limit: int = 20) -> list[dict]:
             break
     return cards
 
+
+async def _site_settings() -> SiteSettings:
+    row = await SiteSettings.find_one(SiteSettings.key == "main")
+    if not row:
+        row = SiteSettings(key="main")
+        await row.insert()
+    return row
+
 @router.get("/login")
 async def login_page(request: Request):
     """User login page (Google)."""
+    user = await get_current_user(request)
+    site = await _site_settings()
     latest_uploads = await _latest_login_cards(limit=20)
     return templates.TemplateResponse("login.html", {
         "request": request,
+        "user": user,
+        "site": site,
         "latest_uploads": latest_uploads,
+        "hide_global_search": True,
     })
 
 @router.get("/admin-login")
