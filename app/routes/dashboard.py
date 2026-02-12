@@ -1268,37 +1268,99 @@ async def profile_page(request: Request):
     if not user:
         return RedirectResponse("/login")
     is_admin = _is_admin(user)
-    total_files = await FileSystemItem.find(FileSystemItem.owner_phone == user.phone_number, FileSystemItem.is_folder == False).count()
 
-    # Watchlist cards
-    watchlist_rows = await WatchlistEntry.find(WatchlistEntry.user_phone == user.phone_number).sort("-created_at").to_list()
-    watchlist_ids = [r.item_id for r in watchlist_rows if getattr(r, "item_id", "")]
-    watchlist_items: dict[str, FileSystemItem] = {}
-    if watchlist_ids:
-        rows = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(watchlist_ids))).to_list()
-        watchlist_items = {str(x.id): x for x in rows}
-    watchlist_cards = []
-    for row in watchlist_rows:
-        item = watchlist_items.get(str(row.item_id))
-        if not item:
+    admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
+    catalog_query: dict[str, Any] = {
+        "catalog_status": "published",
+        "is_folder": False,
+    }
+    if not is_admin:
+        catalog_query["$or"] = [
+            {"owner_phone": admin_phone},
+            {"owner_phone": user.phone_number},
+            {"collaborators": user.phone_number},
+        ]
+    published_rows = await FileSystemItem.find(catalog_query).sort("-created_at").limit(5000).to_list()
+
+    grouped_by_slug: dict[str, dict[str, str]] = {}
+    grouped_by_item_id: dict[str, dict[str, str]] = {}
+    for item in published_rows:
+        if not _is_video_name(item.name or "", item.mime_type):
             continue
         parsed = _parse_catalog_name(item.name or "")
         title = (getattr(item, "series_title", "") or getattr(item, "title", "") or parsed.get("title") or item.name or "").strip()
         year = (getattr(item, "year", "") or parsed.get("year") or "").strip()
-        watchlist_cards.append({
-            "id": str(item.id),
-            "title": title,
-            "year": year,
-            "poster": getattr(item, "poster_url", "") or "",
-            "slug": _content_slug(item),
-        })
+        slug = _content_slug(item)
+        if not slug:
+            continue
+
+        card = grouped_by_slug.get(slug)
+        if not card:
+            card = {
+                "id": str(item.id),
+                "title": title,
+                "year": year,
+                "poster": getattr(item, "poster_url", "") or "",
+                "slug": slug,
+            }
+            grouped_by_slug[slug] = card
+        elif not card.get("poster") and getattr(item, "poster_url", ""):
+            card["poster"] = getattr(item, "poster_url", "") or ""
+
+        grouped_by_item_id[str(item.id)] = grouped_by_slug[slug]
+
+    # Watchlist cards
+    watchlist_rows = await WatchlistEntry.find(WatchlistEntry.user_phone == user.phone_number).sort("-created_at").to_list()
+    watchlist_cards = []
+    seen_watchlist_slugs: set[str] = set()
+    for row in watchlist_rows:
+        key = (getattr(row, "item_id", "") or "").strip()
+        if not key:
+            continue
+        match = None
+        if key.startswith("slug:"):
+            match = grouped_by_slug.get(key.split("slug:", 1)[-1].strip().lower())
+        elif re.fullmatch(r"[0-9a-fA-F]{24}", key):
+            match = grouped_by_item_id.get(key)
+        else:
+            match = grouped_by_slug.get(key.lower())
+        if not match and re.fullmatch(r"[0-9a-fA-F]{24}", key):
+            item = await FileSystemItem.get(key)
+            if item and _is_video_name(item.name or "", item.mime_type):
+                parsed = _parse_catalog_name(item.name or "")
+                title = (getattr(item, "series_title", "") or getattr(item, "title", "") or parsed.get("title") or item.name or "").strip()
+                year = (getattr(item, "year", "") or parsed.get("year") or "").strip()
+                match = {
+                    "id": str(item.id),
+                    "title": title,
+                    "year": year,
+                    "poster": getattr(item, "poster_url", "") or "",
+                    "slug": _content_slug(item),
+                }
+        if not match:
+            continue
+        slug = (match.get("slug") or "").strip()
+        if slug and slug in seen_watchlist_slugs:
+            continue
+        if slug:
+            seen_watchlist_slugs.add(slug)
+        watchlist_cards.append(match.copy())
 
     # Continue watching + history
-    progress_rows = await PlaybackProgress.find(
-        PlaybackProgress.user_type == "user",
-        PlaybackProgress.user_key == user.phone_number
-    ).sort("-updated_at").limit(80).to_list()
-    progress_ids = list({str(p.item_id) for p in progress_rows if getattr(p, "item_id", "")})
+    public_name = (getattr(user, "requested_name", "") or getattr(user, "first_name", "") or "").strip()
+    progress_match = [{"user_type": "user", "user_key": user.phone_number}]
+    if public_name:
+        progress_match.append({"user_type": "public", "user_key": public_name})
+
+    progress_rows = await PlaybackProgress.find({"$or": progress_match}).sort("-updated_at").limit(220).to_list()
+    latest_progress_by_item: dict[str, PlaybackProgress] = {}
+    for row in progress_rows:
+        key = (getattr(row, "item_id", "") or "").strip()
+        if not key or key in latest_progress_by_item:
+            continue
+        latest_progress_by_item[key] = row
+
+    progress_ids = list(latest_progress_by_item.keys())
     progress_items: dict[str, FileSystemItem] = {}
     if progress_ids:
         rows = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(progress_ids))).to_list()
@@ -1306,8 +1368,8 @@ async def profile_page(request: Request):
 
     continue_cards = []
     history_rows = []
-    for progress in progress_rows:
-        item = progress_items.get(str(progress.item_id))
+    for item_id, progress in latest_progress_by_item.items():
+        item = progress_items.get(item_id)
         if not item:
             continue
         parsed = _parse_catalog_name(item.name or "")
@@ -1335,22 +1397,11 @@ async def profile_page(request: Request):
     continue_cards = continue_cards[:20]
     history_rows = history_rows[:25]
 
-    # Recent user files
-    recent_files = await FileSystemItem.find(
-        FileSystemItem.owner_phone == user.phone_number,
-        FileSystemItem.is_folder == False
-    ).sort("-created_at").limit(20).to_list()
-    for item in recent_files:
-        item.formatted_size = format_size(item.size)
-        item.icon = get_icon_for_mime(item.mime_type)
-
     return templates.TemplateResponse("profile.html", {
         "request": request,
         "user": user,
         "is_admin": is_admin,
-        "total_files": total_files,
         "watchlist_cards": watchlist_cards,
         "continue_cards": continue_cards,
         "history_rows": history_rows,
-        "files": recent_files,
     })
