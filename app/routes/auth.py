@@ -10,7 +10,8 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import JSONResponse, RedirectResponse
 from pyrogram import Client, errors
 from app.core.config import settings
-from app.db.models import User
+from app.core.content_store import sync_content_catalog
+from app.db.models import User, ContentItem
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
@@ -61,10 +62,41 @@ async def _check_login_allowed(phone: str):
         return None, "Your account has been blocked. Contact admin."
     return user, None
 
+
+async def _latest_login_cards(limit: int = 20) -> list[dict]:
+    cards: list[dict] = []
+    try:
+        await sync_content_catalog(force=False, limit=max(limit * 5, 1000))
+        rows = await ContentItem.find(ContentItem.status == "published").sort("-updated_at").limit(limit * 4).to_list()
+    except Exception:
+        rows = []
+
+    seen_slugs: set[str] = set()
+    rank = 1
+    for row in rows:
+        slug = (getattr(row, "slug", "") or "").strip()
+        if not slug or slug in seen_slugs:
+            continue
+        seen_slugs.add(slug)
+        cards.append({
+            "slug": slug,
+            "title": (getattr(row, "title", "") or "Content").strip() or "Content",
+            "poster": (getattr(row, "poster_url", "") or "").strip(),
+            "rank": rank,
+        })
+        rank += 1
+        if len(cards) >= limit:
+            break
+    return cards
+
 @router.get("/login")
 async def login_page(request: Request):
     """User login page (Google)."""
-    return templates.TemplateResponse("login.html", {"request": request})
+    latest_uploads = await _latest_login_cards(limit=20)
+    return templates.TemplateResponse("login.html", {
+        "request": request,
+        "latest_uploads": latest_uploads,
+    })
 
 @router.get("/admin-login")
 async def admin_login_page(request: Request):

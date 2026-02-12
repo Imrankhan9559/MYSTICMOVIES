@@ -2,38 +2,261 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>User Login - MysticMovies</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Sign In | MysticMovies</title>
+
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
     <style>
-        img,
-        video {
-            max-width: 100%;
-            height: auto;
+        :root { --mm-red: #e50914; --mm-gold: #d4af37; }
+
+        body {
+            background-color: #000;
+            color: #fff;
+            font-family: 'Montserrat', sans-serif;
+            overflow-x: hidden;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            margin: 0;
+        }
+
+        .login-hero {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: url('https://raw.githubusercontent.com/Imrankhan9559/MYSTICMOVIES/refs/heads/main/app/templates/netflix-bg.jpg');
+            background-position: center center;
+            background-size: cover;
+            background-repeat: no-repeat;
+            z-index: 0;
+        }
+
+        .login-hero::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.5);
+            background-image: linear-gradient(to top, rgba(0, 0, 0, 0.88) 0, rgba(0, 0, 0, 0) 60%, rgba(0, 0, 0, 0.82) 100%);
+        }
+
+        .main-container {
+            position: relative;
+            z-index: 2;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 24px 20px 14px;
+            text-align: center;
+            margin-top: clamp(112px, 12vh, 152px);
+        }
+
+        .hero-title {
+            font-size: clamp(30px, 5vw, 50px);
+            font-weight: 700;
+            margin-bottom: 14px;
+            max-width: 700px;
+            text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+        }
+
+        .hero-sub {
+            font-size: clamp(15px, 2.2vw, 19px);
+            margin-bottom: 28px;
+            font-weight: 500;
+        }
+
+        .btn-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            width: min(94vw, 360px);
+        }
+
+        .btn-netflix {
+            background: var(--mm-red);
+            color: #fff;
+            border: none;
+            padding: 14px;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: 700;
+            text-decoration: none;
+            width: 100%;
+            transition: 0.25s ease;
+        }
+
+        .btn-netflix:hover { background: #f40612; color: #fff; }
+
+        .btn-gmail {
+            background: #fff;
+            color: #000;
+            border: none;
+            padding: 14px;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: 600;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            transition: 0.2s ease;
+        }
+
+        .btn-gmail:hover {
+            background: #f1f1f1;
+            color: #000;
+            transform: scale(1.02);
+        }
+
+        .btn-help {
+            background: rgba(0, 0, 0, 0.62);
+            border: 1px solid #777;
+            color: #ccc;
+            padding: 10px;
+            border-radius: 4px;
+            font-size: 14px;
+            text-decoration: none;
+            transition: all 0.3s ease;
+        }
+
+        .btn-help:hover {
+            background: #d4af37;
+            color: #000;
+            border-color: #d4af37;
+            font-weight: 700;
+            box-shadow: 0 0 10px rgba(212, 175, 55, 0.5);
+        }
+
+        .trending-section {
+            position: relative;
+            z-index: 2;
+            padding: 18px 0 22px;
+            background: linear-gradient(to top, #000 12%, rgba(0, 0, 0, 0.82) 100%);
+            margin-top: auto;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #e5e5e5;
+            margin: 0 20px 14px;
+            padding-left: 12px;
+            border-left: 4px solid var(--mm-red);
+        }
+
+        .h-scroll {
+            display: flex;
+            overflow-x: auto;
+            gap: 10px;
+            padding: 10px 20px 8px;
+            scrollbar-width: none;
+        }
+
+        .h-scroll::-webkit-scrollbar { display: none; }
+
+        .poster-card {
+            flex: 0 0 110px;
+            position: relative;
+            border-radius: 4px;
+            transition: transform 0.25s ease;
+            text-decoration: none;
+        }
+
+        .poster-card:hover { transform: scale(1.05); z-index: 2; }
+
+        .poster-card img {
+            width: 100%;
+            height: 160px;
+            object-fit: cover;
+            border-radius: 4px;
             display: block;
+            background: #1a1a1a;
+        }
+
+        .poster-fallback {
+            width: 100%;
+            height: 160px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            font-size: 11px;
+            font-weight: 600;
+            color: #c6c6c6;
+            padding: 8px;
+            background: linear-gradient(160deg, #151515, #2b2b2b);
+            border: 1px solid #303030;
+        }
+
+        .poster-number {
+            position: absolute;
+            bottom: -14px;
+            left: -14px;
+            font-size: 78px;
+            font-weight: 900;
+            color: #000;
+            -webkit-text-stroke: 2px #595959;
+            font-family: 'Arial Black', sans-serif;
+            text-shadow: 2px 2px 10px #000;
+            line-height: 1;
+            pointer-events: none;
+        }
+
+        .small-note {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #c7c7c7;
+        }
+
+        @media (max-width: 768px) {
+            .main-container { margin-top: 170px; }
+            .trending-section { padding-bottom: 18px; }
         }
     </style>
 </head>
-<body class="min-h-screen bg-black text-gray-100 flex items-center justify-center px-4 py-8">
-    <div class="w-full max-w-md rounded-2xl border border-gray-800 bg-gray-950 p-7 sm:p-8 shadow-2xl">
-        <div class="text-center mb-7">
-            <h1 class="text-3xl font-extrabold tracking-tight">
-                <span class="text-white">mysticmovies</span>
-                <span class="text-yellow-400"> Movies</span>
-            </h1>
-            <p class="mt-2 text-sm text-gray-400">Login for users with Google</p>
-        </div>
+<body>
+    <div class="login-hero"></div>
 
-        <a href="/auth/google" class="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-yellow-400 text-black font-bold py-3 hover:bg-yellow-300 transition">
-            <i class="fab fa-google"></i>Continue with Google
-        </a>
+    <div class="main-container">
+        <h1 class="hero-title">Unlimited movies, TV shows, and more</h1>
+        <p class="hero-sub">Watch anything - anywhere.</p>
 
-        <div class="mt-6 rounded-xl border border-gray-800 bg-black/70 p-4 text-sm">
-            <p class="text-gray-400">Need admin access?</p>
-            <a href="/admin-login" class="mt-2 inline-flex items-center text-yellow-300 hover:text-yellow-200">
-                <i class="fas fa-shield-alt mr-2"></i>Go to Admin Login
+        <div class="btn-stack">
+            <a href="/auth/google" class="btn-netflix">Login with Google</a>
+            <a href="/auth/google" class="btn-gmail">
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="18" alt="Google">
+                Sign in with Google
             </a>
+            <a href="/request-content" class="btn-help">Help / having problem while signin?</a>
+        </div>
+        <p class="small-note">By continuing, you agree to use MysticMovies responsibly.</p>
+    </div>
+
+    <div class="trending-section">
+        <div class="section-title">Latest Uploads</div>
+        <div class="h-scroll">
+            {% if latest_uploads %}
+                {% for item in latest_uploads %}
+                    <a href="/content/details/{{ item.slug }}" class="poster-card" aria-label="Open {{ item.title }}">
+                        {% if item.poster %}
+                            <img src="{{ item.poster }}" loading="lazy" alt="{{ item.title }}">
+                        {% else %}
+                            <div class="poster-fallback">{{ item.title }}</div>
+                        {% endif %}
+                        <span class="poster-number">{{ item.rank }}</span>
+                    </a>
+                {% endfor %}
+            {% else %}
+                <div class="text-light px-4">No uploads available right now.</div>
+            {% endif %}
         </div>
     </div>
 </body>
