@@ -1,6 +1,6 @@
-import asyncio
 import os
 import asyncio
+import logging
 from typing import AsyncGenerator, Optional
 
 from telethon import TelegramClient
@@ -11,6 +11,7 @@ from app.core.config import settings
 _client: TelegramClient | None = None
 _storage_entity = None
 _lock = asyncio.Lock()
+logger = logging.getLogger(__name__)
 
 
 def _normalize_target(target: int | str) -> int | str:
@@ -53,9 +54,16 @@ async def get_client() -> TelegramClient:
 
 
 async def stop_client() -> None:
-    global _client
-    if _client and _client.is_connected():
-        await _client.disconnect()
+    global _client, _storage_entity
+    async with _lock:
+        client = _client
+        _client = None
+        _storage_entity = None
+    if client and client.is_connected():
+        try:
+            await client.disconnect()
+        except Exception as e:
+            logger.warning("Telethon disconnect failed: %s", e)
 
 
 async def _resolve_storage_entity():

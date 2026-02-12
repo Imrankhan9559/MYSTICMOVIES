@@ -46,6 +46,8 @@ _storage_chat_id_override: int | None = None
 _storage_access_notified = False
 _bot_handler_clients: set[str] = set()
 _bot_api_task: asyncio.Task | None = None
+_telegram_lifecycle_lock = asyncio.Lock()
+_telegram_started = False
 
 if settings.SESSION_STRING:
     user_client = Client(
@@ -76,17 +78,60 @@ bot_pool: list[Client] = []
 _bot_cycle = None
 _bot_status_cache: list[dict] = []
 
+def _client_key(client: Client | None) -> str:
+    if not client:
+        return ""
+    return getattr(client, "name", None) or str(id(client))
+
+def _is_client_connected(client: Client | None) -> bool:
+    if not client:
+        return False
+    value = getattr(client, "is_connected", False)
+    try:
+        return bool(value() if callable(value) else value)
+    except Exception:
+        return False
+
+def _forget_bot_handlers(client: Client | None) -> None:
+    key = _client_key(client)
+    if key:
+        _bot_handler_clients.discard(key)
+
+async def _safe_stop_client(client: Client | None, label: str, timeout_sec: float = 15.0) -> None:
+    if not client or not _is_client_connected(client):
+        return
+    try:
+        await asyncio.wait_for(client.stop(), timeout=timeout_sec)
+    except asyncio.TimeoutError:
+        logger.warning("Timed out stopping %s after %.1fs", label, timeout_sec)
+    except Exception as e:
+        logger.warning("Failed to stop %s: %s", label, e)
+
+async def _stop_bot_api_task(timeout_sec: float = 5.0) -> None:
+    global _bot_api_task
+    task = _bot_api_task
+    _bot_api_task = None
+    if not task:
+        return
+    task.cancel()
+    try:
+        await asyncio.wait_for(task, timeout=timeout_sec)
+    except asyncio.CancelledError:
+        pass
+    except asyncio.TimeoutError:
+        logger.warning("Timed out stopping Bot API polling task after %.1fs", timeout_sec)
+    except Exception as e:
+        logger.warning("Bot API polling task stop failed: %s", e)
+
 def _get_pool_tokens() -> list[str]:
     raw = getattr(settings, "BOT_POOL_TOKENS", "") or ""
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 async def _stop_pool():
     global bot_pool, _bot_cycle
-    for bot in bot_pool:
-        try:
-            await bot.stop()
-        except Exception:
-            pass
+    for idx, bot in enumerate(bot_pool):
+        await _safe_stop_client(bot, f"pool_{idx}")
+        _forget_bot_handlers(bot)
     bot_pool = []
     _bot_cycle = None
 
@@ -94,8 +139,8 @@ async def reload_bot_pool(tokens: list[str]):
     """Stop existing pool and start a new one with provided tokens."""
     await _stop_pool()
     for idx, token in enumerate(tokens):
+        bot = Client(f"morganxmystic_pool_{idx}", api_id=settings.API_ID, api_hash=settings.API_HASH, bot_token=token)
         try:
-            bot = Client(f"morganxmystic_pool_{idx}", api_id=settings.API_ID, api_hash=settings.API_HASH, bot_token=token)
             await bot.start()
             bot_me = await bot.get_me()
             bot._is_bot = getattr(bot_me, "is_bot", False)
@@ -107,6 +152,8 @@ async def reload_bot_pool(tokens: list[str]):
             await verify_storage_access_v2(bot)
             _register_bot_handlers(bot)
         except Exception:
+            await _safe_stop_client(bot, f"pool_{idx}")
+            _forget_bot_handlers(bot)
             continue
 
 async def pool_status() -> list[dict]:
@@ -194,11 +241,22 @@ def get_pool_client() -> Client | None:
         return None
     if _bot_cycle is None:
         _bot_cycle = cycle(bot_pool)
-    return next(_bot_cycle)
+    for _ in range(len(bot_pool)):
+        candidate = next(_bot_cycle)
+        if _is_client_connected(candidate):
+            return candidate
+    return None
 
 def get_storage_client() -> Client:
     """Choose a client that can access the storage channel."""
-    return get_pool_client() or bot_client or tg_client
+    pool_client = get_pool_client()
+    if pool_client:
+        return pool_client
+    if _is_client_connected(bot_client):
+        return bot_client
+    if _is_client_connected(tg_client):
+        return tg_client
+    return bot_client or tg_client
 
 def normalize_chat_id(chat_id: int | str) -> int | str:
     if isinstance(chat_id, str):
@@ -288,6 +346,8 @@ def get_storage_chat_id() -> int | str:
 
 async def ensure_peer_access(client: Client, chat_id: int | str) -> bool:
     """Ensure the client has access to the given chat id."""
+    if not _is_client_connected(client):
+        return False
     chat_id = normalize_chat_id(chat_id)
     if chat_id == "me":
         return True
@@ -395,6 +455,8 @@ async def pick_storage_client(chat_id: int | str) -> Client:
         candidates.append(tg_client)
 
     for client in candidates:
+        if not _is_client_connected(client):
+            continue
         if await ensure_peer_access(client, chat_id):
             return client
         if await _try_join_storage(client, chat_id):
@@ -405,6 +467,8 @@ async def pick_storage_client(chat_id: int | str) -> Client:
         new_chat_id = normalize_chat_id(get_storage_chat_id())
         if new_chat_id != chat_id:
             for client in candidates:
+                if not _is_client_connected(client):
+                    continue
                 if await ensure_peer_access(client, new_chat_id):
                     return client
                 if await _try_join_storage(client, new_chat_id):
@@ -684,7 +748,7 @@ async def handle_bot_message(client: Client, message):
             pass
 
 def _register_bot_handlers(client: Client):
-    client_key = getattr(client, "name", None) or str(id(client))
+    client_key = _client_key(client)
     if client_key in _bot_handler_clients:
         return
     try:
@@ -959,92 +1023,115 @@ async def _bot_api_poll_loop():
 
 
 async def start_telegram():
-    global bot_client, _bot_api_task
-    logger.info("Connecting to Telegram...")
-    await tg_client.start()
-    me = await tg_client.get_me()
-    tg_client._is_bot = getattr(me, "is_bot", False)
-    logger.info(f"Connected as {me.first_name} (@{me.username})")
-    if getattr(tg_client, "_is_bot", False):
-        try:
-            await tg_client.delete_webhook(drop_pending_updates=True)
-            logger.info("Cleared bot webhook for long polling (tg_client).")
-        except Exception as e:
-            logger.warning(f"Failed to clear bot webhook (tg_client): {e}")
-            _clear_bot_webhook_http(settings.BOT_TOKEN)
-    await resolve_storage_chat_id(tg_client)
-    if getattr(tg_client, "_is_bot", False):
-        _register_bot_handlers(tg_client)
-    if user_client and tg_client is user_client:
-        await ensure_bot_member(user_client)
-    await verify_storage_access_v2(tg_client)
+    global bot_client, _bot_api_task, _telegram_started
+    async with _telegram_lifecycle_lock:
+        if _telegram_started:
+            return
 
-    if bot_client and bot_client is not tg_client:
-        try:
-            await bot_client.start()
-            bot_me = await bot_client.get_me()
-            bot_client._is_bot = getattr(bot_me, "is_bot", False)
-            logger.info(f"Bot client connected as {bot_me.first_name} (@{bot_me.username})")
-            try:
-                await bot_client.delete_webhook(drop_pending_updates=True)
-                logger.info("Cleared bot webhook for long polling (bot_client).")
-            except Exception as e:
-                logger.warning(f"Failed to clear bot webhook (bot_client): {e}")
-                _clear_bot_webhook_http(settings.BOT_TOKEN)
-            await verify_storage_access_v2(bot_client)
-            _register_bot_handlers(bot_client)
-        except Exception as e:
-            logger.warning(f"Bot client start failed: {e}")
-            bot_client = None
+        logger.info("Connecting to Telegram...")
+        started_clients: list[tuple[str, Client]] = []
 
-    # Start bot pool (if any)
-    tokens = _get_pool_tokens()
-    for idx, token in enumerate(tokens):
         try:
-            bot = Client(f"morganxmystic_pool_{idx}", api_id=settings.API_ID, api_hash=settings.API_HASH, bot_token=token)
-            await bot.start()
-            bot_me = await bot.get_me()
-            bot._is_bot = getattr(bot_me, "is_bot", False)
-            bot_pool.append(bot)
-            logger.info(f"Started bot pool #{idx}")
-            try:
-                await bot.delete_webhook(drop_pending_updates=True)
-                logger.info(f"Cleared bot webhook for pool #{idx}.")
-            except Exception as e:
-                logger.warning(f"Failed to clear webhook for pool #{idx}: {e}")
-                _clear_bot_webhook_http(token)
-            await verify_storage_access_v2(bot)
-            _register_bot_handlers(bot)
-        except Exception as e:
-            logger.error(f"Failed to start bot pool #{idx}: {e}")
+            if not _is_client_connected(tg_client):
+                await tg_client.start()
+                started_clients.append(("tg_client", tg_client))
+            me = await tg_client.get_me()
+            tg_client._is_bot = getattr(me, "is_bot", False)
+            logger.info(f"Connected as {me.first_name} (@{me.username})")
+            if getattr(tg_client, "_is_bot", False):
+                try:
+                    await tg_client.delete_webhook(drop_pending_updates=True)
+                    logger.info("Cleared bot webhook for long polling (tg_client).")
+                except Exception as e:
+                    logger.warning(f"Failed to clear bot webhook (tg_client): {e}")
+                    _clear_bot_webhook_http(settings.BOT_TOKEN)
+            await resolve_storage_chat_id(tg_client)
+            if getattr(tg_client, "_is_bot", False):
+                _register_bot_handlers(tg_client)
+            if user_client and tg_client is user_client:
+                await ensure_bot_member(user_client)
+            await verify_storage_access_v2(tg_client)
 
-    # Start Bot API polling fallback (always on)
-    if _bot_api_task is None:
-        _bot_api_task = asyncio.create_task(_bot_api_poll_loop())
-        logger.info("Bot API polling started")
+            if bot_client and bot_client is not tg_client:
+                try:
+                    if not _is_client_connected(bot_client):
+                        await bot_client.start()
+                        started_clients.append(("bot_client", bot_client))
+                    bot_me = await bot_client.get_me()
+                    bot_client._is_bot = getattr(bot_me, "is_bot", False)
+                    logger.info(f"Bot client connected as {bot_me.first_name} (@{bot_me.username})")
+                    try:
+                        await bot_client.delete_webhook(drop_pending_updates=True)
+                        logger.info("Cleared bot webhook for long polling (bot_client).")
+                    except Exception as e:
+                        logger.warning(f"Failed to clear bot webhook (bot_client): {e}")
+                        _clear_bot_webhook_http(settings.BOT_TOKEN)
+                    await verify_storage_access_v2(bot_client)
+                    _register_bot_handlers(bot_client)
+                except Exception as e:
+                    logger.warning(f"Bot client start failed: {e}")
+                    failed_bot = bot_client
+                    if failed_bot:
+                        await _safe_stop_client(failed_bot, "bot_client")
+                        _forget_bot_handlers(failed_bot)
+                        started_clients = [entry for entry in started_clients if entry[1] is not failed_bot]
+                    bot_client = None
+
+            # Start bot pool (if any)
+            await _stop_pool()
+            tokens = _get_pool_tokens()
+            for idx, token in enumerate(tokens):
+                bot = Client(
+                    f"morganxmystic_pool_{idx}",
+                    api_id=settings.API_ID,
+                    api_hash=settings.API_HASH,
+                    bot_token=token
+                )
+                try:
+                    await bot.start()
+                    bot_me = await bot.get_me()
+                    bot._is_bot = getattr(bot_me, "is_bot", False)
+                    bot_pool.append(bot)
+                    logger.info(f"Started bot pool #{idx}")
+                    try:
+                        await bot.delete_webhook(drop_pending_updates=True)
+                        logger.info(f"Cleared bot webhook for pool #{idx}.")
+                    except Exception as e:
+                        logger.warning(f"Failed to clear webhook for pool #{idx}: {e}")
+                        _clear_bot_webhook_http(token)
+                    await verify_storage_access_v2(bot)
+                    _register_bot_handlers(bot)
+                except Exception as e:
+                    logger.error(f"Failed to start bot pool #{idx}: {e}")
+                    await _safe_stop_client(bot, f"pool_{idx}")
+                    _forget_bot_handlers(bot)
+
+            # Start Bot API polling fallback
+            if settings.BOT_TOKEN and (_bot_api_task is None or _bot_api_task.done()):
+                _bot_api_task = asyncio.create_task(_bot_api_poll_loop(), name="bot_api_poll_loop")
+                logger.info("Bot API polling started")
+
+            _telegram_started = True
+        except Exception:
+            logger.exception("Telegram startup failed.")
+            await _stop_bot_api_task()
+            await _stop_pool()
+            for label, client in reversed(started_clients):
+                await _safe_stop_client(client, label)
+                _forget_bot_handlers(client)
+            _telegram_started = False
+            raise
 
 async def stop_telegram():
+    global _telegram_started
     logger.info("Stopping Telegram Client...")
-    global _bot_api_task
-    if _bot_api_task:
-        _bot_api_task.cancel()
-        try:
-            await _bot_api_task
-        except Exception:
-            pass
-        _bot_api_task = None
-
-    for bot in bot_pool:
-        try:
-            await bot.stop()
-        except Exception:
-            pass
-    if bot_client and bot_client is not tg_client:
-        try:
-            await bot_client.stop()
-        except Exception:
-            pass
-    try:
-        await tg_client.stop()
-    except Exception as e:
-        logger.warning(f"tg_client stop failed: {e}")
+    async with _telegram_lifecycle_lock:
+        await _stop_bot_api_task()
+        await _stop_pool()
+        if bot_client and bot_client is not tg_client:
+            await _safe_stop_client(bot_client, "bot_client")
+            _forget_bot_handlers(bot_client)
+        await _safe_stop_client(tg_client, "tg_client")
+        _forget_bot_handlers(tg_client)
+        _bot_handler_clients.clear()
+        _telegram_started = False
