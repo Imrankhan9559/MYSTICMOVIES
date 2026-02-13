@@ -7,10 +7,10 @@
         <p class="text-sm text-gray-400 mt-3">Send requests to the admin team. You can mention language, season, quality, or source preference.</p>
 
         <form action="/content/request" method="post" class="mt-6 space-y-4">
-            <input type="hidden" name="return_to" value="/request-content">
+            <input type="hidden" name="return_to" value="{{ return_to or '/content' }}">
             <div>
                 <label class="text-xs text-gray-400">Title</label>
-                <input name="title" required placeholder="e.g. Stranger Things" class="mt-1 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400" />
+                <input name="title" value="{{ prefill_title or '' }}" required placeholder="e.g. Stranger Things" class="mt-1 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400" />
             </div>
             <div class="grid gap-4 sm:grid-cols-2">
                 <div>

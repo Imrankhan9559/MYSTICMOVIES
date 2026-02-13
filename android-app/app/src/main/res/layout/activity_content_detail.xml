@@ -52,6 +52,14 @@
             android:layout_height="36dp"
             android:text="Back"
             android:textAllCaps="false" />
+
+        <Button
+            android:id="@+id/btnProfile"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginStart="8dp"
+            android:text="Profile"
+            android:textAllCaps="false" />
     </LinearLayout>
 
     <TextView
@@ -93,10 +101,12 @@
             <ImageView
                 android:id="@+id/imgPoster"
                 android:layout_width="match_parent"
-                android:layout_height="230dp"
+                android:layout_height="320dp"
                 android:layout_marginTop="10dp"
+                android:adjustViewBounds="true"
+                android:background="#111111"
                 android:contentDescription="Poster"
-                android:scaleType="centerCrop" />
+                android:scaleType="fitCenter" />
 
             <TextView
                 android:id="@+id/tvTitle"
@@ -128,9 +138,41 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:text="Watch Trailer"
+                android:text="Play Trailer"
                 android:textAllCaps="false"
                 android:visibility="gone" />
+
+            <Button
+                android:id="@+id/btnRequest"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Request This Content"
+                android:textAllCaps="false"
+                android:visibility="gone" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Cast"
+                android:textColor="@color/mm_gold"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:fillViewport="true"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/castContainer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal" />
+            </HorizontalScrollView>
 
             <TextView
                 android:layout_width="match_parent"
@@ -205,4 +247,3 @@
     </LinearLayout>
 
 </LinearLayout>
-

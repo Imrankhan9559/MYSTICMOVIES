@@ -6,12 +6,17 @@ import android.os.Bundle
 import android.os.Environment
 import android.view.View
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import coil.load
 
 class DownloadsActivity : AppCompatActivity() {
+    private lateinit var tvTopbar: TextView
+    private lateinit var imgHeaderLogo: ImageView
+    private lateinit var tvHeaderTitle: TextView
     private lateinit var rvDownloads: RecyclerView
     private lateinit var tvEmpty: TextView
     private lateinit var tvPath: TextView
@@ -21,6 +26,9 @@ class DownloadsActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_downloads)
 
+        tvTopbar = findViewById(R.id.tvTopbar)
+        imgHeaderLogo = findViewById(R.id.imgHeaderLogo)
+        tvHeaderTitle = findViewById(R.id.tvHeaderTitle)
         rvDownloads = findViewById(R.id.rvDownloads)
         tvEmpty = findViewById(R.id.tvEmpty)
         tvPath = findViewById(R.id.tvPath)
@@ -30,6 +38,7 @@ class DownloadsActivity : AppCompatActivity() {
         rvDownloads.layoutManager = LinearLayoutManager(this)
         rvDownloads.adapter = adapter
 
+        applyRuntimeUi()
         refreshFiles()
     }
 
@@ -71,5 +80,21 @@ class DownloadsActivity : AppCompatActivity() {
             putExtra(PlayerActivity.EXTRA_TITLE, file.name)
         }
         startActivity(intent)
+    }
+
+    private fun applyRuntimeUi() {
+        val ui = AppRuntimeState.ui
+        tvTopbar.text = ui.topbarText.ifBlank { "Welcome to Mystic Movies" }
+        tvHeaderTitle.text = "Downloads"
+        if (ui.logoUrl.isNotBlank()) {
+            imgHeaderLogo.visibility = View.VISIBLE
+            imgHeaderLogo.load(resolveImageUrl(ui.logoUrl)) {
+                crossfade(true)
+                error(android.R.drawable.sym_def_app_icon)
+                placeholder(android.R.drawable.sym_def_app_icon)
+            }
+        } else {
+            imgHeaderLogo.visibility = View.GONE
+        }
     }
 }

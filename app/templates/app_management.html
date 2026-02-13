@@ -3,13 +3,14 @@
 <section class="content-header">
     <div class="container-fluid">
         <div class="row mb-2">
-            <div class="col-sm-7">
+            <div class="col-sm-8">
                 <h1>App Management</h1>
-                <p class="admin-section-note mb-0">Manage native app boot config, releases, notifications, and device handshakes.</p>
+                <p class="admin-section-note mb-0">Simple controls for releases, app notifications, login rules, and request monitoring.</p>
             </div>
-            <div class="col-sm-5 text-sm-right mt-2 mt-sm-0">
-                <span class="badge badge-info p-2 mr-2">Devices tracked: {{ devices|length }}</span>
-                <span class="badge badge-success p-2">Online (10m): {{ online_devices }}</span>
+            <div class="col-sm-4 text-sm-right mt-2 mt-sm-0">
+                <span class="badge badge-dark p-2 mr-2">Devices: {{ devices|length }}</span>
+                <span class="badge badge-success p-2 mr-2">Online (10m): {{ online_devices }}</span>
+                <span class="badge badge-warning p-2">Pending Requests: {{ pending_requests_total }}</span>
             </div>
         </div>
     </div>
@@ -24,14 +25,14 @@
         <div class="alert alert-success">App release published.</div>
         {% endif %}
         {% if notify_saved %}
-        <div class="alert alert-success">App notification added.</div>
+        <div class="alert alert-success">Notification sent to app feed.</div>
         {% endif %}
 
         <div class="row">
             <div class="col-lg-8">
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Core App Configuration</h3>
+                        <h3 class="card-title">Core App Settings</h3>
                     </div>
                     <form action="/admin/app-management/save" method="post">
                         <div class="card-body">
@@ -58,18 +59,14 @@
                             </div>
 
                             <div class="form-group">
-                                <label>Onboarding Message</label>
-                                <textarea name="onboarding_message" class="form-control" rows="2">{{ app_cfg.onboarding_message or '' }}</textarea>
-                            </div>
-                            <div class="form-group">
-                                <label>Ads / Announcement Message</label>
-                                <textarea name="ads_message" class="form-control" rows="2">{{ app_cfg.ads_message or '' }}</textarea>
+                                <label>Telegram Bot Username</label>
+                                <input type="text" name="telegram_bot_username" class="form-control" value="{{ app_cfg.telegram_bot_username or '' }}" placeholder="@mysticmovies_bot">
                             </div>
 
                             <div class="form-row">
                                 <div class="form-group col-md-4">
                                     <label>Latest Version</label>
-                                    <input type="text" name="latest_version" class="form-control" value="{{ app_cfg.latest_version or '' }}" placeholder="e.g. 1.2.0">
+                                    <input type="text" name="latest_version" class="form-control" value="{{ app_cfg.latest_version or '' }}" placeholder="1.0.0">
                                 </div>
                                 <div class="form-group col-md-4">
                                     <label>Latest Build</label>
@@ -77,34 +74,42 @@
                                 </div>
                                 <div class="form-group col-md-4">
                                     <label>Min Supported Version</label>
-                                    <input type="text" name="min_supported_version" class="form-control" value="{{ app_cfg.min_supported_version or '' }}" placeholder="e.g. 1.0.0">
+                                    <input type="text" name="min_supported_version" class="form-control" value="{{ app_cfg.min_supported_version or '' }}" placeholder="1.0.0">
                                 </div>
                             </div>
 
                             <div class="form-group">
-                                <label>Latest Release Notes</label>
-                                <textarea name="latest_release_notes" class="form-control" rows="3">{{ app_cfg.latest_release_notes or '' }}</textarea>
+                                <label>Update Popup Title</label>
+                                <input type="text" name="update_popup_title" class="form-control" value="{{ app_cfg.update_popup_title or '' }}">
                             </div>
-
-                            <div class="form-row">
-                                <div class="form-group col-md-6">
-                                    <label>Update Popup Title</label>
-                                    <input type="text" name="update_popup_title" class="form-control" value="{{ app_cfg.update_popup_title or '' }}">
-                                </div>
-                                <div class="form-group col-md-6">
-                                    <label>Telegram Bot Username</label>
-                                    <input type="text" name="telegram_bot_username" class="form-control" value="{{ app_cfg.telegram_bot_username or '' }}" placeholder="@mysticmovies_bot">
-                                </div>
-                            </div>
-
                             <div class="form-group">
-                                <label>Update Popup Body</label>
+                                <label>Update Popup Message</label>
                                 <textarea name="update_popup_body" class="form-control" rows="2">{{ app_cfg.update_popup_body or '' }}</textarea>
                             </div>
 
+                            <div class="form-group">
+                                <label>Release Notes</label>
+                                <textarea name="latest_release_notes" class="form-control" rows="3">{{ app_cfg.latest_release_notes or '' }}</textarea>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Maintenance Message</label>
+                                <textarea name="maintenance_message" class="form-control" rows="2">{{ app_cfg.maintenance_message or '' }}</textarea>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Onboarding Message</label>
+                                <textarea name="onboarding_message" class="form-control" rows="2">{{ app_cfg.onboarding_message or '' }}</textarea>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Ads Message (Default Feed)</label>
+                                <textarea name="ads_message" class="form-control" rows="2">{{ app_cfg.ads_message or '' }}</textarea>
+                            </div>
+
                             <div class="form-row">
                                 <div class="form-group col-md-6">
-                                    <label>Latest APK File (auto-moved to APPS folder)</label>
+                                    <label>Latest APK File</label>
                                     <select name="latest_apk_item_id" class="form-control">
                                         <option value="">Keep current selection</option>
                                         {% for apk in apk_files %}
@@ -117,9 +122,11 @@
                                     <small class="text-muted d-block mt-1">Current: {{ selected_apk.name }} ({{ selected_apk.size_label }})</small>
                                     {% endif %}
                                 </div>
-                                <div class="form-group col-md-6">
-                                    <label>Maintenance Message</label>
-                                    <textarea name="maintenance_message" class="form-control" rows="2">{{ app_cfg.maintenance_message or '' }}</textarea>
+                                <div class="form-group col-md-6 pt-4">
+                                    <div class="form-check mt-2">
+                                        <input type="checkbox" name="clear_latest_apk" value="1" class="form-check-input" id="clearLatestApk">
+                                        <label class="form-check-label" for="clearLatestApk">Clear latest APK mapping</label>
+                                    </div>
                                 </div>
                             </div>
 
@@ -145,7 +152,7 @@
                                 <div class="col-md-2">
                                     <div class="form-check mt-2">
                                         <input type="checkbox" name="keepalive_on_launch" value="1" class="form-check-input" id="keepaliveOnLaunch" {% if app_cfg.keepalive_on_launch %}checked{% endif %}>
-                                        <label class="form-check-label" for="keepaliveOnLaunch">Keepalive Ping</label>
+                                        <label class="form-check-label" for="keepaliveOnLaunch">Keepalive</label>
                                     </div>
                                 </div>
                                 <div class="col-md-2">
@@ -156,9 +163,13 @@
                                 </div>
                             </div>
 
-                            <div class="form-check mt-3">
-                                <input type="checkbox" name="clear_latest_apk" value="1" class="form-check-input" id="clearLatestApk">
-                                <label class="form-check-label" for="clearLatestApk">Clear latest APK mapping</label>
+                            <div class="form-row mt-2">
+                                <div class="col-md-6">
+                                    <div class="form-check">
+                                        <input type="checkbox" name="request_login_required" value="1" class="form-check-input" id="requestLoginRequired" {% if app_cfg.request_login_required or app_cfg.request_login_required is none %}checked{% endif %}>
+                                        <label class="form-check-label" for="requestLoginRequired">Require login for content requests</label>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                         <div class="card-footer">
@@ -169,7 +180,7 @@
 
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Publish New App Release</h3>
+                        <h3 class="card-title">Publish App Release</h3>
                     </div>
                     <form action="/admin/app-management/release" method="post">
                         <div class="card-body">
@@ -200,13 +211,13 @@
                                     </select>
                                 </div>
                             </div>
-                            <div class="form-group">
+                            <div class="form-group mb-0">
                                 <label>Release Notes</label>
                                 <textarea name="release_notes" class="form-control" rows="3"></textarea>
                             </div>
-                            <div class="form-check">
+                            <div class="form-check mt-3">
                                 <input type="checkbox" name="is_active" value="1" class="form-check-input" id="releaseActive" checked>
-                                <label class="form-check-label" for="releaseActive">Release active for bootstrap response</label>
+                                <label class="form-check-label" for="releaseActive">Use this release in bootstrap API</label>
                             </div>
                         </div>
                         <div class="card-footer">
@@ -217,7 +228,7 @@
 
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Send App Notification / Ads Banner</h3>
+                        <h3 class="card-title">Send App Notification / Ads</h3>
                     </div>
                     <form action="/admin/app-management/notify" method="post">
                         <div class="card-body">
@@ -231,28 +242,87 @@
                                         <option value="maintenance">Maintenance</option>
                                     </select>
                                 </div>
-                                <div class="form-group col-md-9">
+                                <div class="form-group col-md-3">
+                                    <label>Audience</label>
+                                    <select name="audience" class="form-control">
+                                        <option value="all">All users</option>
+                                        <option value="logged_in">Logged in users</option>
+                                    </select>
+                                </div>
+                                <div class="form-group col-md-6">
                                     <label>Title</label>
-                                    <input type="text" name="title" class="form-control" placeholder="Latest uploads are now live">
+                                    <input type="text" name="title" class="form-control" placeholder="New content uploaded">
                                 </div>
                             </div>
                             <div class="form-group">
                                 <label>Message</label>
-                                <textarea name="message" class="form-control" rows="2"></textarea>
+                                <textarea name="message" class="form-control" rows="2" placeholder="Write what users should see in app feed"></textarea>
                             </div>
-                            <div class="form-check">
+                            <div class="form-row">
+                                <div class="form-group col-md-6">
+                                    <label>Content Link (optional)</label>
+                                    <select name="content_slug" class="form-control">
+                                        <option value="">No content target</option>
+                                        {% for c in content_options %}
+                                        <option value="{{ c.slug }}">{{ c.title }} ({{ c.year or '-' }})</option>
+                                        {% endfor %}
+                                    </select>
+                                </div>
+                                <div class="form-group col-md-6">
+                                    <label>Custom Link URL (optional)</label>
+                                    <input type="text" name="link_url" class="form-control" placeholder="/content/details/slug or https://...">
+                                </div>
+                            </div>
+                            <div class="form-group mb-0">
+                                <label>Image URL (optional)</label>
+                                <input type="text" name="image_url" class="form-control" placeholder="https://...">
+                            </div>
+                            <div class="form-check mt-3">
                                 <input type="checkbox" name="is_active" value="1" class="form-check-input" id="broadcastActive" checked>
-                                <label class="form-check-label" for="broadcastActive">Active notification</label>
+                                <label class="form-check-label" for="broadcastActive">Publish immediately</label>
                             </div>
                         </div>
                         <div class="card-footer">
-                            <button type="submit" class="btn btn-success font-weight-bold">Save Notification</button>
+                            <button type="submit" class="btn btn-success font-weight-bold">Send Notification</button>
                         </div>
                     </form>
                 </div>
             </div>
 
             <div class="col-lg-4">
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Pending Content Requests</h3>
+                        <div class="card-tools">
+                            <a href="/content-requests" class="btn btn-xs btn-warning">Open Full Queue</a>
+                        </div>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-sm mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>User</th>
+                                        <th>Title</th>
+                                        <th>Type</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for row in pending_requests %}
+                                    <tr>
+                                        <td>{{ row.user_name or row.user_phone }}</td>
+                                        <td>{{ row.title }}</td>
+                                        <td><span class="badge badge-secondary">{{ row.request_type }}</span></td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="3" class="text-muted text-center py-3">No pending requests.</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="card">
                     <div class="card-header">
                         <h3 class="card-title">Recent Releases</h3>
@@ -289,7 +359,7 @@
 
                 <div class="card">
                     <div class="card-header">
-                        <h3 class="card-title">Broadcasts</h3>
+                        <h3 class="card-title">Live Broadcast Feed</h3>
                     </div>
                     <div class="card-body p-0">
                         <div class="table-responsive">
@@ -319,6 +389,36 @@
                                     </tr>
                                     {% else %}
                                     <tr><td colspan="3" class="text-muted text-center py-3">No notifications yet.</td></tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <h3 class="card-title">Recent App Interactions</h3>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-sm mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Action</th>
+                                        <th>User</th>
+                                        <th>Time</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for e in app_events %}
+                                    <tr>
+                                        <td>{{ e.action }}</td>
+                                        <td>{{ e.user_name or e.user_phone or e.user_key }}</td>
+                                        <td>{{ e.created_at.strftime("%d %b %H:%M") if e.created_at else "-" }}</td>
+                                    </tr>
+                                    {% else %}
+                                    <tr><td colspan="3" class="text-muted text-center py-3">No app interactions logged yet.</td></tr>
                                     {% endfor %}
                                 </tbody>
                             </table>

@@ -1913,10 +1913,15 @@ async def request_content(
 
 
 @router.get("/request-content")
-async def request_content_page(request: Request):
+async def request_content_page(request: Request, return_to: str = "", prefill_title: str = ""):
     user = await get_current_user(request)
     if not user:
-        return RedirectResponse("/login")
+        raw_target = request.url.path
+        query = request.url.query
+        if query:
+            raw_target = f"{raw_target}?{query}"
+        login_target = "/login?return_url=" + urllib.parse.quote(raw_target, safe="")
+        return RedirectResponse(login_target)
     is_admin = _is_admin(user)
     site = await _site_settings()
     my_requests = await ContentRequest.find(ContentRequest.user_phone == user.phone_number).sort("-created_at").limit(40).to_list()
@@ -1946,6 +1951,8 @@ async def request_content_page(request: Request):
         "is_admin": is_admin,
         "site": site,
         "requests": my_requests,
+        "return_to": (return_to or "").strip() if (return_to or "").strip().startswith("/") else "/content",
+        "prefill_title": (prefill_title or "").strip(),
     })
 
 

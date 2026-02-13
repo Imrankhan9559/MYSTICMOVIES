@@ -30,8 +30,8 @@
 
         <ImageView
             android:id="@+id/imgHeaderLogo"
-            android:layout_width="32dp"
-            android:layout_height="32dp"
+            android:layout_width="34dp"
+            android:layout_height="34dp"
             android:layout_marginEnd="10dp"
             android:contentDescription="Logo"
             android:scaleType="centerCrop"
@@ -44,7 +44,7 @@
             android:layout_weight="1"
             android:text="mysticmovies"
             android:textColor="@color/mm_white"
-            android:textSize="30sp"
+            android:textSize="22sp"
             android:textStyle="bold" />
 
         <com.google.android.material.button.MaterialButton
@@ -55,9 +55,69 @@
             android:insetBottom="0dp"
             android:text="Login"
             android:textAllCaps="false"
+            android:textColor="#111111"
             app:backgroundTint="@color/mm_gold"
-            app:cornerRadius="18dp"
-            android:textColor="#111111" />
+            app:cornerRadius="18dp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingHorizontal="12dp"
+        android:paddingBottom="8dp">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnActionRequest"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_marginHorizontal="3dp"
+            android:layout_weight="1"
+            android:text="Request"
+            android:textAllCaps="false"
+            android:textColor="@color/mm_white"
+            app:backgroundTint="#171717"
+            app:cornerRadius="18dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnActionSearch"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_marginHorizontal="3dp"
+            android:layout_weight="1"
+            android:text="Search"
+            android:textAllCaps="false"
+            android:textColor="@color/mm_white"
+            app:backgroundTint="#171717"
+            app:cornerRadius="18dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnActionDownloads"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_marginHorizontal="3dp"
+            android:layout_weight="1"
+            android:text="Downloads"
+            android:textAllCaps="false"
+            android:textColor="@color/mm_white"
+            app:backgroundTint="#171717"
+            app:cornerRadius="18dp" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnActionProfile"
+            style="@style/Widget.Material3.Button.TonalButton"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_marginHorizontal="3dp"
+            android:layout_weight="1"
+            android:text="Profile"
+            android:textAllCaps="false"
+            android:textColor="@color/mm_white"
+            app:backgroundTint="#171717"
+            app:cornerRadius="18dp" />
     </LinearLayout>
 
     <TextView
@@ -70,197 +130,186 @@
         android:textSize="12sp"
         android:visibility="gone" />
 
-    <ImageView
-        android:id="@+id/imgHero"
-        android:layout_width="match_parent"
-        android:layout_height="186dp"
-        android:layout_marginHorizontal="14dp"
-        android:scaleType="centerCrop"
-        android:contentDescription="Featured content" />
-
-    <TextView
-        android:id="@+id/tvHeroTitle"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="10dp"
-        android:paddingHorizontal="14dp"
-        android:textColor="@color/mm_white"
-        android:textSize="20sp"
-        android:textStyle="bold"
-        android:maxLines="1"
-        android:ellipsize="end" />
-
-    <TextView
-        android:id="@+id/tvHeroSubtitle"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingHorizontal="14dp"
-        android:textColor="@color/mm_muted"
-        android:textSize="14sp"
-        android:maxLines="1"
-        android:ellipsize="end" />
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="14dp"
-        android:layout_marginTop="12dp"
-        android:orientation="horizontal">
-
-        <EditText
-            android:id="@+id/etSearch"
-            android:layout_width="0dp"
-            android:layout_height="48dp"
-            android:layout_weight="1"
-            android:background="@drawable/bg_input_rounded"
-            android:hint="Search content..."
-            android:imeOptions="actionSearch"
-            android:inputType="text"
-            android:paddingHorizontal="14dp"
-            android:textColor="@color/mm_white"
-            android:textColorHint="@color/mm_muted" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnSearch"
-            android:layout_width="wrap_content"
-            android:layout_height="48dp"
-            android:layout_marginStart="8dp"
-            android:text="Search"
-            android:textAllCaps="false"
-            app:backgroundTint="@color/mm_gold"
-            app:cornerRadius="24dp"
-            android:textColor="#111111" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="14dp"
-        android:layout_marginTop="10dp"
-        android:orientation="horizontal">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFilterAll"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_weight="1"
-            android:text="All"
-            android:textAllCaps="false"
-            app:cornerRadius="20dp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFilterMovies"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
-            android:text="Movies"
-            android:textAllCaps="false"
-            app:cornerRadius="20dp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFilterSeries"
-            android:layout_width="0dp"
-            android:layout_height="40dp"
-            android:layout_marginStart="8dp"
-            android:layout_weight="1"
-            android:text="Web Series"
-            android:textAllCaps="false"
-            app:cornerRadius="20dp" />
-    </LinearLayout>
-
     <ProgressBar
         android:id="@+id/progressBar"
         style="?android:attr/progressBarStyleHorizontal"
         android:layout_width="match_parent"
         android:layout_height="3dp"
-        android:layout_marginTop="8dp"
         android:indeterminate="true"
         android:visibility="gone" />
 
     <ImageView
         android:id="@+id/imgLoadingIcon"
-        android:layout_width="24dp"
-        android:layout_height="24dp"
+        android:layout_width="26dp"
+        android:layout_height="26dp"
         android:layout_gravity="center_horizontal"
-        android:layout_marginTop="8dp"
+        android:layout_marginTop="10dp"
         android:contentDescription="Loading"
         android:scaleType="centerCrop"
         android:visibility="gone" />
 
-    <FrameLayout
+    <androidx.core.widget.NestedScrollView
+        android:id="@+id/scrollHome"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="6dp">
+        android:fillViewport="true"
+        android:paddingBottom="8dp">
 
-        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-            android:id="@+id/swipeRefreshLayout"
+        <LinearLayout
             android:layout_width="match_parent"
-            android:layout_height="match_parent">
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rvCatalog"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:clipToPadding="false"
-                android:paddingHorizontal="8dp"
-                android:paddingBottom="12dp" />
-        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
-
-        <TextView
-            android:id="@+id/tvEmpty"
-            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:text="No content found"
-            android:textColor="@color/mm_muted"
-            android:textSize="15sp"
-            android:visibility="gone" />
-    </FrameLayout>
+            android:orientation="vertical">
+
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="210dp"
+                android:layout_marginHorizontal="12dp"
+                android:layout_marginTop="8dp"
+                app:cardBackgroundColor="#111111"
+                app:cardCornerRadius="14dp"
+                app:strokeColor="#2B2B2B"
+                app:strokeWidth="1dp">
+
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent">
+
+                    <ImageView
+                        android:id="@+id/imgHero"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:contentDescription="Featured content"
+                        android:scaleType="centerCrop" />
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="@drawable/bg_hero_overlay" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="bottom"
+                        android:orientation="vertical"
+                        android:padding="12dp">
+
+                        <TextView
+                            android:id="@+id/tvHeroTitle"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:textColor="@color/mm_white"
+                            android:textSize="24sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:id="@+id/tvHeroSubtitle"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:ellipsize="end"
+                            android:maxLines="1"
+                            android:textColor="#D1D5DB"
+                            android:textSize="13sp" />
+                    </LinearLayout>
+                </FrameLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <LinearLayout
+                android:id="@+id/sectionsContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="vertical" />
+
+            <TextView
+                android:id="@+id/tvEmpty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:padding="20dp"
+                android:text="No content found"
+                android:textColor="@color/mm_muted"
+                android:textSize="15sp"
+                android:visibility="gone" />
+        </LinearLayout>
+    </androidx.core.widget.NestedScrollView>
 
     <LinearLayout
         android:id="@+id/footerBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#0C0C0C"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingHorizontal="10dp"
-        android:paddingVertical="8dp">
+        android:background="#0B0B0B"
+        android:orientation="vertical">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFooterHome"
-            android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="Home"
-            android:textAllCaps="false"
-            app:backgroundTint="#171717"
-            app:cornerRadius="18dp"
-            android:textColor="@color/mm_white" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="10dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="6dp">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnFooterDownloads"
-            android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:layout_marginStart="8dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:text="Downloads"
-            android:textAllCaps="false"
-            app:backgroundTint="#171717"
-            app:cornerRadius="18dp"
-            android:textColor="@color/mm_white" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNavSearch"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginHorizontal="4dp"
+                android:layout_weight="1"
+                android:text="Search"
+                android:textAllCaps="false"
+                android:textColor="@color/mm_white"
+                app:backgroundTint="#171717"
+                app:cornerRadius="18dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNavHome"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginHorizontal="4dp"
+                android:layout_weight="1"
+                android:text="Home"
+                android:textAllCaps="false"
+                android:textColor="#111111"
+                app:backgroundTint="@color/mm_gold"
+                app:cornerRadius="18dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNavDownloads"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginHorizontal="4dp"
+                android:layout_weight="1"
+                android:text="Downloads"
+                android:textAllCaps="false"
+                android:textColor="@color/mm_white"
+                app:backgroundTint="#171717"
+                app:cornerRadius="18dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNavProfile"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_marginHorizontal="4dp"
+                android:layout_weight="1"
+                android:text="Profile"
+                android:textAllCaps="false"
+                android:textColor="@color/mm_white"
+                app:backgroundTint="#171717"
+                app:cornerRadius="18dp" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/tvFooterText"
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
-            android:layout_weight="1"
-            android:gravity="end"
+            android:gravity="center"
+            android:paddingBottom="8dp"
             android:text="MysticMovies"
             android:textColor="@color/mm_muted"
             android:textSize="11sp"

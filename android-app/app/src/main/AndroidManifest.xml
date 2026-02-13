@@ -12,6 +12,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.MysticMovies">
         <activity
+            android:name=".TrailerActivity"
+            android:exported="false" />
+        <activity
+            android:name=".ProfileActivity"
+            android:exported="false" />
+        <activity
+            android:name=".SearchActivity"
+            android:exported="false" />
+        <activity
             android:name=".LoginActivity"
             android:exported="false" />
         <activity

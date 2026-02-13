@@ -20,8 +20,13 @@ from app.db.models import (
     AppDeviceSession,
     AppRelease,
     AppSettings,
+    ContentRequest,
+    FileSystemItem,
+    PlaybackProgress,
     SiteSettings,
     TokenSetting,
+    UserActivityEvent,
+    WatchlistEntry,
 )
 from app.routes.content import (
     _build_catalog,
@@ -61,6 +66,8 @@ IMAGE_PROXY_ALLOWED_HOSTS = {
     "image.tmdb.org",
     "raw.githubusercontent.com",
     "mysticmovies.onrender.com",
+    "mysticmovies.site",
+    "www.gstatic.com",
 }
 
 
@@ -185,8 +192,9 @@ def _app_image_url(request: Request, raw_url: str) -> str:
     if not source:
         return ""
     parsed = urllib.parse.urlparse(source)
+    req_host = (request.url.hostname or "").strip().lower()
     host = (parsed.hostname or "").strip().lower()
-    if host == "image.tmdb.org":
+    if parsed.scheme in {"https", "http"} and host and host in IMAGE_PROXY_ALLOWED_HOSTS and host != req_host:
         return _absolute_url(request, _image_proxy_path(source))
     return _absolute_url(request, source)
 
@@ -269,6 +277,34 @@ def _normalize_content_key(value: str) -> str:
     return (value or "").strip().lower()
 
 
+def _youtube_video_key(raw: str) -> str:
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", text):
+        return text
+    try:
+        parsed = urllib.parse.urlparse(text)
+        host = (parsed.netloc or "").lower()
+        if "youtu.be" in host:
+            key = parsed.path.lstrip("/").split("?")[0].strip()
+            if re.fullmatch(r"[A-Za-z0-9_-]{11}", key):
+                return key
+        if "youtube.com" in host:
+            if parsed.path.startswith("/embed/"):
+                key = parsed.path.split("/embed/")[-1].split("?")[0].strip()
+                if re.fullmatch(r"[A-Za-z0-9_-]{11}", key):
+                    return key
+            query = urllib.parse.parse_qs(parsed.query)
+            key = (query.get("v") or [""])[0].strip()
+            if re.fullmatch(r"[A-Za-z0-9_-]{11}", key):
+                return key
+    except Exception:
+        pass
+    match = re.search(r"(?:v=|youtu\.be/|/embed/)([A-Za-z0-9_-]{11})", text)
+    return match.group(1) if match else ""
+
+
 def _find_catalog_group(catalog: list[dict], content_key: str) -> dict | None:
     key = _normalize_content_key(content_key)
     if not key:
@@ -293,6 +329,204 @@ def _find_catalog_group(catalog: list[dict], content_key: str) -> dict | None:
             if item_id and item_id.lower() == key:
                 return group
     return None
+
+
+def _card_slug(card: dict) -> str:
+    slug = (card.get("slug") or "").strip()
+    if slug:
+        return slug
+    return _group_slug(card.get("title", ""), card.get("year", "")).strip()
+
+
+def _card_detail_path(card: dict) -> str:
+    slug = _card_slug(card)
+    return f"/content/details/{slug}" if slug else ""
+
+
+def _normalize_genre_name(raw: str) -> str:
+    text = re.sub(r"[^a-z0-9]+", " ", (raw or "").strip().lower())
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _genre_title(raw: str) -> str:
+    value = _normalize_genre_name(raw)
+    if not value:
+        return ""
+    return " ".join(part.capitalize() for part in value.split())
+
+
+def _serialize_card_item(request: Request, card: dict, base_url: str) -> dict:
+    detail_path = _card_detail_path(card)
+    poster_raw = (card.get("poster") or "").strip()
+    backdrop_raw = (card.get("backdrop") or "").strip()
+    return {
+        "id": str(card.get("id") or ""),
+        "slug": _card_slug(card),
+        "title": card.get("title") or "",
+        "year": card.get("year") or "",
+        "type": card.get("type") or "",
+        "poster": _app_image_url(request, poster_raw),
+        "backdrop": _app_image_url(request, backdrop_raw),
+        "poster_original": poster_raw,
+        "backdrop_original": backdrop_raw,
+        "description": card.get("description") or "",
+        "release_date": card.get("release_date") or "",
+        "quality_row": card.get("quality_row") or [],
+        "season_text": card.get("season_text") or "",
+        "detail_path": detail_path,
+        "detail_url": f"{base_url}{detail_path}" if detail_path else "",
+    }
+
+
+def _home_sections_payload(request: Request, cards: list[dict], base_url: str) -> tuple[list[dict], list[dict]]:
+    serialized = [_serialize_card_item(request, card, base_url) for card in cards]
+    by_type_movie = [item for item in serialized if (item.get("type") or "").lower() == "movie"]
+    by_type_series = [item for item in serialized if (item.get("type") or "").lower() == "series"]
+
+    sections: list[dict] = []
+    if serialized:
+        sections.append({
+            "key": "latest_releases",
+            "title": "Latest Releases",
+            "layout": "poster_row",
+            "items": serialized[:18],
+        })
+    if by_type_movie:
+        sections.append({
+            "key": "latest_movies",
+            "title": "Latest Movies",
+            "layout": "poster_row",
+            "items": by_type_movie[:18],
+        })
+    if by_type_series:
+        sections.append({
+            "key": "latest_series",
+            "title": "Latest Web Series",
+            "layout": "poster_row",
+            "items": by_type_series[:18],
+        })
+
+    genre_buckets: dict[str, list[dict]] = {}
+    genre_priority = ["action", "thriller", "horror", "comedy", "drama", "romance", "crime", "adventure", "family", "sci fi"]
+    for card in cards:
+        card_item = _serialize_card_item(request, card, base_url)
+        seen_local: set[str] = set()
+        for genre in card.get("genres") or []:
+            key = _normalize_genre_name(genre)
+            if not key or key in seen_local:
+                continue
+            seen_local.add(key)
+            bucket = genre_buckets.setdefault(key, [])
+            if len(bucket) >= 24:
+                continue
+            # de-duplicate by slug
+            card_slug = card_item.get("slug") or ""
+            if card_slug and any((x.get("slug") or "") == card_slug for x in bucket):
+                continue
+            bucket.append(card_item)
+
+    emitted = 0
+    emitted_keys: set[str] = set()
+    for genre_key in genre_priority:
+        bucket = genre_buckets.get(genre_key) or []
+        if len(bucket) < 2:
+            continue
+        emitted += 1
+        emitted_keys.add(genre_key)
+        sections.append({
+            "key": f"genre_{genre_key.replace(' ', '_')}",
+            "title": f"{_genre_title(genre_key)} Picks",
+            "layout": "poster_row",
+            "items": bucket[:18],
+        })
+        if emitted >= 5:
+            break
+
+    if emitted < 5:
+        for key, bucket in genre_buckets.items():
+            if key in emitted_keys or len(bucket) < 2:
+                continue
+            sections.append({
+                "key": f"genre_{key.replace(' ', '_')}",
+                "title": f"{_genre_title(key)} Picks",
+                "layout": "poster_row",
+                "items": bucket[:18],
+            })
+            emitted += 1
+            if emitted >= 5:
+                break
+
+    cast_cards: list[dict] = []
+    seen_cast: set[str] = set()
+    for card in cards:
+        slug = _card_slug(card)
+        year = (card.get("year") or "").strip()
+        detail_path = _card_detail_path(card)
+        for cast in card.get("cast_profiles") or []:
+            name = (cast.get("name") or "").strip()
+            if not name:
+                continue
+            cast_key = _normalize_genre_name(name)
+            if not cast_key or cast_key in seen_cast:
+                continue
+            seen_cast.add(cast_key)
+            cast_cards.append({
+                "name": name,
+                "role": (cast.get("role") or "").strip(),
+                "image": _app_image_url(request, (cast.get("image") or "").strip()),
+                "tmdb_id": cast.get("id"),
+                "known_for_title": card.get("title") or "",
+                "known_for_year": year,
+                "known_for_slug": slug,
+                "detail_path": detail_path,
+                "cast_path": f"/content/cast?name={urllib.parse.quote_plus(name)}&back={urllib.parse.quote_plus(detail_path or '/content')}",
+            })
+            if len(cast_cards) >= 24:
+                break
+        if len(cast_cards) >= 24:
+            break
+
+    if cast_cards:
+        sections.append({
+            "key": "cast_profiles",
+            "title": "Actor Profiles",
+            "layout": "cast_row",
+            "items": cast_cards[:18],
+        })
+
+    return sections, serialized
+
+
+async def _track_app_event(
+    request: Request,
+    action: str,
+    item_id: str = "",
+    content_title: str = "",
+    meta: dict | None = None,
+) -> None:
+    user = await get_current_user(request)
+    user_phone = user.phone_number if user else None
+    user_name = ""
+    if user:
+        user_name = (user.requested_name or user.first_name or user.phone_number or "").strip()
+    device_id = (request.headers.get("X-App-Device-Id") or request.query_params.get("device_id") or "").strip()
+    user_key = user_phone or device_id or (request.client.host if request.client else "guest")
+    try:
+        await UserActivityEvent(
+            user_key=user_key,
+            user_phone=user_phone,
+            user_name=user_name or None,
+            user_type="user" if user_phone else "guest",
+            action=(action or "").strip() or "app_event",
+            item_id=(item_id or "").strip() or None,
+            content_title=(content_title or "").strip() or None,
+            meta=meta or {},
+            created_at=datetime.now(),
+        ).insert()
+    except Exception:
+        # Event tracking should not break API responses.
+        return
 
 
 @router.post("/handshake")
@@ -376,6 +610,7 @@ async def app_bootstrap(
     parsed = _verify_payload(token, secret)
     if not parsed:
         return JSONResponse({"ok": False, "error": "Invalid handshake"}, status_code=401)
+    session_user = await get_current_user(request)
 
     app_cfg = await _app_settings()
     site_cfg = await _site_settings()
@@ -430,11 +665,20 @@ async def app_bootstrap(
     active_broadcasts = await AppBroadcast.find(AppBroadcast.is_active == True).sort("-created_at").limit(12).to_list()
     notifications = []
     for row in active_broadcasts:
+        audience = (getattr(row, "audience", "") or "all").strip().lower()
+        if audience == "logged_in" and not session_user:
+            continue
+        link_url = (getattr(row, "link_url", "") or "").strip()
+        image_url = (getattr(row, "image_url", "") or "").strip()
         notifications.append({
             "id": str(row.id),
             "title": (getattr(row, "title", "") or "").strip(),
             "message": (getattr(row, "message", "") or "").strip(),
             "type": (getattr(row, "type", "news") or "news").strip().lower(),
+            "link_url": link_url,
+            "link_url_absolute": _absolute_url(request, link_url) if link_url else "",
+            "image_url": _app_image_url(request, image_url) if image_url else "",
+            "audience": audience,
             "created_at": getattr(row, "created_at", datetime.now()).isoformat(),
         })
 
@@ -474,6 +718,7 @@ async def app_bootstrap(
             "keepalive_on_launch": bool(getattr(app_cfg, "keepalive_on_launch", True)),
             "maintenance_mode": bool(getattr(app_cfg, "maintenance_mode", False)),
             "maintenance_message": (getattr(app_cfg, "maintenance_message", "") or "").strip(),
+            "request_login_required": bool(getattr(app_cfg, "request_login_required", True)),
         },
         "update": {
             "mode": update_mode,
@@ -573,6 +818,16 @@ async def app_catalog(
 
     cards = _sort_catalog_cards(cards, normalized_sort)
     cards = _decorate_catalog_cards(cards)
+    await _track_app_event(
+        request,
+        action="app_catalog_view",
+        meta={
+            "filter": normalized_filter,
+            "sort": normalized_sort,
+            "query": query,
+            "page": page_num,
+        },
+    )
 
     total_items = len(cards)
     total_pages = max(1, (total_items + per_page_num - 1) // per_page_num)
@@ -582,38 +837,11 @@ async def app_catalog(
     paged = cards[start:end]
 
     base_url = str(request.base_url).rstrip("/")
-    items = []
-    for card in paged:
-        slug = (card.get("slug") or "").strip()
-        if not slug:
-            slug = _group_slug(card.get("title", ""), card.get("year", "")).strip()
-        detail_path = f"/content/details/{slug}" if slug else ""
-        poster_raw = (card.get("poster") or "").strip()
-        backdrop_raw = (card.get("backdrop") or "").strip()
-        items.append({
-            "id": str(card.get("id") or ""),
-            "slug": slug,
-            "title": card.get("title") or "",
-            "year": card.get("year") or "",
-            "type": card.get("type") or "",
-            "poster": _app_image_url(request, poster_raw),
-            "backdrop": _app_image_url(request, backdrop_raw),
-            "poster_original": poster_raw,
-            "backdrop_original": backdrop_raw,
-            "description": card.get("description") or "",
-            "release_date": card.get("release_date") or "",
-            "quality_row": card.get("quality_row") or [],
-            "season_text": card.get("season_text") or "",
-            "detail_path": detail_path,
-            "detail_url": f"{base_url}{detail_path}" if detail_path else "",
-        })
+    items = [_serialize_card_item(request, card, base_url) for card in paged]
 
     slider = []
     for card in cards[:8]:
-        slug = (card.get("slug") or "").strip()
-        if not slug:
-            slug = _group_slug(card.get("title", ""), card.get("year", "")).strip()
-        detail_path = f"/content/details/{slug}" if slug else ""
+        detail_path = _card_detail_path(card)
         image_raw = (card.get("backdrop") or "").strip() or (card.get("poster") or "").strip()
         if not image_raw:
             continue
@@ -626,6 +854,22 @@ async def app_catalog(
             "detail_url": f"{base_url}{detail_path}" if detail_path else "",
         })
 
+    home_sections, _ = _home_sections_payload(request, cards, base_url)
+    genre_cloud: list[str] = []
+    seen_genres: set[str] = set()
+    for card in cards:
+        for genre in card.get("genres") or []:
+            normalized = _genre_title(genre)
+            key = normalized.lower()
+            if not normalized or key in seen_genres:
+                continue
+            seen_genres.add(key)
+            genre_cloud.append(normalized)
+            if len(genre_cloud) >= 20:
+                break
+        if len(genre_cloud) >= 20:
+            break
+
     return {
         "ok": True,
         "filter": normalized_filter,
@@ -633,6 +877,8 @@ async def app_catalog(
         "query": query,
         "items": items,
         "slider": slider,
+        "home_sections": home_sections,
+        "genre_cloud": genre_cloud,
         "pagination": {
             "page": page_num,
             "per_page": per_page_num,
@@ -642,6 +888,271 @@ async def app_catalog(
             "has_prev": page_num > 1,
         },
         "server_time": datetime.now().isoformat(),
+    }
+
+
+@router.get("/session")
+async def app_session(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return {
+            "ok": True,
+            "logged_in": False,
+            "login_url": "/login",
+        }
+    name = (user.requested_name or user.first_name or user.phone_number or "").strip()
+    return {
+        "ok": True,
+        "logged_in": True,
+        "user": {
+            "phone": user.phone_number,
+            "name": name,
+            "status": getattr(user, "status", "approved"),
+        },
+        "login_url": "/login",
+    }
+
+
+@router.get("/search/suggestions")
+async def app_search_suggestions(request: Request, q: str = "", limit: int = 10):
+    query = (q or "").strip()
+    if len(query) < 2:
+        return {"ok": True, "query": query, "items": [], "trending": []}
+    user = await get_current_user(request)
+    is_admin = _is_admin(user)
+    cards = _decorate_catalog_cards(await _build_catalog(user, is_admin, limit=3200))
+    cards = _sort_catalog_cards(cards, "release_new")
+
+    lower_query = query.lower()
+    starts = []
+    contains = []
+    for card in cards:
+        title = (card.get("title") or "").strip()
+        if not title:
+            continue
+        haystack = " ".join([
+            title,
+            (card.get("year") or "").strip(),
+            " ".join(card.get("genres") or []),
+            " ".join(card.get("actors") or []),
+        ]).lower()
+        if lower_query not in haystack:
+            continue
+        item = {
+            "id": str(card.get("id") or ""),
+            "slug": _card_slug(card),
+            "title": title,
+            "year": card.get("year") or "",
+            "type": card.get("type") or "",
+            "poster": _app_image_url(request, card.get("poster") or ""),
+            "poster_original": card.get("poster") or "",
+            "detail_path": _card_detail_path(card),
+            "keywords": (card.get("genres") or [])[:3],
+        }
+        if title.lower().startswith(lower_query):
+            starts.append(item)
+        else:
+            contains.append(item)
+        if len(starts) + len(contains) >= max(5, min(limit, 20)):
+            break
+
+    trending: list[str] = []
+    seen_tags: set[str] = set()
+    for card in cards:
+        for tag in [
+            (card.get("year") or "").strip(),
+            *((card.get("genres") or [])[:2]),
+            ((card.get("type") or "").strip().title()),
+        ]:
+            text = _genre_title(tag) if not str(tag).isdigit() else str(tag)
+            key = text.lower().strip()
+            if not text or not key or key in seen_tags:
+                continue
+            seen_tags.add(key)
+            trending.append(text)
+            if len(trending) >= 12:
+                break
+        if len(trending) >= 12:
+            break
+
+    return {
+        "ok": True,
+        "query": query,
+        "items": (starts + contains)[: max(5, min(limit, 20))],
+        "trending": trending,
+    }
+
+
+@router.get("/profile")
+async def app_profile(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login required", "login_url": "/login"}, status_code=401)
+    is_admin = _is_admin(user)
+    link_token = await _link_token()
+    viewer_name = (_viewer_name(user) or user.phone_number or "Mystic User").strip()
+    share_query_payload = _share_params(link_token, viewer_name)
+    share_query = f"?{share_query_payload}" if share_query_payload else ""
+    base_url = str(request.base_url).rstrip("/")
+
+    cards = _decorate_catalog_cards(await _build_catalog(user, is_admin, limit=4500))
+    by_slug: dict[str, dict] = {}
+    by_content_id: dict[str, dict] = {}
+    by_file_id: dict[str, dict] = {}
+    for card in cards:
+        slug = _card_slug(card)
+        if not slug:
+            continue
+        key_slug = slug.lower()
+        by_slug[key_slug] = card
+        content_id = str(card.get("id") or "").strip()
+        if content_id:
+            by_content_id[content_id] = card
+        for item in card.get("items") or []:
+            file_id = str(item.get("id") or "").strip()
+            if file_id and file_id not in by_file_id:
+                by_file_id[file_id] = card
+
+    watchlist_rows = await WatchlistEntry.find(WatchlistEntry.user_phone == user.phone_number).sort("-created_at").limit(300).to_list()
+    watchlist_items: list[dict] = []
+    watch_seen: set[str] = set()
+    for row in watchlist_rows:
+        key = (getattr(row, "item_id", "") or "").strip()
+        if not key:
+            continue
+        match = None
+        if key.startswith("slug:"):
+            match = by_slug.get(key.split("slug:", 1)[-1].strip().lower())
+        elif re.fullmatch(r"[0-9a-fA-F]{24}", key):
+            match = by_content_id.get(key) or by_file_id.get(key)
+        else:
+            match = by_slug.get(key.lower())
+        if not match:
+            continue
+        slug = _card_slug(match)
+        if not slug or slug in watch_seen:
+            continue
+        watch_seen.add(slug)
+        card_item = _serialize_card_item(request, match, base_url)
+        watchlist_items.append(card_item)
+        if len(watchlist_items) >= 60:
+            break
+
+    public_name = viewer_name
+    progress_query = [{"user_type": "user", "user_key": user.phone_number}]
+    if public_name:
+        progress_query.append({"user_type": "public", "user_key": public_name})
+    progress_rows = await PlaybackProgress.find({"$or": progress_query}).sort("-updated_at").limit(260).to_list()
+    latest_by_item: dict[str, PlaybackProgress] = {}
+    for row in progress_rows:
+        item_id = (getattr(row, "item_id", "") or "").strip()
+        if not item_id or item_id in latest_by_item:
+            continue
+        latest_by_item[item_id] = row
+
+    history_items: list[dict] = []
+    continue_items: list[dict] = []
+    for item_id, progress in latest_by_item.items():
+        group = by_file_id.get(item_id) or by_content_id.get(item_id)
+        if not group:
+            try:
+                file_item = await FileSystemItem.get(item_id)
+            except Exception:
+                file_item = None
+            if file_item:
+                for card in cards:
+                    if any(str((x or {}).get("id") or "").strip() == str(file_item.id) for x in (card.get("items") or [])):
+                        group = card
+                        break
+        if not group:
+            continue
+
+        slug = _card_slug(group)
+        if not slug:
+            continue
+        token = await _ensure_share_token(item_id)
+        stream_url = f"/s/stream/{token}{share_query}" if token else ""
+        watch_url = f"/s/{token}{share_query}" if token else ""
+        card_item = _serialize_card_item(request, group, base_url)
+        position = float(getattr(progress, "position", 0) or 0)
+        duration = float(getattr(progress, "duration", 0) or 0)
+        release_year = (group.get("year") or "").strip()
+        display_title = f"{group.get('title', '')}-{release_year}" if release_year else (group.get("title") or "")
+        entry = {
+            **card_item,
+            "display_title": display_title,
+            "item_id": item_id,
+            "position": position,
+            "duration": duration,
+            "watch_url": watch_url,
+            "stream_url": stream_url,
+            "updated_at": getattr(progress, "updated_at", datetime.now()).isoformat(),
+        }
+        history_items.append(entry)
+        if duration > 0 and position > 20 and position < (duration - 30):
+            continue_items.append(entry)
+
+    return {
+        "ok": True,
+        "user": {
+            "name": viewer_name,
+            "phone": user.phone_number,
+        },
+        "watchlist": watchlist_items[:50],
+        "continue_watching": continue_items[:30],
+        "watch_history": history_items[:80],
+        "counts": {
+            "watchlist": len(watchlist_items),
+            "continue_watching": len(continue_items),
+            "watch_history": len(history_items),
+        },
+        "server_time": datetime.now().isoformat(),
+    }
+
+
+@router.post("/request-content")
+async def app_request_content(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login required", "login_url": "/login"}, status_code=401)
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    title = (payload.get("title") or "").strip()
+    note = (payload.get("note") or "").strip()
+    request_type = (payload.get("request_type") or "movie").strip().lower()
+    if request_type not in {"movie", "series", "other"}:
+        request_type = "movie"
+    if not title:
+        return JSONResponse({"ok": False, "error": "Title is required"}, status_code=400)
+
+    row = ContentRequest(
+        user_phone=user.phone_number,
+        user_name=(user.requested_name or user.first_name or user.phone_number or "").strip(),
+        title=title,
+        request_type=request_type,
+        note=note,
+        status="pending",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    await row.insert()
+    await _track_app_event(
+        request,
+        action="app_content_request",
+        content_title=title,
+        meta={"request_type": request_type},
+    )
+    return {
+        "ok": True,
+        "message": "Request submitted successfully.",
+        "request_id": str(row.id),
+        "status": row.status,
     }
 
 
@@ -659,6 +1170,13 @@ async def app_content_detail(
         return JSONResponse({"ok": False, "error": "Content not found"}, status_code=404)
 
     group = await _ensure_group_assets(group)
+    await _track_app_event(
+        request,
+        action="app_content_open",
+        item_id=str(group.get("id") or ""),
+        content_title=group.get("title") or "",
+        meta={"content_key": content_key},
+    )
 
     link_token = await _link_token()
     viewer_name = (_viewer_name(user) or "Mystic User").strip()
@@ -737,6 +1255,48 @@ async def app_content_detail(
         slug = _group_slug(group.get("title", ""), group.get("year", "")).strip()
     detail_path = f"/content/details/{slug}" if slug else ""
     base_url = str(request.base_url).rstrip("/")
+    trailer_key = _youtube_video_key(group.get("trailer_key") or "") or _youtube_video_key(group.get("trailer_url") or "")
+    trailer_embed_url = f"https://www.youtube.com/embed/{trailer_key}?autoplay=1&playsinline=1&rel=0" if trailer_key else ""
+
+    cast_profiles = []
+    for cast in group.get("cast_profiles") or []:
+        name = (cast.get("name") or "").strip()
+        if not name:
+            continue
+        cast_profiles.append({
+            "name": name,
+            "role": (cast.get("role") or "").strip(),
+            "image": _app_image_url(request, (cast.get("image") or "").strip()),
+            "tmdb_id": cast.get("id"),
+            "cast_path": f"/content/cast?name={urllib.parse.quote_plus(name)}&back={urllib.parse.quote_plus(detail_path or '/content')}",
+        })
+
+    group_genres = {_normalize_genre_name(v) for v in (group.get("genres") or []) if _normalize_genre_name(v)}
+    group_cast = {_normalize_genre_name(v.get("name") if isinstance(v, dict) else v) for v in (group.get("cast_profiles") or [])}
+    group_cast = {v for v in group_cast if v}
+    related_scored: list[tuple[int, dict]] = []
+    current_id = str(group.get("id") or "").strip()
+    for card in _decorate_catalog_cards(catalog):
+        card_id = str(card.get("id") or "").strip()
+        if card_id and card_id == current_id:
+            continue
+        if _card_slug(card) == slug:
+            continue
+        score = 0
+        card_genres = {_normalize_genre_name(v) for v in (card.get("genres") or []) if _normalize_genre_name(v)}
+        card_cast = {_normalize_genre_name(v.get("name") if isinstance(v, dict) else v) for v in (card.get("cast_profiles") or [])}
+        card_cast = {v for v in card_cast if v}
+        if card_genres and group_genres:
+            score += len(card_genres & group_genres) * 4
+        if card_cast and group_cast:
+            score += len(card_cast & group_cast) * 3
+        if (card.get("type") or "").strip().lower() == (group.get("type") or "").strip().lower():
+            score += 1
+        if score <= 0:
+            continue
+        related_scored.append((score, card))
+    related_scored.sort(key=lambda row: (-row[0], -(int((row[1].get("year") or "0") or "0"))))
+    related_items = [_serialize_card_item(request, row[1], base_url) for row in related_scored[:18]]
 
     return {
         "ok": True,
@@ -754,12 +1314,15 @@ async def app_content_detail(
             "release_date": group.get("release_date") or "",
             "genres": group.get("genres") or [],
             "actors": group.get("actors") or [],
+            "cast_profiles": cast_profiles,
             "director": group.get("director") or "",
             "trailer_url": group.get("trailer_url") or "",
             "trailer_key": group.get("trailer_key") or "",
+            "trailer_embed_url": trailer_embed_url,
         },
         "movie_links": movie_links,
         "series_links": series_links,
+        "related_items": related_items,
         "detail_path": detail_path,
         "detail_url": f"{base_url}{detail_path}" if detail_path else "",
         "viewer_name": viewer_name,

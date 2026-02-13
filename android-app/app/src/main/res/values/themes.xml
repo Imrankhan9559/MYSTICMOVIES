@@ -1,8 +1,15 @@
-﻿<resources xmlns:tools="http://schemas.android.com/tools">
+<resources xmlns:tools="http://schemas.android.com/tools">
     <style name="Theme.MysticMovies" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:statusBarColor">@color/mm_black</item>
         <item name="android:navigationBarColor">@color/mm_black</item>
         <item name="android:windowBackground">@color/mm_black</item>
+        <item name="colorPrimary">@color/mm_gold</item>
+        <item name="colorOnPrimary">#111111</item>
+        <item name="colorSecondary">@color/mm_gold</item>
+        <item name="colorOnSecondary">#111111</item>
+        <item name="colorSurface">@color/mm_black</item>
+        <item name="colorOnSurface">@color/mm_white</item>
+        <item name="android:textColorPrimary">@color/mm_white</item>
         <item name="android:forceDarkAllowed" tools:targetApi="q">false</item>
     </style>
 </resources>

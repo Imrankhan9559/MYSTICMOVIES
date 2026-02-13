@@ -174,7 +174,11 @@
         <p class="hero-sub">Watch anything - anywhere.</p>
 
         <div class="btn-stack">
-            <a href="/auth/google" class="btn-gmail">
+            {% set google_auth_url = "/auth/google" %}
+            {% if return_url %}
+                {% set google_auth_url = "/auth/google?return_url=" ~ (return_url | urlencode) %}
+            {% endif %}
+            <a href="{{ google_auth_url }}" class="btn-gmail">
                 <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="18" alt="Google">
                 Sign in with Google
             </a>

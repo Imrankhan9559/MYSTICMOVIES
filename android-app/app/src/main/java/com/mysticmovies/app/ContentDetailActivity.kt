@@ -45,6 +45,13 @@ private data class SeasonLink(
     val previewTelegramStartUrl: String,
 )
 
+private data class CastEntry(
+    val name: String,
+    val role: String,
+    val image: String,
+    val castPath: String,
+)
+
 class ContentDetailActivity : AppCompatActivity() {
     private val client = createApiHttpClient()
 
@@ -54,6 +61,7 @@ class ContentDetailActivity : AppCompatActivity() {
     private lateinit var tvAnnouncement: TextView
     private lateinit var tvFooterText: TextView
     private lateinit var btnBack: Button
+    private lateinit var btnProfile: Button
     private lateinit var btnHome: Button
     private lateinit var btnDownloads: Button
 
@@ -63,11 +71,15 @@ class ContentDetailActivity : AppCompatActivity() {
     private lateinit var meta: TextView
     private lateinit var description: TextView
     private lateinit var trailerButton: Button
+    private lateinit var requestButton: Button
+    private lateinit var castContainer: LinearLayout
     private lateinit var movieLinksContainer: LinearLayout
     private lateinit var seasonLinksContainer: LinearLayout
     private lateinit var statusText: TextView
 
     private var contentTitle: String = ""
+    private var detailPath: String = ""
+    private var fallbackSlug: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -93,6 +105,7 @@ class ContentDetailActivity : AppCompatActivity() {
         tvAnnouncement = findViewById(R.id.tvAnnouncement)
         tvFooterText = findViewById(R.id.tvFooterText)
         btnBack = findViewById(R.id.btnBack)
+        btnProfile = findViewById(R.id.btnProfile)
         btnHome = findViewById(R.id.btnHome)
         btnDownloads = findViewById(R.id.btnDownloads)
 
@@ -102,6 +115,8 @@ class ContentDetailActivity : AppCompatActivity() {
         meta = findViewById(R.id.tvMeta)
         description = findViewById(R.id.tvDescription)
         trailerButton = findViewById(R.id.btnTrailer)
+        requestButton = findViewById(R.id.btnRequest)
+        castContainer = findViewById(R.id.castContainer)
         movieLinksContainer = findViewById(R.id.movieLinksContainer)
         seasonLinksContainer = findViewById(R.id.seasonLinksContainer)
         statusText = findViewById(R.id.tvStatus)
@@ -109,6 +124,9 @@ class ContentDetailActivity : AppCompatActivity() {
 
     private fun bindActions() {
         btnBack.setOnClickListener { finish() }
+        btnProfile.setOnClickListener {
+            startActivity(Intent(this, ProfileActivity::class.java))
+        }
         btnHome.setOnClickListener {
             startActivity(Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -116,6 +134,9 @@ class ContentDetailActivity : AppCompatActivity() {
         }
         btnDownloads.setOnClickListener {
             startActivity(Intent(this, DownloadsActivity::class.java))
+        }
+        requestButton.setOnClickListener {
+            openRequestContent()
         }
     }
 
@@ -188,40 +209,95 @@ class ContentDetailActivity : AppCompatActivity() {
         val item = root.optJSONObject("item") ?: JSONObject()
         val movieLinks = parseMovieLinks(root.optJSONArray("movie_links"))
         val seasonLinks = parseSeasonLinks(root.optJSONArray("series_links"))
+        val castRows = parseCastRows(item.optJSONArray("cast_profiles"))
 
         val itemTitle = item.optString("title").ifBlank { "Untitled" }
         contentTitle = itemTitle
+        fallbackSlug = item.optString("slug")
+        detailPath = root.optString("detail_path")
         val itemYear = item.optString("year")
         val itemType = if (item.optString("type").equals("series", ignoreCase = true)) "WEB SERIES" else "MOVIE"
         title.text = itemTitle
         meta.text = if (itemYear.isNotBlank()) "$itemYear | $itemType" else itemType
         description.text = item.optString("description").ifBlank { "Description not available." }
 
-        val imageUrl = item.optString("poster_original")
-            .ifBlank { item.optString("poster") }
-            .ifBlank { item.optString("backdrop_original") }
+        val imageUrl = item.optString("poster")
+            .ifBlank { item.optString("poster_original") }
             .ifBlank { item.optString("backdrop") }
+            .ifBlank { item.optString("backdrop_original") }
         poster.load(resolveImageUrl(imageUrl)) {
             crossfade(true)
             placeholder(android.R.drawable.ic_menu_report_image)
             error(android.R.drawable.ic_menu_report_image)
         }
 
+        val trailerEmbed = item.optString("trailer_embed_url")
         val trailerUrl = item.optString("trailer_url")
-        val trailerKey = item.optString("trailer_key")
         val trailerTarget = when {
+            trailerEmbed.isNotBlank() -> trailerEmbed
             trailerUrl.isNotBlank() -> trailerUrl
-            trailerKey.isNotBlank() -> "https://www.youtube.com/watch?v=$trailerKey"
+            item.optString("trailer_key").isNotBlank() -> "https://www.youtube.com/embed/${item.optString("trailer_key")}?autoplay=1&playsinline=1&rel=0"
             else -> ""
         }
         trailerButton.visibility = if (trailerTarget.isNotBlank()) View.VISIBLE else View.GONE
         trailerButton.setOnClickListener {
             if (trailerTarget.isBlank()) return@setOnClickListener
-            openInAppWeb(trailerTarget, "Trailer")
+            openTrailer(trailerTarget)
         }
 
+        requestButton.visibility = View.VISIBLE
+        bindCast(castRows)
         bindMovieLinks(movieLinks)
         bindSeasonLinks(seasonLinks)
+    }
+
+    private fun parseCastRows(array: JSONArray?): List<CastEntry> {
+        if (array == null) return emptyList()
+        val rows = mutableListOf<CastEntry>()
+        for (i in 0 until array.length()) {
+            val row = array.optJSONObject(i) ?: continue
+            rows.add(
+                CastEntry(
+                    name = row.optString("name"),
+                    role = row.optString("role"),
+                    image = row.optString("image"),
+                    castPath = row.optString("cast_path"),
+                )
+            )
+        }
+        return rows
+    }
+
+    private fun bindCast(rows: List<CastEntry>) {
+        castContainer.removeAllViews()
+        if (rows.isEmpty()) {
+            val noData = TextView(this).apply {
+                text = "Cast details not available."
+                setTextColor(0xFF9CA3AF.toInt())
+                textSize = 12f
+            }
+            castContainer.addView(noData)
+            return
+        }
+        rows.take(12).forEach { cast ->
+            val view = layoutInflater.inflate(R.layout.item_cast_card, castContainer, false)
+            val img = view.findViewById<ImageView>(R.id.imgCast)
+            val name = view.findViewById<TextView>(R.id.tvCastName)
+            val role = view.findViewById<TextView>(R.id.tvCastRole)
+            img.load(resolveImageUrl(cast.image)) {
+                crossfade(true)
+                placeholder(android.R.drawable.sym_def_app_icon)
+                error(android.R.drawable.sym_def_app_icon)
+            }
+            name.text = cast.name.ifBlank { "Unknown" }
+            role.text = cast.role.ifBlank { "View profile" }
+            view.setOnClickListener {
+                if (cast.castPath.isNotBlank()) {
+                    openInAppWeb(cast.castPath, cast.name)
+                }
+            }
+            castContainer.addView(view)
+        }
     }
 
     private fun bindMovieLinks(rows: List<MovieLink>) {
@@ -340,6 +416,22 @@ class ContentDetailActivity : AppCompatActivity() {
         return rows
     }
 
+    private fun openTrailer(target: String) {
+        val url = absoluteUrl(target)
+        if (url.isBlank()) {
+            Toast.makeText(this, "Trailer is not available.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (url.contains("youtube.com/embed/") || url.contains("youtu.be") || url.contains("youtube.com/watch")) {
+            startActivity(Intent(this, TrailerActivity::class.java).apply {
+                putExtra(TrailerActivity.EXTRA_URL, url)
+                putExtra(TrailerActivity.EXTRA_TITLE, "$contentTitle Trailer")
+            })
+            return
+        }
+        openPlayer(url, "$contentTitle Trailer")
+    }
+
     private fun openPlayer(rawUrl: String, label: String) {
         val absolute = absoluteUrl(rawUrl)
         if (absolute.isBlank()) {
@@ -437,6 +529,14 @@ class ContentDetailActivity : AppCompatActivity() {
                 Toast.makeText(this, "Telegram app not found.", Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    private fun openRequestContent() {
+        val returnTo = detailPath.ifBlank {
+            if (fallbackSlug.isNotBlank()) "/content/details/$fallbackSlug" else "/content"
+        }
+        val target = "/request-content?return_to=${Uri.encode(returnTo)}&prefill_title=${Uri.encode(contentTitle)}"
+        openInAppWeb(target, "Request Content")
     }
 
     private fun openInAppWeb(rawUrl: String, titleText: String) {

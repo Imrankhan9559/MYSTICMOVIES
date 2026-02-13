@@ -21,6 +21,19 @@ templates = Jinja2Templates(directory="app/templates")
 temp_auth_data = {} 
 oauth_states = {}
 
+
+def _sanitize_return_url(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return "/content"
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme or parsed.netloc:
+        return "/content"
+    path = value if value.startswith("/") else f"/{value.lstrip('/')}"
+    if path.startswith("/admin") or path.startswith("/dashboard"):
+        return "/content"
+    return path
+
 def _google_auth_url(state: str) -> str:
     params = {
         "client_id": settings.GOOGLE_CLIENT_ID,
@@ -102,6 +115,9 @@ async def _site_settings() -> SiteSettings:
 async def login_page(request: Request):
     """User login page (Google)."""
     user = await get_current_user(request)
+    return_url = _sanitize_return_url(request.query_params.get("return_url") or "")
+    if user:
+        return RedirectResponse(return_url if return_url else "/content")
     site = await _site_settings()
     latest_uploads = await _latest_login_cards(limit=20)
     return templates.TemplateResponse("login.html", {
@@ -109,6 +125,7 @@ async def login_page(request: Request):
         "user": user,
         "site": site,
         "latest_uploads": latest_uploads,
+        "return_url": return_url if return_url != "/content" else "",
         "hide_global_search": True,
     })
 
@@ -135,11 +152,14 @@ async def logout(response: Response):
     return response
 
 @router.get("/auth/google")
-async def google_login():
+async def google_login(return_url: str = ""):
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET or not settings.GOOGLE_REDIRECT_URI:
         return JSONResponse({"error": "Google OAuth not configured"}, status_code=500)
     state = secrets.token_urlsafe(16)
-    oauth_states[state] = time.time()
+    oauth_states[state] = {
+        "created_at": time.time(),
+        "return_url": _sanitize_return_url(return_url),
+    }
     return RedirectResponse(_google_auth_url(state))
 
 @router.get("/auth/google/callback")
@@ -147,7 +167,14 @@ async def google_callback(request: Request, response: Response, code: str = "", 
     if not code or not state or state not in oauth_states:
         return RedirectResponse("/login")
     # simple state expiry (10 min)
-    if time.time() - oauth_states.get(state, 0) > 600:
+    state_info = oauth_states.get(state) or {}
+    if isinstance(state_info, (int, float)):
+        created_at = float(state_info)
+        return_url = "/content"
+    else:
+        created_at = float(state_info.get("created_at") or 0)
+        return_url = _sanitize_return_url(state_info.get("return_url") or "")
+    if time.time() - created_at > 600:
         oauth_states.pop(state, None)
         return RedirectResponse("/login")
     oauth_states.pop(state, None)
@@ -200,7 +227,7 @@ async def google_callback(request: Request, response: Response, code: str = "", 
                 auth_provider="google",
                 role="user",
             ).insert()
-        response = RedirectResponse(url="/content")
+        response = RedirectResponse(url=(return_url or "/content"))
         response.set_cookie(
             key="user_phone",
             value=email,

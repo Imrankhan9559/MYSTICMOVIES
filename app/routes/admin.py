@@ -734,6 +734,10 @@ async def app_management(request: Request):
     broadcasts = await AppBroadcast.find_all().sort("-created_at").limit(40).to_list()
     devices = await AppDeviceSession.find_all().sort("-last_ping_at").limit(120).to_list()
     apk_files = await _apk_candidates()
+    content_options = await _slider_content_options(limit=1200)
+    pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-updated_at").limit(12).to_list()
+    pending_requests_total = await ContentRequest.find(ContentRequest.status == "pending").count()
+    app_events = await UserActivityEvent.find({"action": {"$regex": "^app_"}}).sort("-created_at").limit(20).to_list()
     selected_apk = next((row for row in apk_files if row["id"] == (app_cfg.latest_apk_item_id or "")), None)
     now = datetime.now()
     online_cutoff = now.timestamp() - 600
@@ -756,6 +760,10 @@ async def app_management(request: Request):
         "broadcasts": broadcasts,
         "devices": devices,
         "online_devices": online_devices,
+        "content_options": content_options,
+        "pending_requests": pending_requests,
+        "pending_requests_total": pending_requests_total,
+        "app_events": app_events,
     })
 
 
@@ -783,6 +791,7 @@ async def app_management_save(
     telegram_bot_username: str = Form(""),
     latest_apk_item_id: str = Form(""),
     clear_latest_apk: str = Form(""),
+    request_login_required: str = Form(""),
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
@@ -807,6 +816,7 @@ async def app_management_save(
     row.push_enabled = _is_truthy(push_enabled)
     row.keepalive_on_launch = _is_truthy(keepalive_on_launch)
     row.telegram_bot_username = (telegram_bot_username or "").strip()
+    row.request_login_required = _is_truthy(request_login_required)
 
     if _is_truthy(clear_latest_apk):
         row.latest_apk_item_id = None
@@ -887,6 +897,10 @@ async def app_management_notify(
     message: str = Form(""),
     notice_type: str = Form("news"),
     is_active: str = Form(""),
+    link_url: str = Form(""),
+    image_url: str = Form(""),
+    audience: str = Form("all"),
+    content_slug: str = Form(""),
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
@@ -898,14 +912,26 @@ async def app_management_notify(
     kind = (notice_type or "news").strip().lower()
     if kind not in {"news", "ad", "feature", "maintenance"}:
         kind = "news"
-    await AppBroadcast(
+    audience_value = (audience or "all").strip().lower()
+    if audience_value not in {"all", "logged_in"}:
+        audience_value = "all"
+    content_slug_clean = (content_slug or "").strip().strip("/")
+    target_link = (link_url or "").strip()
+    if content_slug_clean:
+        target_link = f"/content/details/{content_slug_clean}"
+
+    row = AppBroadcast(
         title=notice_title,
         message=notice_message,
         type=kind,
         is_active=_is_truthy(is_active),
         created_by=user.phone_number,
         created_at=datetime.now(),
-    ).insert()
+    )
+    row.link_url = target_link
+    row.image_url = (image_url or "").strip()
+    row.audience = audience_value
+    await row.insert()
     return RedirectResponse("/app-management?notify=1", status_code=303)
 
 

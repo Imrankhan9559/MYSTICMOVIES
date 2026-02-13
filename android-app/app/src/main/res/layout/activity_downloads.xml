@@ -5,13 +5,46 @@
     android:background="@color/mm_black"
     android:orientation="vertical">
 
+    <TextView
+        android:id="@+id/tvTopbar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#050505"
+        android:gravity="center"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="8dp"
+        android:text="Welcome to Mystic Movies"
+        android:textColor="@color/mm_gold"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingHorizontal="12dp"
-        android:paddingVertical="8dp">
+        android:paddingTop="10dp"
+        android:paddingBottom="8dp">
+
+        <ImageView
+            android:id="@+id/imgHeaderLogo"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:layout_marginEnd="10dp"
+            android:contentDescription="Logo"
+            android:scaleType="centerCrop"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvHeaderTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Downloads"
+            android:textColor="@color/mm_white"
+            android:textSize="20sp"
+            android:textStyle="bold" />
 
         <Button
             android:id="@+id/btnBack"
@@ -19,16 +52,6 @@
             android:layout_height="36dp"
             android:text="Back"
             android:textAllCaps="false" />
-
-        <TextView
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="10dp"
-            android:layout_weight="1"
-            android:text="Downloads"
-            android:textColor="@color/mm_white"
-            android:textSize="20sp"
-            android:textStyle="bold" />
     </LinearLayout>
 
     <TextView
@@ -60,4 +83,3 @@
         android:visibility="gone" />
 
 </LinearLayout>
-
