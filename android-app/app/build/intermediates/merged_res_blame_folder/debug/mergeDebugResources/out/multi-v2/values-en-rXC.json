@@ -1,7 +1,7 @@
 {
     "logs": [
         {
-            "outputFile": "com.mysticmovies.app-mergeDebugResources-34:/values-en-rXC/values-en-rXC.xml",
+            "outputFile": "com.mysticmovies.app-mergeDebugResources-37:/values-en-rXC/values-en-rXC.xml",
             "map": [
                 {
                     "source": "C:\\Users\\ik980\\.gradle\\caches\\transforms-4\\eecbda8adc5521377f06f41deda43748\\transformed\\core-1.13.1\\res\\values-en-rXC\\values-en-rXC.xml",

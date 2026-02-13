@@ -9,6 +9,7 @@
         android:targetSdkVersion="34" />
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <permission
         android:name="com.mysticmovies.app.debug.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
@@ -27,6 +28,15 @@
         android:supportsRtl="true"
         android:testOnly="true"
         android:theme="@style/Theme.MysticMovies" >
+        <activity
+            android:name="com.mysticmovies.app.LoginActivity"
+            android:exported="false" />
+        <activity
+            android:name="com.mysticmovies.app.PlayerActivity"
+            android:exported="false" />
+        <activity
+            android:name="com.mysticmovies.app.DownloadsActivity"
+            android:exported="false" />
         <activity
             android:name="com.mysticmovies.app.ContentDetailActivity"
             android:exported="false" />

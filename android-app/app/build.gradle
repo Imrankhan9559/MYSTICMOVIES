@@ -80,7 +80,15 @@ def clearReadOnlyBuildDir = tasks.register("clearReadOnlyBuildDir") {
 }
 
 tasks.configureEach { task ->
-    if (task.name in ["clean", "dexBuilderDebug", "dexBuilderRelease", "mergeProjectDexDebug", "mergeProjectDexRelease"]) {
+    if (task.name in [
+            "clean",
+            "compileDebugKotlin",
+            "compileReleaseKotlin",
+            "dexBuilderDebug",
+            "dexBuilderRelease",
+            "mergeProjectDexDebug",
+            "mergeProjectDexRelease"
+    ]) {
         task.dependsOn(clearReadOnlyBuildDir)
     }
 }

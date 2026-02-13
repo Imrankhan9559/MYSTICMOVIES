@@ -38,7 +38,10 @@ If Windows/OneDrive file lock error appears (Unable to delete directory / Access
 .\fix-build-lock.ps1
 ```
 
-Project now includes automatic read-only cleanup before dex/clean tasks (`clearReadOnlyBuildDir`), which reduces this error on OneDrive paths.
+Project now includes:
+- automatic read-only cleanup before Kotlin/dex/clean tasks (`clearReadOnlyBuildDir`)
+- non-incremental Kotlin compile settings to reduce snapshot lock issues on OneDrive
+- retry + daemon kill logic in `fix-build-lock.ps1`
 
 ## Release Signing (Optional)
 

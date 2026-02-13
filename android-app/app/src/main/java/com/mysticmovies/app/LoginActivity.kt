@@ -94,8 +94,11 @@ class LoginActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         webView.stopLoading()
-        webView.webChromeClient = null
-        webView.webViewClient = null
+        webView.loadUrl("about:blank")
+        webView.webViewClient = WebViewClient()
+        webView.webChromeClient = WebChromeClient()
+        webView.clearHistory()
+        webView.clearCache(true)
         webView.destroy()
         super.onDestroy()
     }

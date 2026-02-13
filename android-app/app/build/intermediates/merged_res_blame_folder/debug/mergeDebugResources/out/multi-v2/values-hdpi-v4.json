@@ -1,7 +1,7 @@
 {
     "logs": [
         {
-            "outputFile": "com.mysticmovies.app-mergeDebugResources-34:/values-hdpi-v4/values-hdpi-v4.xml",
+            "outputFile": "com.mysticmovies.app-mergeDebugResources-37:/values-hdpi-v4/values-hdpi-v4.xml",
             "map": [
                 {
                     "source": "C:\\Users\\ik980\\.gradle\\caches\\transforms-4\\704a3c4169f36e5aff8a143b95b6710c\\transformed\\appcompat-1.7.0\\res\\values-hdpi-v4\\values-hdpi-v4.xml",
