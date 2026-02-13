@@ -39,6 +39,8 @@ class ProfileActivity : AppCompatActivity() {
     private lateinit var watchlistAdapter: ProfileStripAdapter
     private lateinit var continueAdapter: ProfileStripAdapter
     private lateinit var historyAdapter: ProfileStripAdapter
+    private var loginRequested = false
+    private var profileLoaded = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,7 +81,14 @@ class ProfileActivity : AppCompatActivity() {
         rvHistory.adapter = historyAdapter
 
         applyRuntimeUi()
-        loadProfile()
+        ensureLoginAndLoadProfile(autoOpenLogin = true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (loginRequested && !profileLoaded) {
+            ensureLoginAndLoadProfile(autoOpenLogin = false)
+        }
     }
 
     private fun applyRuntimeUi() {
@@ -114,7 +123,47 @@ class ProfileActivity : AppCompatActivity() {
                 return@launch
             }
             bindProfile(root)
+            profileLoaded = true
         }
+    }
+
+    private fun ensureLoginAndLoadProfile(autoOpenLogin: Boolean) {
+        lifecycleScope.launch {
+            val loggedIn = withContext(Dispatchers.IO) { fetchSessionLoggedIn() }
+            if (loggedIn) {
+                loginRequested = false
+                loadProfile()
+                return@launch
+            }
+
+            tvEmpty.visibility = View.VISIBLE
+            tvEmpty.text = "Login required to access profile."
+            if (autoOpenLogin) {
+                loginRequested = true
+                openLogin()
+            } else {
+                finish()
+            }
+        }
+    }
+
+    private fun fetchSessionLoggedIn(): Boolean {
+        for (base in apiBaseCandidates()) {
+            try {
+                val url = "${base.trimEnd('/')}/app-api/session".toHttpUrlOrNull() ?: continue
+                val req = Request.Builder().url(url).get().build()
+                client.newCall(req).execute().use { res ->
+                    if (!res.isSuccessful) return@use
+                    val root = JSONObject(res.body?.string().orEmpty())
+                    if (!root.optBoolean("ok", false)) return@use
+                    AppRuntimeState.apiBaseUrl = base.trimEnd('/')
+                    return root.optBoolean("logged_in", false)
+                }
+            } catch (_: Exception) {
+                // Try next base.
+            }
+        }
+        return false
     }
 
     private fun fetchProfile(): JSONObject? {
@@ -211,7 +260,7 @@ class ProfileActivity : AppCompatActivity() {
 
     private fun openLogin() {
         startActivity(Intent(this, LoginActivity::class.java).apply {
-            putExtra("target_url", absoluteUrl("/login?return_url=%2Fprofile"))
+            putExtra("target_url", absoluteUrl("/login"))
             putExtra("title_text", "Login")
         })
     }

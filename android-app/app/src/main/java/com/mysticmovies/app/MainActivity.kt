@@ -3,6 +3,9 @@ package com.mysticmovies.app
 import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.view.View
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -57,11 +60,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvTopbar: TextView
     private lateinit var tvHeaderTitle: TextView
     private lateinit var imgHeaderLogo: ImageView
-    private lateinit var btnHeaderLogin: MaterialButton
-    private lateinit var btnActionRequest: MaterialButton
-    private lateinit var btnActionSearch: MaterialButton
-    private lateinit var btnActionDownloads: MaterialButton
-    private lateinit var btnActionProfile: MaterialButton
+    private lateinit var btnHeaderRequest: MaterialButton
     private lateinit var tvAnnouncement: TextView
     private lateinit var tvFooterText: TextView
 
@@ -80,6 +79,9 @@ class MainActivity : AppCompatActivity() {
 
     private var loading = false
     private var updatePromptShown = false
+    private var isUserLoggedIn = false
+    private var loginLaunched = false
+    private var openProfileAfterLogin = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,23 +92,32 @@ class MainActivity : AppCompatActivity() {
         applyRuntimeUi()
 
         loadBootstrap()
-        loadHome()
+        ensureLoginAndLoadHome(autoOpenLogin = false)
     }
 
     override fun onResume() {
         super.onResume()
         applyRuntimeUi()
+        if (loginLaunched) {
+            loginLaunched = false
+            lifecycleScope.launch {
+                val loggedIn = withContext(Dispatchers.IO) { fetchSessionLoggedIn() }
+                isUserLoggedIn = loggedIn
+                if (loggedIn && openProfileAfterLogin) {
+                    openProfileAfterLogin = false
+                    openProfile()
+                    return@launch
+                }
+                ensureLoginAndLoadHome(autoOpenLogin = false)
+            }
+        }
     }
 
     private fun bindViews() {
         tvTopbar = findViewById(R.id.tvTopbar)
         tvHeaderTitle = findViewById(R.id.tvHeaderTitle)
         imgHeaderLogo = findViewById(R.id.imgHeaderLogo)
-        btnHeaderLogin = findViewById(R.id.btnHeaderLogin)
-        btnActionRequest = findViewById(R.id.btnActionRequest)
-        btnActionSearch = findViewById(R.id.btnActionSearch)
-        btnActionDownloads = findViewById(R.id.btnActionDownloads)
-        btnActionProfile = findViewById(R.id.btnActionProfile)
+        btnHeaderRequest = findViewById(R.id.btnHeaderRequest)
         tvAnnouncement = findViewById(R.id.tvAnnouncement)
         tvFooterText = findViewById(R.id.tvFooterText)
 
@@ -125,30 +136,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun bindActions() {
-        btnHeaderLogin.setOnClickListener {
-            openInAppWeb("/login?return_url=%2Fcontent", "Login")
+        btnHeaderRequest.setOnClickListener {
+            ensureLoggedInThen { openRequestContent("/content") }
         }
 
-        btnActionSearch.setOnClickListener { openSearch() }
-        btnActionRequest.setOnClickListener { openRequestContent("/content") }
-        btnActionDownloads.setOnClickListener { openDownloads() }
-        btnActionProfile.setOnClickListener { openProfile() }
-
-        btnNavSearch.setOnClickListener { openSearch() }
+        btnNavSearch.setOnClickListener { ensureLoggedInThen { openSearch() } }
         btnNavHome.setOnClickListener {
             sectionsContainer.requestFocus()
             sectionsContainer.scrollTo(0, 0)
+            ensureLoginAndLoadHome(autoOpenLogin = false)
         }
         btnNavDownloads.setOnClickListener { openDownloads() }
-        btnNavProfile.setOnClickListener { openProfile() }
+        btnNavProfile.setOnClickListener { ensureProfileAccess() }
+
+        emptyView.setOnClickListener {
+            if (!isUserLoggedIn) {
+                openLoginScreen()
+            }
+        }
     }
 
     private fun applyRuntimeUi() {
         val ui = AppRuntimeState.ui
         tvTopbar.text = ui.topbarText.ifBlank { "Welcome to Mystic Movies" }
-        tvHeaderTitle.text = ui.siteName.ifBlank { "mysticmovies" }
+        setBrandTitle()
         tvFooterText.text = ui.footerText.ifBlank { "MysticMovies" }
-        title = ui.siteName.ifBlank { "MysticMovies" }
+        title = "MysticMovies"
 
         if (ui.logoUrl.isNotBlank()) {
             imgHeaderLogo.visibility = View.VISIBLE
@@ -158,7 +171,8 @@ class MainActivity : AppCompatActivity() {
                 placeholder(android.R.drawable.sym_def_app_icon)
             }
         } else {
-            imgHeaderLogo.visibility = View.GONE
+            imgHeaderLogo.visibility = View.VISIBLE
+            imgHeaderLogo.setImageResource(R.mipmap.ic_launcher)
         }
 
         val loadingIconUrl = AppRuntimeState.loadingIconUrl
@@ -186,6 +200,15 @@ class MainActivity : AppCompatActivity() {
             emptyView.visibility = View.VISIBLE
             emptyView.text = AppRuntimeState.maintenanceMessage.ifBlank { "App is under maintenance. Please try again later." }
         }
+    }
+
+    private fun setBrandTitle() {
+        val brand = "MysticMovies"
+        val span = SpannableString(brand)
+        // Mystic -> white, Movies -> yellow
+        span.setSpan(ForegroundColorSpan(0xFFFFFFFF.toInt()), 0, 6, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        span.setSpan(ForegroundColorSpan(0xFFFACC15.toInt()), 6, brand.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        tvHeaderTitle.text = span
     }
 
     private fun loadBootstrap() {
@@ -358,6 +381,69 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun ensureLoginAndLoadHome(autoOpenLogin: Boolean) {
+        lifecycleScope.launch {
+            val loggedIn = withContext(Dispatchers.IO) { fetchSessionLoggedIn() }
+            isUserLoggedIn = loggedIn
+            if (loggedIn) {
+                emptyView.visibility = View.GONE
+            } else if (autoOpenLogin && sectionsContainer.childCount == 0) {
+                openLoginScreen()
+            }
+            loadHome(showLoader = sectionsContainer.childCount == 0)
+        }
+    }
+
+    private fun ensureLoggedInThen(action: () -> Unit) {
+        lifecycleScope.launch {
+            val loggedIn = withContext(Dispatchers.IO) { fetchSessionLoggedIn() }
+            isUserLoggedIn = loggedIn
+            if (loggedIn) {
+                action()
+            } else {
+                openLoginScreen()
+            }
+        }
+    }
+
+    private fun ensureProfileAccess() {
+        lifecycleScope.launch {
+            val loggedIn = withContext(Dispatchers.IO) { fetchSessionLoggedIn() }
+            isUserLoggedIn = loggedIn
+            if (loggedIn) {
+                openProfileAfterLogin = false
+                openProfile()
+            } else {
+                openProfileAfterLogin = true
+                openLoginScreen()
+            }
+        }
+    }
+
+    private fun fetchSessionLoggedIn(): Boolean {
+        for (base in apiBaseCandidates()) {
+            try {
+                val url = "${base.trimEnd('/')}/app-api/session".toHttpUrlOrNull() ?: continue
+                val req = Request.Builder().url(url).get().build()
+                client.newCall(req).execute().use { res ->
+                    if (!res.isSuccessful) return@use
+                    val root = JSONObject(res.body?.string().orEmpty())
+                    if (!root.optBoolean("ok", false)) return@use
+                    AppRuntimeState.apiBaseUrl = base.trimEnd('/')
+                    return root.optBoolean("logged_in", false)
+                }
+            } catch (_: Exception) {
+                // Try next base candidate.
+            }
+        }
+        return false
+    }
+
+    private fun openLoginScreen() {
+        loginLaunched = true
+        openInAppWeb("/login", "Login")
+    }
+
     private fun bindHero(hero: HeroSlide?) {
         if (hero == null || hero.image.isBlank()) {
             val splash = AppRuntimeState.splashImageUrl
@@ -383,7 +469,7 @@ class MainActivity : AppCompatActivity() {
         heroTitle.text = hero.title.ifBlank { "MysticMovies" }
         heroSubtitle.text = hero.subtitle.ifBlank { "Latest uploads" }
         if (hero.contentKey.isNotBlank()) {
-            heroImage.setOnClickListener { openContentDetail(hero.contentKey) }
+            heroImage.setOnClickListener { ensureLoggedInThen { openContentDetail(hero.contentKey) } }
         } else {
             heroImage.setOnClickListener(null)
         }
@@ -411,7 +497,7 @@ class MainActivity : AppCompatActivity() {
                 recycler.adapter = HomeStripAdapter(section.cards) { card ->
                     val key = card.slug.ifBlank { card.id }
                     if (key.isNotBlank()) {
-                        openContentDetail(key)
+                        ensureLoggedInThen { openContentDetail(key) }
                     }
                 }
             }

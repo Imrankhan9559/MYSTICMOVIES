@@ -32,7 +32,10 @@ class SearchActivity : AppCompatActivity() {
     private lateinit var btnSearch: Button
     private lateinit var btnBack: Button
     private lateinit var tvTrending: TextView
+    private lateinit var tvLatestTitle: TextView
+    private lateinit var tvResultsTitle: TextView
     private lateinit var rvSuggestions: RecyclerView
+    private lateinit var rvLatest: RecyclerView
     private lateinit var rvResults: RecyclerView
     private lateinit var progressBar: ProgressBar
     private lateinit var tvEmpty: TextView
@@ -51,7 +54,10 @@ class SearchActivity : AppCompatActivity() {
         btnSearch = findViewById(R.id.btnSearch)
         btnBack = findViewById(R.id.btnBack)
         tvTrending = findViewById(R.id.tvTrending)
+        tvLatestTitle = findViewById(R.id.tvLatestTitle)
+        tvResultsTitle = findViewById(R.id.tvResultsTitle)
         rvSuggestions = findViewById(R.id.rvSuggestions)
+        rvLatest = findViewById(R.id.rvLatest)
         rvResults = findViewById(R.id.rvResults)
         progressBar = findViewById(R.id.progressBar)
         tvEmpty = findViewById(R.id.tvEmpty)
@@ -73,6 +79,16 @@ class SearchActivity : AppCompatActivity() {
         }
         rvResults.layoutManager = GridLayoutManager(this, 2)
         rvResults.adapter = resultAdapter
+        rvResults.visibility = View.GONE
+        tvResultsTitle.visibility = View.GONE
+
+        rvLatest.layoutManager = LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
+        rvLatest.adapter = HomeStripAdapter(emptyList()) { card ->
+            val key = card.slug.ifBlank { card.id }
+            if (key.isNotBlank()) {
+                openContentDetail(key)
+            }
+        }
 
         btnBack.setOnClickListener { finish() }
         btnSearch.setOnClickListener {
@@ -97,6 +113,13 @@ class SearchActivity : AppCompatActivity() {
                 if (query.length < 2) {
                     rvSuggestions.visibility = View.GONE
                     suggestionAdapter.submit(emptyList())
+                    if (query.isBlank()) {
+                        rvResults.visibility = View.GONE
+                        tvResultsTitle.visibility = View.GONE
+                        resultAdapter.submitItems(emptyList())
+                        tvEmpty.visibility = View.VISIBLE
+                        tvEmpty.text = "Search to discover content"
+                    }
                     return
                 }
                 debounceJob = lifecycleScope.launch {
@@ -106,7 +129,10 @@ class SearchActivity : AppCompatActivity() {
             }
         })
 
-        lifecycleScope.launch { loadSuggestions("movie") }
+        lifecycleScope.launch {
+            loadSuggestions("movie")
+            loadLatestReleases()
+        }
     }
 
     private fun loadSuggestions(query: String) {
@@ -121,10 +147,29 @@ class SearchActivity : AppCompatActivity() {
             val tags = result.third
             if (tags.isNotEmpty()) {
                 tvTrending.visibility = View.VISIBLE
-                tvTrending.text = "Trending: ${tags.joinToString("  â€¢  ")}"
+                tvTrending.text = "Trending: ${tags.joinToString(" • ")}"
             } else {
                 tvTrending.visibility = View.GONE
             }
+        }
+    }
+
+    private fun loadLatestReleases() {
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { fetchCatalog("", limit = 15) }
+            if (!result.first || result.second.isEmpty()) {
+                tvLatestTitle.visibility = View.GONE
+                rvLatest.visibility = View.GONE
+                return@launch
+            }
+            rvLatest.adapter = HomeStripAdapter(result.second.take(15)) { card ->
+                val key = card.slug.ifBlank { card.id }
+                if (key.isNotBlank()) {
+                    openContentDetail(key)
+                }
+            }
+            tvLatestTitle.visibility = View.VISIBLE
+            rvLatest.visibility = View.VISIBLE
         }
     }
 
@@ -154,11 +199,22 @@ class SearchActivity : AppCompatActivity() {
     }
 
     private fun searchCatalog(query: String) {
+        if (query.isBlank()) {
+            rvResults.visibility = View.GONE
+            tvResultsTitle.visibility = View.GONE
+            resultAdapter.submitItems(emptyList())
+            tvEmpty.visibility = View.VISIBLE
+            tvEmpty.text = "Search to discover content"
+            return
+        }
+
         progressBar.visibility = View.VISIBLE
         tvEmpty.visibility = View.GONE
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { fetchCatalog(query) }
+            val result = withContext(Dispatchers.IO) { fetchCatalog(query, limit = 36) }
             progressBar.visibility = View.GONE
+            rvResults.visibility = View.VISIBLE
+            tvResultsTitle.visibility = View.VISIBLE
             if (!result.first) {
                 resultAdapter.submitItems(emptyList())
                 tvEmpty.visibility = View.VISIBLE
@@ -171,7 +227,7 @@ class SearchActivity : AppCompatActivity() {
         }
     }
 
-    private fun fetchCatalog(query: String): Pair<Boolean, List<CatalogCard>> {
+    private fun fetchCatalog(query: String, limit: Int): Pair<Boolean, List<CatalogCard>> {
         for (base in apiBaseCandidates()) {
             try {
                 val url = "${base.trimEnd('/')}/app-api/catalog".toHttpUrlOrNull() ?: continue
@@ -179,7 +235,7 @@ class SearchActivity : AppCompatActivity() {
                     .addQueryParameter("filter", "all")
                     .addQueryParameter("sort", "release_new")
                     .addQueryParameter("page", "1")
-                    .addQueryParameter("per_page", "36")
+                    .addQueryParameter("per_page", limit.toString())
                     .addQueryParameter("q", query)
                     .build()
                 val req = Request.Builder().url(reqUrl).get().build()

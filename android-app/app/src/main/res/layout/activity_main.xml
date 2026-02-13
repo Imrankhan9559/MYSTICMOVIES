@@ -42,81 +42,21 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="mysticmovies"
+            android:text="MysticMovies"
             android:textColor="@color/mm_white"
             android:textSize="22sp"
             android:textStyle="bold" />
 
         <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnHeaderLogin"
+            android:id="@+id/btnHeaderRequest"
             android:layout_width="wrap_content"
             android:layout_height="38dp"
             android:insetTop="0dp"
             android:insetBottom="0dp"
-            android:text="Login"
+            android:text="Request"
             android:textAllCaps="false"
             android:textColor="#111111"
             app:backgroundTint="@color/mm_gold"
-            app:cornerRadius="18dp" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:paddingHorizontal="12dp"
-        android:paddingBottom="8dp">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnActionRequest"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="0dp"
-            android:layout_height="36dp"
-            android:layout_marginHorizontal="3dp"
-            android:layout_weight="1"
-            android:text="Request"
-            android:textAllCaps="false"
-            android:textColor="@color/mm_white"
-            app:backgroundTint="#171717"
-            app:cornerRadius="18dp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnActionSearch"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="0dp"
-            android:layout_height="36dp"
-            android:layout_marginHorizontal="3dp"
-            android:layout_weight="1"
-            android:text="Search"
-            android:textAllCaps="false"
-            android:textColor="@color/mm_white"
-            app:backgroundTint="#171717"
-            app:cornerRadius="18dp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnActionDownloads"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="0dp"
-            android:layout_height="36dp"
-            android:layout_marginHorizontal="3dp"
-            android:layout_weight="1"
-            android:text="Downloads"
-            android:textAllCaps="false"
-            android:textColor="@color/mm_white"
-            app:backgroundTint="#171717"
-            app:cornerRadius="18dp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnActionProfile"
-            style="@style/Widget.Material3.Button.TonalButton"
-            android:layout_width="0dp"
-            android:layout_height="36dp"
-            android:layout_marginHorizontal="3dp"
-            android:layout_weight="1"
-            android:text="Profile"
-            android:textAllCaps="false"
-            android:textColor="@color/mm_white"
-            app:backgroundTint="#171717"
             app:cornerRadius="18dp" />
     </LinearLayout>
 
@@ -248,6 +188,7 @@
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal"
+            android:weightSum="4"
             android:paddingHorizontal="10dp"
             android:paddingTop="8dp"
             android:paddingBottom="6dp">
@@ -257,11 +198,12 @@
                 style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="0dp"
                 android:layout_height="36dp"
-                android:layout_marginHorizontal="4dp"
                 android:layout_weight="1"
-                android:text="Search"
-                android:textAllCaps="false"
-                android:textColor="@color/mm_white"
+                android:layout_marginHorizontal="4dp"
+                android:minWidth="0dp"
+                android:contentDescription="Search"
+                app:icon="@android:drawable/ic_menu_search"
+                app:iconTint="@color/mm_white"
                 app:backgroundTint="#171717"
                 app:cornerRadius="18dp" />
 
@@ -269,11 +211,12 @@
                 android:id="@+id/btnNavHome"
                 android:layout_width="0dp"
                 android:layout_height="36dp"
-                android:layout_marginHorizontal="4dp"
                 android:layout_weight="1"
-                android:text="Home"
-                android:textAllCaps="false"
-                android:textColor="#111111"
+                android:layout_marginHorizontal="4dp"
+                android:minWidth="0dp"
+                android:contentDescription="Home"
+                app:icon="@android:drawable/ic_menu_view"
+                app:iconTint="#111111"
                 app:backgroundTint="@color/mm_gold"
                 app:cornerRadius="18dp" />
 
@@ -282,11 +225,12 @@
                 style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="0dp"
                 android:layout_height="36dp"
-                android:layout_marginHorizontal="4dp"
                 android:layout_weight="1"
-                android:text="Downloads"
-                android:textAllCaps="false"
-                android:textColor="@color/mm_white"
+                android:layout_marginHorizontal="4dp"
+                android:minWidth="0dp"
+                android:contentDescription="Downloads"
+                app:icon="@android:drawable/stat_sys_download_done"
+                app:iconTint="@color/mm_white"
                 app:backgroundTint="#171717"
                 app:cornerRadius="18dp" />
 
@@ -295,11 +239,12 @@
                 style="@style/Widget.Material3.Button.TonalButton"
                 android:layout_width="0dp"
                 android:layout_height="36dp"
-                android:layout_marginHorizontal="4dp"
                 android:layout_weight="1"
-                android:text="Profile"
-                android:textAllCaps="false"
-                android:textColor="@color/mm_white"
+                android:layout_marginHorizontal="4dp"
+                android:minWidth="0dp"
+                android:contentDescription="Profile"
+                app:icon="@android:drawable/ic_menu_myplaces"
+                app:iconTint="@color/mm_white"
                 app:backgroundTint="#171717"
                 app:cornerRadius="18dp" />
         </LinearLayout>

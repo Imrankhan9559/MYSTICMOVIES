@@ -1219,35 +1219,77 @@ async def app_content_detail(
 
     series_links = []
     if (group.get("type") or "").strip().lower() == "series":
+        def _int_sort(value: Any) -> int:
+            try:
+                return int(str(value or "0"))
+            except Exception:
+                return 0
+
         seasons = group.get("seasons") or {}
-        for season_no, episodes in sorted(seasons.items(), key=lambda row: int(row[0])):
+        episode_titles_map = group.get("episode_titles") or {}
+        for season_no, episodes in sorted(seasons.items(), key=lambda row: _int_sort(row[0])):
             qualities = set()
             preview_link = ""
             preview_stream_link = ""
             preview_telegram_start = ""
             total_episodes = 0
-            for episode_no, variants in sorted((episodes or {}).items(), key=lambda row: int(row[0])):
+            episode_rows = []
+            season_titles = episode_titles_map.get(season_no) or episode_titles_map.get(str(season_no)) or {}
+
+            for episode_no, variants in sorted((episodes or {}).items(), key=lambda row: _int_sort(row[0])):
                 total_episodes += 1
+                episode_quality_rows = []
                 for quality, row in sorted((variants or {}).items(), key=lambda v: (-_quality_rank(v[0]), v[0])):
-                    qualities.add(quality)
-                    if preview_link:
-                        continue
                     file_id = str((row or {}).get("file_id") or "").strip()
                     if not file_id:
                         continue
                     token = await _ensure_share_token(file_id)
                     if not token:
                         continue
-                    preview_link = f"/s/{token}{query}"
-                    preview_stream_link = f"/s/stream/{token}{query}"
-                    preview_telegram_start = f"/app-api/telegram-start/{token}?t={encoded_link_token}"
+                    qualities.add(quality)
+                    view_url = f"/s/{token}{query}"
+                    stream_url = f"/s/stream/{token}{query}"
+                    download_url = f"/d/{token}{query}"
+                    telegram_url = f"/t/{token}{query}"
+                    watch_together_url = f"/w/{token}{query}"
+                    telegram_start_url = f"/app-api/telegram-start/{token}?t={encoded_link_token}"
+                    episode_quality_rows.append({
+                        "label": quality,
+                        "size": int((row or {}).get("size") or 0),
+                        "view_url": view_url,
+                        "stream_url": stream_url,
+                        "download_url": download_url,
+                        "telegram_url": telegram_url,
+                        "telegram_start_url": telegram_start_url,
+                        "telegram_deep_link": _deep_link(bot_username, token, link_token) if bot_username else "",
+                        "watch_together_url": watch_together_url,
+                    })
+                    if not preview_link:
+                        preview_link = view_url
+                        preview_stream_link = stream_url
+                        preview_telegram_start = telegram_start_url
+
+                episode_num = _int_sort(episode_no)
+                episode_title = ""
+                if isinstance(season_titles, dict):
+                    episode_title = (
+                        str(season_titles.get(episode_num) or season_titles.get(str(episode_num)) or "").strip()
+                    )
+                episode_rows.append({
+                    "episode": episode_num,
+                    "title": episode_title,
+                    "qualities": episode_quality_rows,
+                    "quality_count": len(episode_quality_rows),
+                })
+
             series_links.append({
-                "season": int(season_no),
+                "season": _int_sort(season_no),
                 "episode_count": total_episodes,
                 "qualities": sorted(qualities, key=lambda value: (-_quality_rank(value), value)),
                 "preview_view_url": preview_link,
                 "preview_stream_url": preview_stream_link if preview_link else "",
                 "preview_telegram_start_url": preview_telegram_start if preview_link else "",
+                "episodes": episode_rows,
             })
 
     slug = (group.get("slug") or "").strip()

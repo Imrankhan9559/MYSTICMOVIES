@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/mm_black"
+    android:orientation="vertical">
+
+    <TextView
+        android:id="@+id/tvTopbar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#050505"
+        android:gravity="center"
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="8dp"
+        android:text="Welcome to Mystic Movies"
+        android:textColor="@color/mm_gold"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingHorizontal="14dp"
+        android:paddingTop="10dp"
+        android:paddingBottom="8dp">
+
+        <Button
+            android:id="@+id/btnBack"
+            android:layout_width="wrap_content"
+            android:layout_height="38dp"
+            android:text="Back"
+            android:textAllCaps="false" />
+
+        <TextView
+            android:id="@+id/tvHeaderTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/mm_white"
+            android:textSize="19sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="14dp"
+        android:paddingBottom="8dp"
+        android:textColor="@color/mm_muted"
+        android:textSize="13sp" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:id="@+id/episodeContainer"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingHorizontal="14dp"
+            android:paddingBottom="10dp" />
+    </ScrollView>
+
+    <LinearLayout
+        android:id="@+id/footerBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#0B0B0B"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:weightSum="4"
+            android:paddingHorizontal="10dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="6dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNavSearch"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="1"
+                android:layout_marginHorizontal="4dp"
+                android:minWidth="0dp"
+                android:contentDescription="Search"
+                app:backgroundTint="#171717"
+                app:cornerRadius="18dp"
+                app:icon="@android:drawable/ic_menu_search"
+                app:iconTint="@color/mm_white" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNavHome"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="1"
+                android:layout_marginHorizontal="4dp"
+                android:minWidth="0dp"
+                android:contentDescription="Home"
+                app:backgroundTint="@color/mm_gold"
+                app:cornerRadius="18dp"
+                app:icon="@android:drawable/ic_menu_view"
+                app:iconTint="#111111" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNavDownloads"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="1"
+                android:layout_marginHorizontal="4dp"
+                android:minWidth="0dp"
+                android:contentDescription="Downloads"
+                app:backgroundTint="#171717"
+                app:cornerRadius="18dp"
+                app:icon="@android:drawable/stat_sys_download_done"
+                app:iconTint="@color/mm_white" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNavProfile"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="0dp"
+                android:layout_height="36dp"
+                android:layout_weight="1"
+                android:layout_marginHorizontal="4dp"
+                android:minWidth="0dp"
+                android:contentDescription="Profile"
+                app:backgroundTint="#171717"
+                app:cornerRadius="18dp"
+                app:icon="@android:drawable/ic_menu_myplaces"
+                app:iconTint="@color/mm_white" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvFooterText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:paddingBottom="8dp"
+            android:text="MysticMovies"
+            android:textColor="@color/mm_muted"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+</LinearLayout>

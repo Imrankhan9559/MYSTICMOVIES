@@ -6,6 +6,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
@@ -36,6 +39,12 @@ private data class MovieLink(
     val watchTogetherUrl: String,
 )
 
+private data class EpisodeRow(
+    val episode: Int,
+    val title: String,
+    val qualities: List<MovieLink>,
+)
+
 private data class SeasonLink(
     val season: Int,
     val episodeCount: Int,
@@ -43,6 +52,7 @@ private data class SeasonLink(
     val previewUrl: String,
     val previewStreamUrl: String,
     val previewTelegramStartUrl: String,
+    val episodes: List<EpisodeRow>,
 )
 
 private data class CastEntry(
@@ -61,9 +71,11 @@ class ContentDetailActivity : AppCompatActivity() {
     private lateinit var tvAnnouncement: TextView
     private lateinit var tvFooterText: TextView
     private lateinit var btnBack: Button
-    private lateinit var btnProfile: Button
-    private lateinit var btnHome: Button
-    private lateinit var btnDownloads: Button
+    private lateinit var btnHeaderRequest: Button
+    private lateinit var btnNavSearch: Button
+    private lateinit var btnNavHome: Button
+    private lateinit var btnNavDownloads: Button
+    private lateinit var btnNavProfile: Button
 
     private lateinit var progressBar: ProgressBar
     private lateinit var poster: ImageView
@@ -71,31 +83,59 @@ class ContentDetailActivity : AppCompatActivity() {
     private lateinit var meta: TextView
     private lateinit var description: TextView
     private lateinit var trailerButton: Button
-    private lateinit var requestButton: Button
+    private lateinit var shareButton: Button
     private lateinit var castContainer: LinearLayout
+    private lateinit var tvMovieLinksTitle: TextView
     private lateinit var movieLinksContainer: LinearLayout
+    private lateinit var tvSeasonLinksTitle: TextView
     private lateinit var seasonLinksContainer: LinearLayout
     private lateinit var statusText: TextView
 
     private var contentTitle: String = ""
     private var detailPath: String = ""
+    private var detailUrl: String = ""
     private var fallbackSlug: String = ""
+    private var targetContentKey: String = ""
+    private var isUserLoggedIn = false
+    private var loginRequested = false
+    private var openProfileAfterLogin = false
+    private var contentLoaded = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_content_detail)
-
         bindViews()
         bindActions()
         applyRuntimeUi()
 
-        val contentKey = intent?.getStringExtra("content_key").orEmpty().trim()
-        if (contentKey.isBlank()) {
+        targetContentKey = intent?.getStringExtra("content_key").orEmpty().trim()
+        if (targetContentKey.isBlank()) {
             finish()
             return
         }
+        refreshSessionAndLoad(autoOpenLogin = false)
+    }
 
-        loadContent(contentKey)
+    override fun onResume() {
+        super.onResume()
+        applyRuntimeUi()
+        if (loginRequested) {
+            loginRequested = false
+            lifecycleScope.launch {
+                val loggedIn = withContext(Dispatchers.IO) { fetchSessionLoggedIn() }
+                isUserLoggedIn = loggedIn
+                if (loggedIn && openProfileAfterLogin) {
+                    openProfileAfterLogin = false
+                    startActivity(Intent(this@ContentDetailActivity, ProfileActivity::class.java))
+                    return@launch
+                }
+                if (contentLoaded) {
+                    loadContent(targetContentKey)
+                } else {
+                    refreshSessionAndLoad(autoOpenLogin = false)
+                }
+            }
+        }
     }
 
     private fun bindViews() {
@@ -105,9 +145,11 @@ class ContentDetailActivity : AppCompatActivity() {
         tvAnnouncement = findViewById(R.id.tvAnnouncement)
         tvFooterText = findViewById(R.id.tvFooterText)
         btnBack = findViewById(R.id.btnBack)
-        btnProfile = findViewById(R.id.btnProfile)
-        btnHome = findViewById(R.id.btnHome)
-        btnDownloads = findViewById(R.id.btnDownloads)
+        btnHeaderRequest = findViewById(R.id.btnHeaderRequest)
+        btnNavSearch = findViewById(R.id.btnNavSearch)
+        btnNavHome = findViewById(R.id.btnNavHome)
+        btnNavDownloads = findViewById(R.id.btnNavDownloads)
+        btnNavProfile = findViewById(R.id.btnNavProfile)
 
         progressBar = findViewById(R.id.progressBar)
         poster = findViewById(R.id.imgPoster)
@@ -115,35 +157,53 @@ class ContentDetailActivity : AppCompatActivity() {
         meta = findViewById(R.id.tvMeta)
         description = findViewById(R.id.tvDescription)
         trailerButton = findViewById(R.id.btnTrailer)
-        requestButton = findViewById(R.id.btnRequest)
+        shareButton = findViewById(R.id.btnShare)
         castContainer = findViewById(R.id.castContainer)
+        tvMovieLinksTitle = findViewById(R.id.tvMovieLinksTitle)
         movieLinksContainer = findViewById(R.id.movieLinksContainer)
+        tvSeasonLinksTitle = findViewById(R.id.tvSeasonLinksTitle)
         seasonLinksContainer = findViewById(R.id.seasonLinksContainer)
         statusText = findViewById(R.id.tvStatus)
     }
 
     private fun bindActions() {
         btnBack.setOnClickListener { finish() }
-        btnProfile.setOnClickListener {
-            startActivity(Intent(this, ProfileActivity::class.java))
+        btnHeaderRequest.setOnClickListener {
+            ensureLoggedInThen { openRequestContent() }
         }
-        btnHome.setOnClickListener {
+        btnNavSearch.setOnClickListener {
+            ensureLoggedInThen {
+                startActivity(Intent(this, SearchActivity::class.java))
+            }
+        }
+        btnNavHome.setOnClickListener {
             startActivity(Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             })
         }
-        btnDownloads.setOnClickListener {
+        btnNavDownloads.setOnClickListener {
             startActivity(Intent(this, DownloadsActivity::class.java))
         }
-        requestButton.setOnClickListener {
-            openRequestContent()
+        btnNavProfile.setOnClickListener {
+            lifecycleScope.launch {
+                val loggedIn = withContext(Dispatchers.IO) { fetchSessionLoggedIn() }
+                isUserLoggedIn = loggedIn
+                if (loggedIn) {
+                    openProfileAfterLogin = false
+                    startActivity(Intent(this@ContentDetailActivity, ProfileActivity::class.java))
+                } else {
+                    openProfileAfterLogin = true
+                    openLogin()
+                }
+            }
         }
+        shareButton.setOnClickListener { shareContentLink() }
     }
 
     private fun applyRuntimeUi() {
         val ui = AppRuntimeState.ui
         tvTopbar.text = ui.topbarText.ifBlank { "Welcome to Mystic Movies" }
-        tvHeaderTitle.text = ui.siteName.ifBlank { "mysticmovies" }
+        setBrandTitle()
         tvFooterText.text = ui.footerText.ifBlank { "MysticMovies" }
 
         if (ui.logoUrl.isNotBlank()) {
@@ -154,7 +214,8 @@ class ContentDetailActivity : AppCompatActivity() {
                 placeholder(android.R.drawable.sym_def_app_icon)
             }
         } else {
-            imgHeaderLogo.visibility = View.GONE
+            imgHeaderLogo.visibility = View.VISIBLE
+            imgHeaderLogo.setImageResource(R.mipmap.ic_launcher)
         }
 
         if (AppRuntimeState.notifications.isNotEmpty()) {
@@ -168,6 +229,38 @@ class ContentDetailActivity : AppCompatActivity() {
         }
     }
 
+    private fun setBrandTitle() {
+        val brand = "MysticMovies"
+        val span = SpannableString(brand)
+        span.setSpan(ForegroundColorSpan(0xFFFFFFFF.toInt()), 0, 6, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        span.setSpan(ForegroundColorSpan(0xFFFACC15.toInt()), 6, brand.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        tvHeaderTitle.text = span
+    }
+
+    private fun refreshSessionAndLoad(autoOpenLogin: Boolean) {
+        lifecycleScope.launch {
+            val loggedIn = withContext(Dispatchers.IO) { fetchSessionLoggedIn() }
+            isUserLoggedIn = loggedIn
+            if (!loggedIn && autoOpenLogin) {
+                openLogin()
+                return@launch
+            }
+            loadContent(targetContentKey)
+        }
+    }
+
+    private fun ensureLoggedInThen(action: () -> Unit) {
+        lifecycleScope.launch {
+            val loggedIn = withContext(Dispatchers.IO) { fetchSessionLoggedIn() }
+            isUserLoggedIn = loggedIn
+            if (loggedIn) {
+                action()
+            } else {
+                openLogin()
+            }
+        }
+    }
+
     private fun loadContent(contentKey: String) {
         progressBar.visibility = View.VISIBLE
         statusText.visibility = View.GONE
@@ -175,15 +268,33 @@ class ContentDetailActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val payload = withContext(Dispatchers.IO) { fetchContent(contentKey) }
             progressBar.visibility = View.GONE
-
             if (payload == null) {
                 statusText.visibility = View.VISIBLE
                 statusText.text = "Unable to load content details."
                 return@launch
             }
-
             bindContent(payload)
+            contentLoaded = true
         }
+    }
+
+    private fun fetchSessionLoggedIn(): Boolean {
+        for (base in apiBaseCandidates()) {
+            try {
+                val url = "${base.trimEnd('/')}/app-api/session".toHttpUrlOrNull() ?: continue
+                val req = Request.Builder().url(url).get().build()
+                client.newCall(req).execute().use { res ->
+                    if (!res.isSuccessful) return@use
+                    val root = JSONObject(res.body?.string().orEmpty())
+                    if (!root.optBoolean("ok", false)) return@use
+                    AppRuntimeState.apiBaseUrl = base.trimEnd('/')
+                    return root.optBoolean("logged_in", false)
+                }
+            } catch (_: Exception) {
+                // Try next base.
+            }
+        }
+        return false
     }
 
     private fun fetchContent(contentKey: String): JSONObject? {
@@ -215,21 +326,23 @@ class ContentDetailActivity : AppCompatActivity() {
         contentTitle = itemTitle
         fallbackSlug = item.optString("slug")
         detailPath = root.optString("detail_path")
+        detailUrl = root.optString("detail_url")
+
         val itemYear = item.optString("year")
-        val itemType = if (item.optString("type").equals("series", ignoreCase = true)) "WEB SERIES" else "MOVIE"
+        val isSeries = item.optString("type").equals("series", ignoreCase = true)
+        val itemType = if (isSeries) "WEB SERIES" else "MOVIE"
         title.text = itemTitle
         meta.text = if (itemYear.isNotBlank()) "$itemYear | $itemType" else itemType
         description.text = item.optString("description").ifBlank { "Description not available." }
 
-        val imageUrl = item.optString("poster")
+        val primaryImage = item.optString("backdrop")
+            .ifBlank { item.optString("poster") }
+            .ifBlank { item.optString("backdrop_original") }
+            .ifBlank { item.optString("poster_original") }
+        val fallbackImage = item.optString("poster")
             .ifBlank { item.optString("poster_original") }
             .ifBlank { item.optString("backdrop") }
-            .ifBlank { item.optString("backdrop_original") }
-        poster.load(resolveImageUrl(imageUrl)) {
-            crossfade(true)
-            placeholder(android.R.drawable.ic_menu_report_image)
-            error(android.R.drawable.ic_menu_report_image)
-        }
+        loadPoster(primaryImage, fallbackImage)
 
         val trailerEmbed = item.optString("trailer_embed_url")
         val trailerUrl = item.optString("trailer_url")
@@ -241,14 +354,52 @@ class ContentDetailActivity : AppCompatActivity() {
         }
         trailerButton.visibility = if (trailerTarget.isNotBlank()) View.VISIBLE else View.GONE
         trailerButton.setOnClickListener {
-            if (trailerTarget.isBlank()) return@setOnClickListener
-            openTrailer(trailerTarget)
+            if (trailerTarget.isNotBlank()) {
+                openTrailer(trailerTarget)
+            }
         }
 
-        requestButton.visibility = View.VISIBLE
         bindCast(castRows)
-        bindMovieLinks(movieLinks)
-        bindSeasonLinks(seasonLinks)
+
+        if (isSeries) {
+            tvMovieLinksTitle.visibility = View.GONE
+            movieLinksContainer.visibility = View.GONE
+            tvSeasonLinksTitle.visibility = View.VISIBLE
+            seasonLinksContainer.visibility = View.VISIBLE
+            bindSeasonLinks(seasonLinks)
+        } else {
+            tvSeasonLinksTitle.visibility = View.GONE
+            seasonLinksContainer.visibility = View.GONE
+            tvMovieLinksTitle.visibility = View.VISIBLE
+            movieLinksContainer.visibility = View.VISIBLE
+            if (isUserLoggedIn) {
+                bindMovieLinks(movieLinks)
+            } else {
+                showLoginAccessCard(
+                    movieLinksContainer,
+                    "Login to access Watch, Download, Watch Together and Telegram options."
+                )
+            }
+        }
+    }
+
+    private fun loadPoster(primary: String, fallback: String) {
+        val primaryResolved = resolveImageUrl(primary)
+        val fallbackResolved = resolveImageUrl(fallback)
+        poster.load(primaryResolved) {
+            crossfade(true)
+            placeholder(android.R.drawable.ic_menu_gallery)
+            error(android.R.drawable.ic_menu_report_image)
+            listener(onError = { _, _ ->
+                if (fallbackResolved.isNotBlank() && fallbackResolved != primaryResolved) {
+                    poster.load(fallbackResolved) {
+                        crossfade(true)
+                        placeholder(android.R.drawable.ic_menu_gallery)
+                        error(android.R.drawable.ic_menu_report_image)
+                    }
+                }
+            })
+        }
     }
 
     private fun parseCastRows(array: JSONArray?): List<CastEntry> {
@@ -333,7 +484,6 @@ class ContentDetailActivity : AppCompatActivity() {
             watchTogetherButton.setOnClickListener {
                 openInAppWeb(row.watchTogetherUrl, "Watch Together")
             }
-
             movieLinksContainer.addView(view)
         }
     }
@@ -356,14 +506,27 @@ class ContentDetailActivity : AppCompatActivity() {
 
             val qualityText = if (row.qualities.isNotEmpty()) row.qualities.joinToString(" - ") else "HD"
             info.text = "Season ${row.season} - ${row.episodeCount} Episodes - $qualityText"
-            openButton.isEnabled = row.previewUrl.isNotBlank()
+            openButton.isEnabled = row.episodeCount > 0 || row.previewUrl.isNotBlank()
             openButton.setOnClickListener {
-                val stream = row.previewStreamUrl.ifBlank { row.previewUrl }
-                openPlayer(stream, "$contentTitle S${row.season}")
+                if (row.episodes.isNotEmpty()) {
+                    openSeasonEpisodes(row)
+                } else {
+                    val stream = row.previewStreamUrl.ifBlank { row.previewUrl }
+                    openPlayer(stream, "$contentTitle S${row.season}")
+                }
             }
-
             seasonLinksContainer.addView(view)
         }
+    }
+
+    private fun showLoginAccessCard(container: LinearLayout, message: String) {
+        container.removeAllViews()
+        val view = LayoutInflater.from(this).inflate(R.layout.item_login_access_row, container, false)
+        view.findViewById<TextView>(R.id.tvAccessMessage).text = message
+        view.findViewById<Button>(R.id.btnLoginAccess).setOnClickListener {
+            openLogin()
+        }
+        container.addView(view)
     }
 
     private fun parseMovieLinks(array: JSONArray?): List<MovieLink> {
@@ -371,20 +534,22 @@ class ContentDetailActivity : AppCompatActivity() {
         val rows = mutableListOf<MovieLink>()
         for (i in 0 until array.length()) {
             val row = array.optJSONObject(i) ?: continue
-            rows.add(
-                MovieLink(
-                    label = row.optString("label"),
-                    streamUrl = row.optString("stream_url"),
-                    viewUrl = row.optString("view_url"),
-                    downloadUrl = row.optString("download_url"),
-                    telegramUrl = row.optString("telegram_url"),
-                    telegramStartUrl = row.optString("telegram_start_url"),
-                    telegramDeepLink = row.optString("telegram_deep_link"),
-                    watchTogetherUrl = row.optString("watch_together_url"),
-                )
-            )
+            rows.add(parseMovieLinkRow(row))
         }
         return rows
+    }
+
+    private fun parseMovieLinkRow(row: JSONObject): MovieLink {
+        return MovieLink(
+            label = row.optString("label"),
+            streamUrl = row.optString("stream_url"),
+            viewUrl = row.optString("view_url"),
+            downloadUrl = row.optString("download_url"),
+            telegramUrl = row.optString("telegram_url"),
+            telegramStartUrl = row.optString("telegram_start_url"),
+            telegramDeepLink = row.optString("telegram_deep_link"),
+            watchTogetherUrl = row.optString("watch_together_url"),
+        )
     }
 
     private fun parseSeasonLinks(array: JSONArray?): List<SeasonLink> {
@@ -400,6 +565,31 @@ class ContentDetailActivity : AppCompatActivity() {
                     previewUrl = row.optString("preview_view_url"),
                     previewStreamUrl = row.optString("preview_stream_url"),
                     previewTelegramStartUrl = row.optString("preview_telegram_start_url"),
+                    episodes = parseEpisodeRows(row.optJSONArray("episodes")),
+                )
+            )
+        }
+        return rows
+    }
+
+    private fun parseEpisodeRows(array: JSONArray?): List<EpisodeRow> {
+        if (array == null) return emptyList()
+        val rows = mutableListOf<EpisodeRow>()
+        for (i in 0 until array.length()) {
+            val row = array.optJSONObject(i) ?: continue
+            val qualities = mutableListOf<MovieLink>()
+            val qualityRows = row.optJSONArray("qualities")
+            if (qualityRows != null) {
+                for (q in 0 until qualityRows.length()) {
+                    val qRow = qualityRows.optJSONObject(q) ?: continue
+                    qualities.add(parseMovieLinkRow(qRow))
+                }
+            }
+            rows.add(
+                EpisodeRow(
+                    episode = row.optInt("episode"),
+                    title = row.optString("title"),
+                    qualities = qualities,
                 )
             )
         }
@@ -416,6 +606,41 @@ class ContentDetailActivity : AppCompatActivity() {
         return rows
     }
 
+    private fun openSeasonEpisodes(season: SeasonLink) {
+        val intent = Intent(this, SeasonEpisodesActivity::class.java).apply {
+            putExtra(SeasonEpisodesActivity.EXTRA_CONTENT_TITLE, contentTitle)
+            putExtra(SeasonEpisodesActivity.EXTRA_SEASON_NUMBER, season.season)
+            putExtra(SeasonEpisodesActivity.EXTRA_IS_LOGGED_IN, isUserLoggedIn)
+            putExtra(SeasonEpisodesActivity.EXTRA_EPISODES_JSON, episodeRowsToJson(season.episodes).toString())
+        }
+        startActivity(intent)
+    }
+
+    private fun episodeRowsToJson(rows: List<EpisodeRow>): JSONArray {
+        val array = JSONArray()
+        rows.forEach { episode ->
+            val row = JSONObject()
+            row.put("episode", episode.episode)
+            row.put("title", episode.title)
+            val qualityArray = JSONArray()
+            episode.qualities.forEach { link ->
+                qualityArray.put(JSONObject().apply {
+                    put("label", link.label)
+                    put("stream_url", link.streamUrl)
+                    put("view_url", link.viewUrl)
+                    put("download_url", link.downloadUrl)
+                    put("telegram_url", link.telegramUrl)
+                    put("telegram_start_url", link.telegramStartUrl)
+                    put("telegram_deep_link", link.telegramDeepLink)
+                    put("watch_together_url", link.watchTogetherUrl)
+                })
+            }
+            row.put("qualities", qualityArray)
+            array.put(row)
+        }
+        return array
+    }
+
     private fun openTrailer(target: String) {
         val url = absoluteUrl(target)
         if (url.isBlank()) {
@@ -430,6 +655,26 @@ class ContentDetailActivity : AppCompatActivity() {
             return
         }
         openPlayer(url, "$contentTitle Trailer")
+    }
+
+    private fun shareContentLink() {
+        val target = when {
+            detailUrl.isNotBlank() -> detailUrl
+            detailPath.isNotBlank() -> absoluteUrl(detailPath)
+            fallbackSlug.isNotBlank() -> absoluteUrl("/content/details/$fallbackSlug")
+            else -> ""
+        }
+        if (target.isBlank()) {
+            Toast.makeText(this, "Share link is not available.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val payload = "${contentTitle.ifBlank { "MysticMovies" }}\n$target"
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, contentTitle.ifBlank { "MysticMovies" })
+            putExtra(Intent.EXTRA_TEXT, payload)
+        }
+        startActivity(Intent.createChooser(intent, "Share content"))
     }
 
     private fun openPlayer(rawUrl: String, label: String) {
@@ -529,6 +774,14 @@ class ContentDetailActivity : AppCompatActivity() {
                 Toast.makeText(this, "Telegram app not found.", Toast.LENGTH_SHORT).show()
             }
         }
+    }
+
+    private fun openLogin() {
+        loginRequested = true
+        startActivity(Intent(this, LoginActivity::class.java).apply {
+            putExtra("target_url", absoluteUrl("/login"))
+            putExtra("title_text", "Login")
+        })
     }
 
     private fun openRequestContent() {
