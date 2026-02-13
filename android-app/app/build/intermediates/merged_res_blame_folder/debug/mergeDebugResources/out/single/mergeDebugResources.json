@@ -1,0 +1,22 @@
+[
+    {
+        "merged": "com.mysticmovies.app-debug-36:/layout_activity_main.xml.flat",
+        "source": "com.mysticmovies.app-main-38:/layout/activity_main.xml"
+    },
+    {
+        "merged": "com.mysticmovies.app-debug-36:/layout_item_catalog_card.xml.flat",
+        "source": "com.mysticmovies.app-main-38:/layout/item_catalog_card.xml"
+    },
+    {
+        "merged": "com.mysticmovies.app-debug-36:/layout_item_link_row.xml.flat",
+        "source": "com.mysticmovies.app-main-38:/layout/item_link_row.xml"
+    },
+    {
+        "merged": "com.mysticmovies.app-debug-36:/layout_item_season_row.xml.flat",
+        "source": "com.mysticmovies.app-main-38:/layout/item_season_row.xml"
+    },
+    {
+        "merged": "com.mysticmovies.app-debug-36:/layout_activity_content_detail.xml.flat",
+        "source": "com.mysticmovies.app-main-38:/layout/activity_content_detail.xml"
+    }
+]

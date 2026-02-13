@@ -1,0 +1,9 @@
+﻿<resources>
+    <string name="app_name">MysticMovies</string>
+    <string name="status_initializing">Initializing...</string>
+    <string name="status_loading">Loading app status...</string>
+    <string name="open_content">Open Content</string>
+    <string name="update_app">Update App</string>
+    <string name="share_token_hint">Enter share token for Telegram test</string>
+    <string name="open_telegram_link">Open Telegram Link</string>
+</resources>

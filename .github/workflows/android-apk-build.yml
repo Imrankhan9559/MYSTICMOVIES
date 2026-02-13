@@ -1,0 +1,110 @@
+name: Android APK Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "android-app/**"
+      - ".github/workflows/android-apk-build.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_PROJECT_DIR: android-app
+      HAS_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' && secrets.ANDROID_KEYSTORE_PASSWORD != '' && secrets.ANDROID_KEY_ALIAS != '' && secrets.ANDROID_KEY_PASSWORD != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate Android project path
+        run: |
+          if [ ! -d "${ANDROID_PROJECT_DIR}" ]; then
+            echo "::error::Android project not found at '${ANDROID_PROJECT_DIR}'."
+            echo "Create Android Studio project in '${ANDROID_PROJECT_DIR}' or update ANDROID_PROJECT_DIR in workflow."
+            exit 1
+          fi
+          if [ ! -f "${ANDROID_PROJECT_DIR}/settings.gradle" ] && [ ! -f "${ANDROID_PROJECT_DIR}/settings.gradle.kts" ]; then
+            echo "::error::settings.gradle/settings.gradle.kts not found in '${ANDROID_PROJECT_DIR}'."
+            exit 1
+          fi
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Generate Gradle wrapper if missing
+        working-directory: ${{ env.ANDROID_PROJECT_DIR }}
+        run: |
+          if [ ! -f "./gradlew" ] || [ ! -f "./gradlew.bat" ] || [ ! -f "./gradle/wrapper/gradle-wrapper.jar" ]; then
+            echo "Gradle wrapper not fully present. Generating wrapper..."
+            gradle wrapper
+          fi
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Prepare signing files (Release build)
+        if: env.HAS_SIGNING == 'true'
+        working-directory: ${{ env.ANDROID_PROJECT_DIR }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > release.keystore
+          cat > key.properties <<EOF
+          storeFile=release.keystore
+          storePassword=${ANDROID_KEYSTORE_PASSWORD}
+          keyAlias=${ANDROID_KEY_ALIAS}
+          keyPassword=${ANDROID_KEY_PASSWORD}
+          EOF
+
+      - name: Choose build task
+        id: choose_task
+        run: |
+          if [ "${HAS_SIGNING}" = "true" ]; then
+            echo "task=assembleRelease" >> "$GITHUB_OUTPUT"
+            echo "variant=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Signing secrets are missing. Building DEBUG APK."
+            echo "task=assembleDebug" >> "$GITHUB_OUTPUT"
+            echo "variant=debug" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build APK
+        working-directory: ${{ env.ANDROID_PROJECT_DIR }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon clean ${{ steps.choose_task.outputs.task }}
+
+      - name: Locate built APK
+        id: locate_apk
+        working-directory: ${{ env.ANDROID_PROJECT_DIR }}
+        run: |
+          APK_PATH=$(find . -type f -path "*/outputs/apk/${{ steps.choose_task.outputs.variant }}/*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "::error::No APK found under outputs/apk/${{ steps.choose_task.outputs.variant }}/"
+            exit 1
+          fi
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          echo "Found APK: $APK_PATH"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mysticmovies-${{ steps.choose_task.outputs.variant }}-apk
+          path: ${{ env.ANDROID_PROJECT_DIR }}/${{ steps.locate_apk.outputs.apk_path }}
+          if-no-files-found: error

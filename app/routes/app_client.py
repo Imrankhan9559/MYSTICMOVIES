@@ -20,6 +20,21 @@ from app.db.models import (
     AppSettings,
     TokenSetting,
 )
+from app.routes.content import (
+    _build_catalog,
+    _card_matches_query,
+    _decorate_catalog_cards,
+    _ensure_group_assets,
+    _ensure_share_token,
+    _group_slug,
+    _is_admin,
+    _normalize_filter_type,
+    _normalize_sort_type,
+    _quality_rank,
+    _share_params,
+    _sort_catalog_cards,
+    _viewer_name,
+)
 from app.routes.dashboard import get_current_user
 
 router = APIRouter(prefix="/app-api")
@@ -136,6 +151,36 @@ def _deep_link(bot_username: str, share_token: str, link_token: str = "") -> str
     if link_token:
         start = f"{start}_t_{link_token}"
     return f"https://t.me/{user}?start={start}"
+
+
+def _normalize_content_key(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _find_catalog_group(catalog: list[dict], content_key: str) -> dict | None:
+    key = _normalize_content_key(content_key)
+    if not key:
+        return None
+
+    is_object_id = bool(re.fullmatch(r"[0-9a-fA-F]{24}", content_key or ""))
+    if not is_object_id:
+        for group in catalog:
+            if (group.get("slug") or "").strip().lower() == key:
+                return group
+        for group in catalog:
+            slug_guess = _group_slug(group.get("title", ""), group.get("year", "")).strip().lower()
+            if slug_guess == key:
+                return group
+
+    for group in catalog:
+        group_id = str(group.get("id") or "").strip()
+        if group_id and group_id.lower() == key:
+            return group
+        for item in group.get("items") or []:
+            item_id = str(item.get("id") or "").strip()
+            if item_id and item_id.lower() == key:
+                return group
+    return None
 
 
 @router.post("/handshake")
@@ -342,6 +387,214 @@ async def app_ping(
         row.updated_at = datetime.now()
         await row.save()
     return {"ok": True, "device_id": device_id, "alive": True, "server_time": datetime.now().isoformat()}
+
+
+@router.get("/catalog")
+async def app_catalog(
+    request: Request,
+    filter: str = "all",
+    q: str = "",
+    sort: str = "release_new",
+    page: int = 1,
+    per_page: int = 24,
+):
+    user = await get_current_user(request)
+    is_admin = _is_admin(user)
+
+    normalized_filter = _normalize_filter_type(filter)
+    normalized_sort = _normalize_sort_type(sort)
+    query = (q or "").strip()
+
+    try:
+        page_num = max(1, int(page or 1))
+    except Exception:
+        page_num = 1
+    try:
+        per_page_num = int(per_page or 24)
+    except Exception:
+        per_page_num = 24
+    per_page_num = max(6, min(per_page_num, 60))
+
+    cards = await _build_catalog(user, is_admin, limit=4000)
+
+    if normalized_filter == "movies":
+        cards = [card for card in cards if (card.get("type") or "").strip().lower() == "movie"]
+    elif normalized_filter == "series":
+        cards = [card for card in cards if (card.get("type") or "").strip().lower() == "series"]
+
+    if query:
+        cards = [card for card in cards if _card_matches_query(card, query)]
+
+    cards = _sort_catalog_cards(cards, normalized_sort)
+    cards = _decorate_catalog_cards(cards)
+
+    total_items = len(cards)
+    total_pages = max(1, (total_items + per_page_num - 1) // per_page_num)
+    page_num = max(1, min(page_num, total_pages))
+    start = (page_num - 1) * per_page_num
+    end = start + per_page_num
+    paged = cards[start:end]
+
+    base_url = str(request.base_url).rstrip("/")
+    items = []
+    for card in paged:
+        slug = (card.get("slug") or "").strip()
+        if not slug:
+            slug = _group_slug(card.get("title", ""), card.get("year", "")).strip()
+        detail_path = f"/content/details/{slug}" if slug else ""
+        items.append({
+            "id": str(card.get("id") or ""),
+            "slug": slug,
+            "title": card.get("title") or "",
+            "year": card.get("year") or "",
+            "type": card.get("type") or "",
+            "poster": card.get("poster") or "",
+            "backdrop": card.get("backdrop") or "",
+            "description": card.get("description") or "",
+            "release_date": card.get("release_date") or "",
+            "quality_row": card.get("quality_row") or [],
+            "season_text": card.get("season_text") or "",
+            "detail_path": detail_path,
+            "detail_url": f"{base_url}{detail_path}" if detail_path else "",
+        })
+
+    slider = []
+    for card in cards[:8]:
+        slug = (card.get("slug") or "").strip()
+        if not slug:
+            slug = _group_slug(card.get("title", ""), card.get("year", "")).strip()
+        detail_path = f"/content/details/{slug}" if slug else ""
+        image = (card.get("backdrop") or "").strip() or (card.get("poster") or "").strip()
+        if not image:
+            continue
+        slider.append({
+            "title": card.get("title") or "",
+            "subtitle": f"{(card.get('year') or '').strip()} | {(card.get('type') or '').strip().upper()}".strip(" |"),
+            "image": image,
+            "detail_path": detail_path,
+            "detail_url": f"{base_url}{detail_path}" if detail_path else "",
+        })
+
+    return {
+        "ok": True,
+        "filter": normalized_filter,
+        "sort": normalized_sort,
+        "query": query,
+        "items": items,
+        "slider": slider,
+        "pagination": {
+            "page": page_num,
+            "per_page": per_page_num,
+            "total_items": total_items,
+            "total_pages": total_pages,
+            "has_next": page_num < total_pages,
+            "has_prev": page_num > 1,
+        },
+        "server_time": datetime.now().isoformat(),
+    }
+
+
+@router.get("/content/{content_key}")
+async def app_content_detail(
+    request: Request,
+    content_key: str,
+):
+    user = await get_current_user(request)
+    is_admin = _is_admin(user)
+
+    catalog = await _build_catalog(user, is_admin, limit=4500)
+    group = _find_catalog_group(catalog, content_key)
+    if not group:
+        return JSONResponse({"ok": False, "error": "Content not found"}, status_code=404)
+
+    group = await _ensure_group_assets(group)
+
+    link_token = await _link_token()
+    viewer_name = (_viewer_name(user) or "Mystic User").strip()
+    share_query_payload = _share_params(link_token, viewer_name)
+    query = f"?{share_query_payload}" if share_query_payload else ""
+
+    movie_links = []
+    if (group.get("type") or "").strip().lower() == "movie":
+        movie_qualities = sorted(
+            (group.get("qualities") or {}).items(),
+            key=lambda row: (-_quality_rank(row[0]), row[0]),
+        )
+        for quality, row in movie_qualities:
+            file_id = str((row or {}).get("file_id") or "").strip()
+            if not file_id:
+                continue
+            token = await _ensure_share_token(file_id)
+            if not token:
+                continue
+            movie_links.append({
+                "label": quality,
+                "size": int((row or {}).get("size") or 0),
+                "view_url": f"/s/{token}{query}",
+                "download_url": f"/d/{token}{query}",
+                "telegram_url": f"/t/{token}{query}",
+                "watch_together_url": f"/w/{token}{query}",
+            })
+
+    series_links = []
+    if (group.get("type") or "").strip().lower() == "series":
+        seasons = group.get("seasons") or {}
+        for season_no, episodes in sorted(seasons.items(), key=lambda row: int(row[0])):
+            qualities = set()
+            preview_link = ""
+            total_episodes = 0
+            for episode_no, variants in sorted((episodes or {}).items(), key=lambda row: int(row[0])):
+                total_episodes += 1
+                for quality, row in sorted((variants or {}).items(), key=lambda v: (-_quality_rank(v[0]), v[0])):
+                    qualities.add(quality)
+                    if preview_link:
+                        continue
+                    file_id = str((row or {}).get("file_id") or "").strip()
+                    if not file_id:
+                        continue
+                    token = await _ensure_share_token(file_id)
+                    if not token:
+                        continue
+                    preview_link = f"/s/{token}{query}"
+            series_links.append({
+                "season": int(season_no),
+                "episode_count": total_episodes,
+                "qualities": sorted(qualities, key=lambda value: (-_quality_rank(value), value)),
+                "preview_view_url": preview_link,
+            })
+
+    slug = (group.get("slug") or "").strip()
+    if not slug:
+        slug = _group_slug(group.get("title", ""), group.get("year", "")).strip()
+    detail_path = f"/content/details/{slug}" if slug else ""
+    base_url = str(request.base_url).rstrip("/")
+
+    return {
+        "ok": True,
+        "item": {
+            "id": str(group.get("id") or ""),
+            "slug": slug,
+            "title": group.get("title") or "",
+            "year": group.get("year") or "",
+            "type": group.get("type") or "",
+            "poster": group.get("poster") or "",
+            "backdrop": group.get("backdrop") or "",
+            "description": group.get("description") or "",
+            "release_date": group.get("release_date") or "",
+            "genres": group.get("genres") or [],
+            "actors": group.get("actors") or [],
+            "director": group.get("director") or "",
+            "trailer_url": group.get("trailer_url") or "",
+            "trailer_key": group.get("trailer_key") or "",
+        },
+        "movie_links": movie_links,
+        "series_links": series_links,
+        "detail_path": detail_path,
+        "detail_url": f"{base_url}{detail_path}" if detail_path else "",
+        "viewer_name": viewer_name,
+        "link_token": link_token,
+        "server_time": datetime.now().isoformat(),
+    }
 
 
 @router.get("/telegram-start/{share_token}")

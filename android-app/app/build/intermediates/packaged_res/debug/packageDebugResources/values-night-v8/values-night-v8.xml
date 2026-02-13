@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:ns1="http://schemas.android.com/tools">
+    <style name="Theme.MysticMovies" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@color/mm_black</item>
+        <item name="android:navigationBarColor">@color/mm_black</item>
+        <item name="android:windowBackground">@color/mm_black</item>
+        <item name="android:forceDarkAllowed" ns1:targetApi="q">false</item>
+    </style>
+</resources>
