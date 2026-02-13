@@ -13,6 +13,7 @@ id btnSearch
 id btnTelegram
 id btnTrailer
 id btnWatch
+id btnWatchTogether
 id etSearch
 id imgHero
 id imgPoster

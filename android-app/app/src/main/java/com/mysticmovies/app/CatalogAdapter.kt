@@ -69,17 +69,16 @@ class CatalogAdapter(
                 error(android.R.drawable.ic_menu_report_image)
             }
 
-            itemView.setOnClickListener {
-                onClick(card)
-            }
+            itemView.setOnClickListener { onClick(card) }
         }
 
         private fun compactQualityText(rows: List<String>): String {
             if (rows.isEmpty()) return "HD"
-            if (rows.size <= 4) return rows.joinToString(" • ")
-            val visible = rows.take(4).joinToString(" • ")
+            if (rows.size <= 4) return rows.joinToString(" - ")
+            val visible = rows.take(4).joinToString(" - ")
             val more = rows.size - 4
             return "$visible +$more"
         }
     }
 }
+

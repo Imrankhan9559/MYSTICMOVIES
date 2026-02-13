@@ -4,9 +4,13 @@ This folder is a ready Android Studio project.
 
 Current app behavior:
 
-- Native home feed (not WebView wrapper)
+- Native home feed (not full WebView wrapper)
+- Header/footer + topbar text loaded from `/app-api/bootstrap` (admin-managed)
 - Native content cards + filters + search
-- Native detail screen with watch/download/telegram actions
+- Native detail screen with in-app watch/download/telegram actions
+- In-app player (Media3 ExoPlayer) for stream/local files
+- In-app downloads screen (files stored under app external downloads dir)
+- In-app web shell for login/trailer/watch-together pages
 - Data source: backend JSON APIs (`/app-api/catalog`, `/app-api/content/{key}`)
 
 ## Open in Android Studio
@@ -54,3 +58,7 @@ Configured in `android-app/app/build.gradle`:
 - `BuildConfig.API_BASE_URL = "https://mysticmovies.onrender.com"`
 
 Change it if your backend URL changes.
+
+## Java / Gradle Note
+
+If Android Studio/Gradle says `JAVA_HOME is not set`, set `JAVA_HOME` to your JDK path (JDK 17+ recommended), then restart terminal/Android Studio.

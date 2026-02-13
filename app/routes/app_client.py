@@ -5,12 +5,14 @@ import json
 import re
 import time
 import urllib.parse
+import urllib.error
+import urllib.request
 import uuid
 from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Request, Header, HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from app.core.config import settings
 from app.db.models import (
@@ -18,6 +20,7 @@ from app.db.models import (
     AppDeviceSession,
     AppRelease,
     AppSettings,
+    SiteSettings,
     TokenSetting,
 )
 from app.routes.content import (
@@ -38,6 +41,27 @@ from app.routes.content import (
 from app.routes.dashboard import get_current_user
 
 router = APIRouter(prefix="/app-api")
+
+
+DEFAULT_HEADER_MENU = [
+    {"label": "Home", "url": "/", "icon": "fas fa-house"},
+    {"label": "Content", "url": "/content", "icon": "fas fa-film"},
+    {"label": "Request Content", "url": "/request-content", "icon": "fas fa-inbox"},
+]
+DEFAULT_FOOTER_EXPLORE_LINKS = [
+    {"label": "Movies Library", "url": "/content/f/movies"},
+    {"label": "Web Series", "url": "/content/f/series"},
+    {"label": "Latest Uploads", "url": "/content/f/all"},
+]
+DEFAULT_FOOTER_SUPPORT_LINKS = [
+    {"label": "Request Content", "url": "/request-content"},
+    {"label": "Report an Issue", "url": "/request-content"},
+]
+IMAGE_PROXY_ALLOWED_HOSTS = {
+    "image.tmdb.org",
+    "raw.githubusercontent.com",
+    "mysticmovies.onrender.com",
+}
 
 
 def _now_ts() -> int:
@@ -77,6 +101,94 @@ async def _app_settings() -> AppSettings:
         row.telegram_bot_username = (getattr(settings, "BOT_USERNAME", "") or "").strip()
         await row.save()
     return row
+
+
+def _clean_link_rows(value: Any, include_icon: bool = False) -> list[dict]:
+    rows = value if isinstance(value, list) else []
+    cleaned: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        label = (row.get("label") or "").strip()
+        url = (row.get("url") or "").strip() or "#"
+        icon = (row.get("icon") or "").strip()
+        if not label:
+            continue
+        payload = {"label": label, "url": url}
+        if include_icon:
+            payload["icon"] = icon
+        cleaned.append(payload)
+    return cleaned
+
+
+async def _site_settings() -> SiteSettings:
+    row = await SiteSettings.find_one(SiteSettings.key == "main")
+    if not row:
+        row = SiteSettings(key="main")
+        await row.insert()
+
+    changed = False
+    if not (getattr(row, "topbar_text", "") or "").strip():
+        row.topbar_text = "Welcome to Mystic Movies"
+        changed = True
+    if getattr(row, "logo_path", None) is None:
+        row.logo_path = ""
+        changed = True
+
+    header_menu = _clean_link_rows(getattr(row, "header_menu", []), include_icon=True)
+    if not header_menu:
+        row.header_menu = [x.copy() for x in DEFAULT_HEADER_MENU]
+        changed = True
+    else:
+        row.header_menu = header_menu
+
+    footer_explore_links = _clean_link_rows(getattr(row, "footer_explore_links", []), include_icon=False)
+    if not footer_explore_links:
+        row.footer_explore_links = [x.copy() for x in DEFAULT_FOOTER_EXPLORE_LINKS]
+        changed = True
+    else:
+        row.footer_explore_links = footer_explore_links
+
+    footer_support_links = _clean_link_rows(getattr(row, "footer_support_links", []), include_icon=False)
+    if not footer_support_links:
+        row.footer_support_links = [x.copy() for x in DEFAULT_FOOTER_SUPPORT_LINKS]
+        changed = True
+    else:
+        row.footer_support_links = footer_support_links
+
+    if changed:
+        row.updated_at = datetime.now()
+        await row.save()
+    return row
+
+
+def _absolute_url(request: Request, path_or_url: str) -> str:
+    raw = (path_or_url or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw
+    path = raw if raw.startswith("/") else f"/{raw}"
+    return f"{str(request.base_url).rstrip('/')}{path}"
+
+
+def _image_proxy_path(raw_url: str) -> str:
+    source = (raw_url or "").strip()
+    if not source:
+        return ""
+    encoded = urllib.parse.quote(source, safe="")
+    return f"/app-api/image?src={encoded}"
+
+
+def _app_image_url(request: Request, raw_url: str) -> str:
+    source = (raw_url or "").strip()
+    if not source:
+        return ""
+    parsed = urllib.parse.urlparse(source)
+    host = (parsed.hostname or "").strip().lower()
+    if host == "image.tmdb.org":
+        return _absolute_url(request, _image_proxy_path(source))
+    return _absolute_url(request, source)
 
 
 async def _handshake_secret() -> str:
@@ -266,6 +378,7 @@ async def app_bootstrap(
         return JSONResponse({"ok": False, "error": "Invalid handshake"}, status_code=401)
 
     app_cfg = await _app_settings()
+    site_cfg = await _site_settings()
     release_rows = await AppRelease.find(AppRelease.is_active == True).sort([("build_number", -1), ("created_at", -1)]).limit(1).to_list()
     latest_release = release_rows[0] if release_rows else None
 
@@ -326,6 +439,22 @@ async def app_bootstrap(
         })
 
     bot_username = (getattr(app_cfg, "telegram_bot_username", "") or getattr(settings, "BOT_USERNAME", "") or "").strip().lstrip("@")
+    site_name = (getattr(site_cfg, "site_name", "") or "").strip() or "mysticmovies"
+    footer_text = (getattr(site_cfg, "footer_text", "") or "").strip() or "MysticMovies"
+    topbar_text = (getattr(site_cfg, "topbar_text", "") or "").strip() or "Welcome to Mystic Movies"
+    logo_path = (getattr(site_cfg, "logo_path", "") or "").strip()
+    header_menu = _clean_link_rows(getattr(site_cfg, "header_menu", []), include_icon=True)
+    if not header_menu:
+        header_menu = [x.copy() for x in DEFAULT_HEADER_MENU]
+    footer_explore = _clean_link_rows(getattr(site_cfg, "footer_explore_links", []), include_icon=False)
+    if not footer_explore:
+        footer_explore = [x.copy() for x in DEFAULT_FOOTER_EXPLORE_LINKS]
+    footer_support = _clean_link_rows(getattr(site_cfg, "footer_support_links", []), include_icon=False)
+    if not footer_support:
+        footer_support = [x.copy() for x in DEFAULT_FOOTER_SUPPORT_LINKS]
+    footer_about = (getattr(site_cfg, "footer_about_text", "") or "").strip()
+    if not footer_about:
+        footer_about = "Mystic Movies provides high-quality content for free. If a movie is missing, let us know."
 
     return {
         "ok": True,
@@ -357,9 +486,20 @@ async def app_bootstrap(
         "telegram": {
             "bot_username": bot_username,
         },
+        "ui": {
+            "site_name": site_name,
+            "footer_text": footer_text,
+            "topbar_text": topbar_text,
+            "logo_url": _app_image_url(request, logo_path),
+            "header_menu": header_menu,
+            "footer_explore_links": footer_explore,
+            "footer_support_links": footer_support,
+            "footer_about_text": footer_about,
+        },
         "endpoints": {
             "ping": "/app-api/ping",
             "telegram_link": "/app-api/telegram-start/{share_token}",
+            "image_proxy": "/app-api/image?src={url_encoded}",
         },
         "server_time": datetime.now().isoformat(),
     }
@@ -442,14 +582,18 @@ async def app_catalog(
         if not slug:
             slug = _group_slug(card.get("title", ""), card.get("year", "")).strip()
         detail_path = f"/content/details/{slug}" if slug else ""
+        poster_raw = (card.get("poster") or "").strip()
+        backdrop_raw = (card.get("backdrop") or "").strip()
         items.append({
             "id": str(card.get("id") or ""),
             "slug": slug,
             "title": card.get("title") or "",
             "year": card.get("year") or "",
             "type": card.get("type") or "",
-            "poster": card.get("poster") or "",
-            "backdrop": card.get("backdrop") or "",
+            "poster": _app_image_url(request, poster_raw),
+            "backdrop": _app_image_url(request, backdrop_raw),
+            "poster_original": poster_raw,
+            "backdrop_original": backdrop_raw,
             "description": card.get("description") or "",
             "release_date": card.get("release_date") or "",
             "quality_row": card.get("quality_row") or [],
@@ -464,13 +608,14 @@ async def app_catalog(
         if not slug:
             slug = _group_slug(card.get("title", ""), card.get("year", "")).strip()
         detail_path = f"/content/details/{slug}" if slug else ""
-        image = (card.get("backdrop") or "").strip() or (card.get("poster") or "").strip()
-        if not image:
+        image_raw = (card.get("backdrop") or "").strip() or (card.get("poster") or "").strip()
+        if not image_raw:
             continue
         slider.append({
             "title": card.get("title") or "",
             "subtitle": f"{(card.get('year') or '').strip()} | {(card.get('type') or '').strip().upper()}".strip(" |"),
-            "image": image,
+            "image": _app_image_url(request, image_raw),
+            "image_original": image_raw,
             "detail_path": detail_path,
             "detail_url": f"{base_url}{detail_path}" if detail_path else "",
         })
@@ -513,6 +658,9 @@ async def app_content_detail(
     viewer_name = (_viewer_name(user) or "Mystic User").strip()
     share_query_payload = _share_params(link_token, viewer_name)
     query = f"?{share_query_payload}" if share_query_payload else ""
+    app_cfg = await _app_settings()
+    bot_username = (getattr(app_cfg, "telegram_bot_username", "") or getattr(settings, "BOT_USERNAME", "") or "").strip().lstrip("@")
+    encoded_link_token = urllib.parse.quote(link_token, safe="")
 
     movie_links = []
     if (group.get("type") or "").strip().lower() == "movie":
@@ -527,13 +675,22 @@ async def app_content_detail(
             token = await _ensure_share_token(file_id)
             if not token:
                 continue
+            view_url = f"/s/{token}{query}"
+            stream_url = f"/s/stream/{token}{query}"
+            download_url = f"/d/{token}{query}"
+            telegram_url = f"/t/{token}{query}"
+            watch_together_url = f"/w/{token}{query}"
+            telegram_start_url = f"/app-api/telegram-start/{token}?t={encoded_link_token}"
             movie_links.append({
                 "label": quality,
                 "size": int((row or {}).get("size") or 0),
-                "view_url": f"/s/{token}{query}",
-                "download_url": f"/d/{token}{query}",
-                "telegram_url": f"/t/{token}{query}",
-                "watch_together_url": f"/w/{token}{query}",
+                "view_url": view_url,
+                "stream_url": stream_url,
+                "download_url": download_url,
+                "telegram_url": telegram_url,
+                "telegram_start_url": telegram_start_url,
+                "telegram_deep_link": _deep_link(bot_username, token, link_token) if bot_username else "",
+                "watch_together_url": watch_together_url,
             })
 
     series_links = []
@@ -542,6 +699,8 @@ async def app_content_detail(
         for season_no, episodes in sorted(seasons.items(), key=lambda row: int(row[0])):
             qualities = set()
             preview_link = ""
+            preview_stream_link = ""
+            preview_telegram_start = ""
             total_episodes = 0
             for episode_no, variants in sorted((episodes or {}).items(), key=lambda row: int(row[0])):
                 total_episodes += 1
@@ -556,11 +715,15 @@ async def app_content_detail(
                     if not token:
                         continue
                     preview_link = f"/s/{token}{query}"
+                    preview_stream_link = f"/s/stream/{token}{query}"
+                    preview_telegram_start = f"/app-api/telegram-start/{token}?t={encoded_link_token}"
             series_links.append({
                 "season": int(season_no),
                 "episode_count": total_episodes,
                 "qualities": sorted(qualities, key=lambda value: (-_quality_rank(value), value)),
                 "preview_view_url": preview_link,
+                "preview_stream_url": preview_stream_link if preview_link else "",
+                "preview_telegram_start_url": preview_telegram_start if preview_link else "",
             })
 
     slug = (group.get("slug") or "").strip()
@@ -577,8 +740,10 @@ async def app_content_detail(
             "title": group.get("title") or "",
             "year": group.get("year") or "",
             "type": group.get("type") or "",
-            "poster": group.get("poster") or "",
-            "backdrop": group.get("backdrop") or "",
+            "poster": _app_image_url(request, group.get("poster") or ""),
+            "backdrop": _app_image_url(request, group.get("backdrop") or ""),
+            "poster_original": group.get("poster") or "",
+            "backdrop_original": group.get("backdrop") or "",
             "description": group.get("description") or "",
             "release_date": group.get("release_date") or "",
             "genres": group.get("genres") or [],
@@ -595,6 +760,45 @@ async def app_content_detail(
         "link_token": link_token,
         "server_time": datetime.now().isoformat(),
     }
+
+
+@router.get("/image")
+async def app_image_proxy(src: str = "", url: str = ""):
+    target = (src or url or "").strip()
+    if not target:
+        return JSONResponse({"ok": False, "error": "Missing src"}, status_code=400)
+
+    parsed = urllib.parse.urlparse(target)
+    host = (parsed.hostname or "").strip().lower()
+    if parsed.scheme not in {"https", "http"}:
+        return JSONResponse({"ok": False, "error": "Invalid image URL scheme"}, status_code=400)
+    if host not in IMAGE_PROXY_ALLOWED_HOSTS:
+        return JSONResponse({"ok": False, "error": "Host not allowed"}, status_code=400)
+
+    request_headers = {
+        "User-Agent": "MysticMovies-AppProxy/1.0",
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    }
+    req = urllib.request.Request(target, headers=request_headers, method="GET")
+
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            status_code = int(getattr(resp, "status", 200) or 200)
+            if status_code >= 400:
+                return JSONResponse({"ok": False, "error": f"Upstream error {status_code}"}, status_code=status_code)
+            body = resp.read()
+            content_type = resp.headers.get("Content-Type", "image/jpeg")
+            return Response(
+                content=body,
+                media_type=content_type,
+                headers={
+                    "Cache-Control": "public, max-age=21600",
+                },
+            )
+    except urllib.error.HTTPError as exc:
+        return JSONResponse({"ok": False, "error": f"Image fetch failed ({exc.code})"}, status_code=exc.code)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Image fetch failed"}, status_code=502)
 
 
 @router.get("/telegram-start/{share_token}")

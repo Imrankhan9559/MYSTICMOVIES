@@ -3107,6 +3107,7 @@ id btnSearch
 id btnTelegram
 id btnTrailer
 id btnWatch
+id btnWatchTogether
 id buttonPanel
 id cancel_button
 id center

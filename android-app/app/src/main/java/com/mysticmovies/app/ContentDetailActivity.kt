@@ -1,8 +1,11 @@
 package com.mysticmovies.app
 
+import android.app.DownloadManager
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
 import android.view.LayoutInflater
 import android.view.View
 import android.widget.Button
@@ -10,6 +13,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import coil.load
@@ -17,17 +21,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 private data class MovieLink(
     val label: String,
+    val streamUrl: String,
     val viewUrl: String,
     val downloadUrl: String,
     val telegramUrl: String,
+    val telegramStartUrl: String,
+    val telegramDeepLink: String,
+    val watchTogetherUrl: String,
 )
 
 private data class SeasonLink(
@@ -35,14 +41,21 @@ private data class SeasonLink(
     val episodeCount: Int,
     val qualities: List<String>,
     val previewUrl: String,
+    val previewStreamUrl: String,
+    val previewTelegramStartUrl: String,
 )
 
 class ContentDetailActivity : AppCompatActivity() {
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
-        .build()
+    private val client = createApiHttpClient()
+
+    private lateinit var tvTopbar: TextView
+    private lateinit var tvHeaderTitle: TextView
+    private lateinit var imgHeaderLogo: ImageView
+    private lateinit var tvAnnouncement: TextView
+    private lateinit var tvFooterText: TextView
+    private lateinit var btnBack: Button
+    private lateinit var btnHome: Button
+    private lateinit var btnDownloads: Button
 
     private lateinit var progressBar: ProgressBar
     private lateinit var poster: ImageView
@@ -54,9 +67,34 @@ class ContentDetailActivity : AppCompatActivity() {
     private lateinit var seasonLinksContainer: LinearLayout
     private lateinit var statusText: TextView
 
+    private var contentTitle: String = ""
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_content_detail)
+
+        bindViews()
+        bindActions()
+        applyRuntimeUi()
+
+        val contentKey = intent?.getStringExtra("content_key").orEmpty().trim()
+        if (contentKey.isBlank()) {
+            finish()
+            return
+        }
+
+        loadContent(contentKey)
+    }
+
+    private fun bindViews() {
+        tvTopbar = findViewById(R.id.tvTopbar)
+        tvHeaderTitle = findViewById(R.id.tvHeaderTitle)
+        imgHeaderLogo = findViewById(R.id.imgHeaderLogo)
+        tvAnnouncement = findViewById(R.id.tvAnnouncement)
+        tvFooterText = findViewById(R.id.tvFooterText)
+        btnBack = findViewById(R.id.btnBack)
+        btnHome = findViewById(R.id.btnHome)
+        btnDownloads = findViewById(R.id.btnDownloads)
 
         progressBar = findViewById(R.id.progressBar)
         poster = findViewById(R.id.imgPoster)
@@ -67,14 +105,46 @@ class ContentDetailActivity : AppCompatActivity() {
         movieLinksContainer = findViewById(R.id.movieLinksContainer)
         seasonLinksContainer = findViewById(R.id.seasonLinksContainer)
         statusText = findViewById(R.id.tvStatus)
+    }
 
-        val contentKey = intent?.getStringExtra("content_key").orEmpty().trim()
-        if (contentKey.isBlank()) {
-            finish()
-            return
+    private fun bindActions() {
+        btnBack.setOnClickListener { finish() }
+        btnHome.setOnClickListener {
+            startActivity(Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            })
+        }
+        btnDownloads.setOnClickListener {
+            startActivity(Intent(this, DownloadsActivity::class.java))
+        }
+    }
+
+    private fun applyRuntimeUi() {
+        val ui = AppRuntimeState.ui
+        tvTopbar.text = ui.topbarText.ifBlank { "Welcome to Mystic Movies" }
+        tvHeaderTitle.text = ui.siteName.ifBlank { "mysticmovies" }
+        tvFooterText.text = ui.footerText.ifBlank { "MysticMovies" }
+
+        if (ui.logoUrl.isNotBlank()) {
+            imgHeaderLogo.visibility = View.VISIBLE
+            imgHeaderLogo.load(ui.logoUrl) {
+                crossfade(true)
+                error(android.R.drawable.sym_def_app_icon)
+                placeholder(android.R.drawable.sym_def_app_icon)
+            }
+        } else {
+            imgHeaderLogo.visibility = View.GONE
         }
 
-        loadContent(contentKey)
+        if (AppRuntimeState.notifications.isNotEmpty()) {
+            tvAnnouncement.visibility = View.VISIBLE
+            tvAnnouncement.text = AppRuntimeState.notifications.first()
+        } else if (AppRuntimeState.adsMessage.isNotBlank()) {
+            tvAnnouncement.visibility = View.VISIBLE
+            tvAnnouncement.text = AppRuntimeState.adsMessage
+        } else {
+            tvAnnouncement.visibility = View.GONE
+        }
     }
 
     private fun loadContent(contentKey: String) {
@@ -96,19 +166,22 @@ class ContentDetailActivity : AppCompatActivity() {
     }
 
     private fun fetchContent(contentKey: String): JSONObject? {
-        return try {
-            val base = "${BuildConfig.API_BASE_URL.trimEnd('/')}/app-api/content/$contentKey".toHttpUrlOrNull()
-                ?: return null
-            val req = Request.Builder().url(base).get().build()
-            client.newCall(req).execute().use { res ->
-                if (!res.isSuccessful) return null
-                val root = JSONObject(res.body?.string().orEmpty())
-                if (!root.optBoolean("ok")) return null
-                root
+        for (base in apiBaseCandidates()) {
+            try {
+                val url = "${base.trimEnd('/')}/app-api/content/$contentKey".toHttpUrlOrNull() ?: continue
+                val req = Request.Builder().url(url).get().build()
+                client.newCall(req).execute().use { res ->
+                    if (!res.isSuccessful) return@use
+                    val root = JSONObject(res.body?.string().orEmpty())
+                    if (!root.optBoolean("ok")) return@use
+                    AppRuntimeState.apiBaseUrl = base.trimEnd('/')
+                    return root
+                }
+            } catch (_: Exception) {
+                // Try next base URL.
             }
-        } catch (_: Exception) {
-            null
         }
+        return null
     }
 
     private fun bindContent(root: JSONObject) {
@@ -117,6 +190,7 @@ class ContentDetailActivity : AppCompatActivity() {
         val seasonLinks = parseSeasonLinks(root.optJSONArray("series_links"))
 
         val itemTitle = item.optString("title").ifBlank { "Untitled" }
+        contentTitle = itemTitle
         val itemYear = item.optString("year")
         val itemType = if (item.optString("type").equals("series", ignoreCase = true)) "WEB SERIES" else "MOVIE"
         title.text = itemTitle
@@ -131,9 +205,16 @@ class ContentDetailActivity : AppCompatActivity() {
         }
 
         val trailerUrl = item.optString("trailer_url")
-        trailerButton.visibility = if (trailerUrl.isNotBlank()) View.VISIBLE else View.GONE
+        val trailerKey = item.optString("trailer_key")
+        val trailerTarget = when {
+            trailerUrl.isNotBlank() -> trailerUrl
+            trailerKey.isNotBlank() -> "https://www.youtube.com/watch?v=$trailerKey"
+            else -> ""
+        }
+        trailerButton.visibility = if (trailerTarget.isNotBlank()) View.VISIBLE else View.GONE
         trailerButton.setOnClickListener {
-            openExternalUrl(trailerUrl)
+            if (trailerTarget.isBlank()) return@setOnClickListener
+            openInAppWeb(trailerTarget, "Trailer")
         }
 
         bindMovieLinks(movieLinks)
@@ -157,11 +238,22 @@ class ContentDetailActivity : AppCompatActivity() {
             val watchButton = view.findViewById<Button>(R.id.btnWatch)
             val downloadButton = view.findViewById<Button>(R.id.btnDownload)
             val telegramButton = view.findViewById<Button>(R.id.btnTelegram)
+            val watchTogetherButton = view.findViewById<Button>(R.id.btnWatchTogether)
 
             label.text = row.label.ifBlank { "Quality" }
-            watchButton.setOnClickListener { openRelativeUrl(row.viewUrl) }
-            downloadButton.setOnClickListener { openRelativeUrl(row.downloadUrl) }
-            telegramButton.setOnClickListener { openRelativeUrl(row.telegramUrl) }
+            watchButton.setOnClickListener {
+                val stream = row.streamUrl.ifBlank { row.viewUrl }
+                openPlayer(stream, "${contentTitle} ${row.label}".trim())
+            }
+            downloadButton.setOnClickListener {
+                enqueueDownload(row.downloadUrl, contentTitle, row.label)
+            }
+            telegramButton.setOnClickListener {
+                openTelegram(row)
+            }
+            watchTogetherButton.setOnClickListener {
+                openInAppWeb(row.watchTogetherUrl, "Watch Together")
+            }
 
             movieLinksContainer.addView(view)
         }
@@ -183,10 +275,13 @@ class ContentDetailActivity : AppCompatActivity() {
             val info = view.findViewById<TextView>(R.id.tvSeasonInfo)
             val openButton = view.findViewById<Button>(R.id.btnOpenSeason)
 
-            val qualityText = if (row.qualities.isNotEmpty()) row.qualities.joinToString(" • ") else "HD"
-            info.text = "Season ${row.season} • ${row.episodeCount} Episodes • $qualityText"
+            val qualityText = if (row.qualities.isNotEmpty()) row.qualities.joinToString(" - ") else "HD"
+            info.text = "Season ${row.season} - ${row.episodeCount} Episodes - $qualityText"
             openButton.isEnabled = row.previewUrl.isNotBlank()
-            openButton.setOnClickListener { openRelativeUrl(row.previewUrl) }
+            openButton.setOnClickListener {
+                val stream = row.previewStreamUrl.ifBlank { row.previewUrl }
+                openPlayer(stream, "$contentTitle S${row.season}")
+            }
 
             seasonLinksContainer.addView(view)
         }
@@ -200,9 +295,13 @@ class ContentDetailActivity : AppCompatActivity() {
             rows.add(
                 MovieLink(
                     label = row.optString("label"),
+                    streamUrl = row.optString("stream_url"),
                     viewUrl = row.optString("view_url"),
                     downloadUrl = row.optString("download_url"),
                     telegramUrl = row.optString("telegram_url"),
+                    telegramStartUrl = row.optString("telegram_start_url"),
+                    telegramDeepLink = row.optString("telegram_deep_link"),
+                    watchTogetherUrl = row.optString("watch_together_url"),
                 )
             )
         }
@@ -220,6 +319,8 @@ class ContentDetailActivity : AppCompatActivity() {
                     episodeCount = row.optInt("episode_count"),
                     qualities = readStringArray(row.optJSONArray("qualities")),
                     previewUrl = row.optString("preview_view_url"),
+                    previewStreamUrl = row.optString("preview_stream_url"),
+                    previewTelegramStartUrl = row.optString("preview_telegram_start_url"),
                 )
             )
         }
@@ -236,24 +337,112 @@ class ContentDetailActivity : AppCompatActivity() {
         return rows
     }
 
-    private fun openRelativeUrl(rawUrl: String) {
-        val cleaned = rawUrl.trim()
-        if (cleaned.isBlank()) return
-        val absolute = if (cleaned.startsWith("http://") || cleaned.startsWith("https://")) {
-            cleaned
-        } else {
-            val path = if (cleaned.startsWith("/")) cleaned else "/$cleaned"
-            "${BuildConfig.API_BASE_URL.trimEnd('/')}$path"
+    private fun openPlayer(rawUrl: String, label: String) {
+        val absolute = absoluteUrl(rawUrl)
+        if (absolute.isBlank()) {
+            Toast.makeText(this, "Play link is not available.", Toast.LENGTH_SHORT).show()
+            return
         }
-        openExternalUrl(absolute)
+        val intent = Intent(this, PlayerActivity::class.java).apply {
+            putExtra(PlayerActivity.EXTRA_STREAM_URL, absolute)
+            putExtra(PlayerActivity.EXTRA_TITLE, label)
+        }
+        startActivity(intent)
     }
 
-    private fun openExternalUrl(url: String) {
-        if (url.isBlank()) return
-        try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-        } catch (_: Exception) {
-            // Ignore when no app can handle URL.
+    private fun enqueueDownload(rawUrl: String, title: String, quality: String) {
+        val url = absoluteUrl(rawUrl)
+        if (url.isBlank()) {
+            Toast.makeText(this, "Download link is not available.", Toast.LENGTH_SHORT).show()
+            return
         }
+        try {
+            val cleanTitle = title.ifBlank { "mystic_content" }
+                .replace(Regex("[^a-zA-Z0-9._-]+"), "_")
+                .take(60)
+            val cleanQuality = quality.ifBlank { "HD" }
+                .replace(Regex("[^a-zA-Z0-9._-]+"), "_")
+                .take(12)
+            val fileName = "${cleanTitle}_${cleanQuality}_${System.currentTimeMillis()}.mp4"
+
+            val req = DownloadManager.Request(Uri.parse(url))
+                .setAllowedOverMetered(true)
+                .setAllowedOverRoaming(true)
+                .setTitle("$title $quality")
+                .setDescription("Downloading in MysticMovies")
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, fileName)
+
+            val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+            dm.enqueue(req)
+            Toast.makeText(this, "Download started. Check Downloads.", Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+            Toast.makeText(this, "Unable to start download.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun openTelegram(link: MovieLink) {
+        if (link.telegramDeepLink.isNotBlank()) {
+            openTelegramIntent(link.telegramDeepLink)
+            return
+        }
+
+        val startUrl = if (link.telegramStartUrl.isNotBlank()) {
+            absoluteUrl(link.telegramStartUrl)
+        } else {
+            val token = parseShareToken(link.telegramUrl, "t")
+            if (token.isBlank()) "" else absoluteUrl("/app-api/telegram-start/$token")
+        }
+        if (startUrl.isBlank()) {
+            Toast.makeText(this, "Telegram link is not available.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        lifecycleScope.launch {
+            val deepLink = withContext(Dispatchers.IO) { fetchTelegramDeepLink(startUrl) }
+            if (deepLink.isBlank()) {
+                Toast.makeText(this@ContentDetailActivity, "Unable to open Telegram.", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            openTelegramIntent(deepLink)
+        }
+    }
+
+    private fun fetchTelegramDeepLink(url: String): String {
+        return try {
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) return ""
+                val body = JSONObject(res.body?.string().orEmpty())
+                if (!body.optBoolean("ok")) return ""
+                body.optString("deep_link").trim()
+            }
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun openTelegramIntent(url: String) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            intent.setPackage("org.telegram.messenger")
+            startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            } catch (_: Exception) {
+                Toast.makeText(this, "Telegram app not found.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun openInAppWeb(rawUrl: String, titleText: String) {
+        val target = absoluteUrl(rawUrl)
+        if (target.isBlank()) return
+        val intent = Intent(this, LoginActivity::class.java).apply {
+            putExtra("target_url", target)
+            putExtra("title_text", titleText)
+        }
+        startActivity(intent)
     }
 }
