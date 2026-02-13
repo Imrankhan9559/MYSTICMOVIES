@@ -40,8 +40,18 @@ class LoginActivity : AppCompatActivity() {
         tvTitle.text = if (titleText.isNotBlank()) titleText else "Login"
         initialUrl = if (target.isNotBlank()) absoluteUrl(target) else absoluteUrl("/login")
 
+        if (consumeAuthCallback(intent)) {
+            return
+        }
+
         setupWebView()
         webView.loadUrl(initialUrl)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        consumeAuthCallback(intent)
     }
 
     private fun setupWebView() {
@@ -62,6 +72,13 @@ class LoginActivity : AppCompatActivity() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString().orEmpty()
                 if (url.isBlank()) return false
+                if (isGoogleAuthUrl(url)) {
+                    openExternal(ensureAppGoogleFlow(url))
+                    return true
+                }
+                if (url.startsWith("mysticmovies://")) {
+                    return consumeAuthCallback(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                }
                 if (url.startsWith("tg://") || url.contains("t.me/")) {
                     openExternal(url)
                     return true
@@ -73,6 +90,40 @@ class LoginActivity : AppCompatActivity() {
                 return false
             }
         }
+    }
+
+    private fun isGoogleAuthUrl(url: String): Boolean {
+        val lower = url.trim().lowercase()
+        return lower.contains("/auth/google") || lower.contains("accounts.google.com")
+    }
+
+    private fun ensureAppGoogleFlow(url: String): String {
+        return try {
+            val uri = Uri.parse(url)
+            val path = uri.path.orEmpty()
+            if (!path.contains("/auth/google")) return url
+            if (!uri.getQueryParameter("app").isNullOrBlank()) return url
+            uri.buildUpon().appendQueryParameter("app", "1").build().toString()
+        } catch (_: Exception) {
+            url
+        }
+    }
+
+    private fun consumeAuthCallback(incoming: Intent?): Boolean {
+        val data = incoming?.data ?: return false
+        val scheme = data.scheme.orEmpty().lowercase()
+        val host = data.host.orEmpty().lowercase()
+        if (scheme != "mysticmovies" || host != "auth") return false
+
+        val token = data.getQueryParameter("token").orEmpty().trim()
+        if (token.isBlank()) {
+            finish()
+            return true
+        }
+        AppRuntimeState.saveAuthToken(this, token)
+        setResult(RESULT_OK)
+        finish()
+        return true
     }
 
     private fun openExternal(url: String) {

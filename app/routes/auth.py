@@ -3,6 +3,10 @@ import json
 import time
 import urllib.parse
 import urllib.request
+import base64
+import hashlib
+import hmac
+import uuid
 import secrets
 from datetime import datetime
 from fastapi import APIRouter, Request, Form, Response
@@ -11,7 +15,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pyrogram import Client, errors
 from app.core.config import settings
 from app.core.content_store import sync_content_catalog
-from app.db.models import User, ContentItem, SiteSettings
+from app.db.models import User, ContentItem, SiteSettings, TokenSetting
 from app.routes.dashboard import get_current_user
 
 router = APIRouter()
@@ -20,6 +24,47 @@ templates = Jinja2Templates(directory="app/templates")
 # In-memory storage for temporary login steps (Production apps should use Redis)
 temp_auth_data = {} 
 oauth_states = {}
+
+
+def _now_ts() -> int:
+    return int(time.time())
+
+
+def _b64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _sign_payload(payload: dict, secret: str) -> str:
+    body = _b64url_encode(json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
+    sig = hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
+    return f"{body}.{_b64url_encode(sig)}"
+
+
+async def _app_user_secret() -> str:
+    row = await TokenSetting.find_one(TokenSetting.key == "app_user_token_secret")
+    if row and row.value:
+        return row.value
+    secret = hashlib.sha256(uuid.uuid4().hex.encode("utf-8")).hexdigest()
+    if row:
+        row.value = secret
+        row.updated_at = datetime.now()
+        await row.save()
+    else:
+        await TokenSetting(key="app_user_token_secret", value=secret, created_at=datetime.now(), updated_at=datetime.now()).insert()
+    return secret
+
+
+async def _issue_app_user_token(phone: str, name: str = "") -> str:
+    now = _now_ts()
+    # 30 days token for native app auth.
+    payload = {
+        "phone": (phone or "").strip(),
+        "name": (name or "").strip(),
+        "iat": now,
+        "exp": now + (30 * 24 * 3600),
+    }
+    secret = await _app_user_secret()
+    return _sign_payload(payload, secret)
 
 
 def _sanitize_return_url(raw: str) -> str:
@@ -152,13 +197,14 @@ async def logout(response: Response):
     return response
 
 @router.get("/auth/google")
-async def google_login(return_url: str = ""):
+async def google_login(return_url: str = "", app: int = 0):
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET or not settings.GOOGLE_REDIRECT_URI:
         return JSONResponse({"error": "Google OAuth not configured"}, status_code=500)
     state = secrets.token_urlsafe(16)
     oauth_states[state] = {
         "created_at": time.time(),
         "return_url": _sanitize_return_url(return_url),
+        "app_mode": bool(int(app or 0)),
     }
     return RedirectResponse(_google_auth_url(state))
 
@@ -168,12 +214,14 @@ async def google_callback(request: Request, response: Response, code: str = "", 
         return RedirectResponse("/login")
     # simple state expiry (10 min)
     state_info = oauth_states.get(state) or {}
+    app_mode = False
     if isinstance(state_info, (int, float)):
         created_at = float(state_info)
         return_url = "/content"
     else:
         created_at = float(state_info.get("created_at") or 0)
         return_url = _sanitize_return_url(state_info.get("return_url") or "")
+        app_mode = bool(state_info.get("app_mode"))
     if time.time() - created_at > 600:
         oauth_states.pop(state, None)
         return RedirectResponse("/login")
@@ -227,6 +275,13 @@ async def google_callback(request: Request, response: Response, code: str = "", 
                 auth_provider="google",
                 role="user",
             ).insert()
+        if app_mode:
+            app_token = await _issue_app_user_token(email, name)
+            deep_link = "mysticmovies://auth?token=" + urllib.parse.quote(app_token, safe="")
+            if return_url:
+                deep_link += "&return_url=" + urllib.parse.quote(return_url, safe="")
+            return RedirectResponse(url=deep_link)
+
         response = RedirectResponse(url=(return_url or "/content"))
         response.set_cookie(
             key="user_phone",

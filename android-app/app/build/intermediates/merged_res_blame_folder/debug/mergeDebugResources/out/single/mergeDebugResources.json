@@ -1,170 +1,158 @@
 [
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-anydpi-v26_ic_launcher.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-anydpi-v26\\ic_launcher.xml"
-    },
-    {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_activity_downloads.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\activity_downloads.xml"
-    },
-    {
         "merged": "com.mysticmovies.app-debug-39:/layout_activity_main.xml.flat",
         "source": "com.mysticmovies.app-main-41:/layout/activity_main.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_item_episode_row.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\item_episode_row.xml"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-anydpi-v26_ic_launcher_round.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-anydpi-v26/ic_launcher_round.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\drawable_bg_hero_overlay.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\drawable\\bg_hero_overlay.xml"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-anydpi-v26_ic_launcher.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-anydpi-v26/ic_launcher.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-xxxhdpi_ic_launcher.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-xxxhdpi\\ic_launcher.webp"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-xhdpi_ic_launcher_foreground.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-xhdpi/ic_launcher_foreground.webp"
+    },
+    {
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-hdpi_ic_launcher_foreground.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-hdpi/ic_launcher_foreground.webp"
     },
     {
         "merged": "com.mysticmovies.app-debug-39:/layout_activity_content_detail.xml.flat",
         "source": "com.mysticmovies.app-main-41:/layout/activity_content_detail.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-xxxhdpi_ic_launcher_foreground.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-xxxhdpi\\ic_launcher_foreground.webp"
-    },
-    {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_item_link_row.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\item_link_row.xml"
-    },
-    {
         "merged": "com.mysticmovies.app-debug-39:/layout_activity_season_episodes.xml.flat",
         "source": "com.mysticmovies.app-main-41:/layout/activity_season_episodes.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-hdpi_ic_launcher.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-hdpi\\ic_launcher.webp"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-mdpi_ic_launcher_foreground.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-mdpi/ic_launcher_foreground.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_activity_trailer.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\activity_trailer.xml"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-mdpi_ic_launcher.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-mdpi/ic_launcher.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_item_home_card.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\item_home_card.xml"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-hdpi_ic_launcher.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-hdpi/ic_launcher.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_activity_player.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\activity_player.xml"
+        "merged": "com.mysticmovies.app-debug-39:/layout_item_home_card.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/item_home_card.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_activity_webview.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\activity_webview.xml"
+        "merged": "com.mysticmovies.app-debug-39:/layout_item_login_access_row.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/item_login_access_row.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-hdpi_ic_launcher_foreground.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-hdpi\\ic_launcher_foreground.webp"
+        "merged": "com.mysticmovies.app-debug-39:/layout_activity_trailer.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/activity_trailer.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-xxxhdpi_ic_launcher_round.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-xxxhdpi\\ic_launcher_round.webp"
+        "merged": "com.mysticmovies.app-debug-39:/layout_activity_downloads.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/activity_downloads.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_activity_content_detail.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\activity_content_detail.xml"
+        "merged": "com.mysticmovies.app-debug-39:/layout_item_link_row.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/item_link_row.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_activity_main.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\activity_main.xml"
+        "merged": "com.mysticmovies.app-debug-39:/layout_item_download_row.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/item_download_row.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_activity_profile.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\activity_profile.xml"
+        "merged": "com.mysticmovies.app-debug-39:/layout_item_episode_row.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/item_episode_row.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-xhdpi_ic_launcher_round.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-xhdpi\\ic_launcher_round.webp"
+        "merged": "com.mysticmovies.app-debug-39:/drawable_bg_hero_overlay.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/drawable/bg_hero_overlay.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_item_catalog_card.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\item_catalog_card.xml"
+        "merged": "com.mysticmovies.app-debug-39:/drawable_bg_input_rounded.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/drawable/bg_input_rounded.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\drawable_bg_input_rounded.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\drawable\\bg_input_rounded.xml"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-xxxhdpi_ic_launcher.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-xxxhdpi/ic_launcher.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_activity_season_episodes.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\activity_season_episodes.xml"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-xxhdpi_ic_launcher_foreground.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-xxhdpi/ic_launcher_foreground.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-xxhdpi_ic_launcher_round.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-xxhdpi\\ic_launcher_round.webp"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-xxhdpi_ic_launcher.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-xxhdpi/ic_launcher.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_item_home_section.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\item_home_section.xml"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-xxxhdpi_ic_launcher_foreground.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-xxxhdpi/ic_launcher_foreground.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\drawable_bg_cast_circle.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\drawable\\bg_cast_circle.xml"
+        "merged": "com.mysticmovies.app-debug-39:/layout_item_season_row.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/item_season_row.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-xxhdpi_ic_launcher_foreground.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-xxhdpi\\ic_launcher_foreground.webp"
+        "merged": "com.mysticmovies.app-debug-39:/layout_item_cast_card.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/item_cast_card.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_item_login_access_row.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\item_login_access_row.xml"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-xxhdpi_ic_launcher_round.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-xxhdpi/ic_launcher_round.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-mdpi_ic_launcher.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-mdpi\\ic_launcher.webp"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-xxxhdpi_ic_launcher_round.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-xxxhdpi/ic_launcher_round.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-mdpi_ic_launcher_foreground.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-mdpi\\ic_launcher_foreground.webp"
+        "merged": "com.mysticmovies.app-debug-39:/layout_activity_search.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/activity_search.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-xxhdpi_ic_launcher.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-xxhdpi\\ic_launcher.webp"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-xhdpi_ic_launcher_round.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-xhdpi/ic_launcher_round.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_item_cast_card.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\item_cast_card.xml"
+        "merged": "com.mysticmovies.app-debug-39:/layout_item_catalog_card.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/item_catalog_card.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-xhdpi_ic_launcher.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-xhdpi\\ic_launcher.webp"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-xhdpi_ic_launcher.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-xhdpi/ic_launcher.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-anydpi-v26_ic_launcher_round.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-anydpi-v26\\ic_launcher_round.xml"
+        "merged": "com.mysticmovies.app-debug-39:/layout_item_home_section.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/item_home_section.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-hdpi_ic_launcher_round.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-hdpi\\ic_launcher_round.webp"
+        "merged": "com.mysticmovies.app-debug-39:/layout_activity_player.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/activity_player.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_item_search_suggestion.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\item_search_suggestion.xml"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-hdpi_ic_launcher_round.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-hdpi/ic_launcher_round.webp"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-xhdpi_ic_launcher_foreground.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-xhdpi\\ic_launcher_foreground.webp"
+        "merged": "com.mysticmovies.app-debug-39:/drawable_bg_cast_circle.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/drawable/bg_cast_circle.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_activity_search.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\activity_search.xml"
+        "merged": "com.mysticmovies.app-debug-39:/layout_activity_webview.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/activity_webview.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_item_download_row.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\item_download_row.xml"
+        "merged": "com.mysticmovies.app-debug-39:/layout_item_search_suggestion.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/item_search_suggestion.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\mipmap-mdpi_ic_launcher_round.webp.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\mipmap-mdpi\\ic_launcher_round.webp"
+        "merged": "com.mysticmovies.app-debug-39:/layout_activity_profile.xml.flat",
+        "source": "com.mysticmovies.app-main-41:/layout/activity_profile.xml"
     },
     {
-        "merged": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-debug-39:\\layout_item_season_row.xml.flat",
-        "source": "C:\\Users\\ik980\\.gradle\\daemon\\8.7\\com.mysticmovies.app-main-41:\\layout\\item_season_row.xml"
+        "merged": "com.mysticmovies.app-debug-39:/mipmap-mdpi_ic_launcher_round.webp.flat",
+        "source": "com.mysticmovies.app-main-41:/mipmap-mdpi/ic_launcher_round.webp"
     }
 ]

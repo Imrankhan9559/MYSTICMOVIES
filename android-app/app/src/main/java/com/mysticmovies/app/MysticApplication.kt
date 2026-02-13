@@ -6,6 +6,11 @@ import coil.ImageLoaderFactory
 import coil.util.DebugLogger
 
 class MysticApplication : Application(), ImageLoaderFactory {
+    override fun onCreate() {
+        super.onCreate()
+        AppRuntimeState.loadAuthToken(this)
+    }
+
     override fun newImageLoader(): ImageLoader {
         return ImageLoader.Builder(this)
             .okHttpClient(createApiHttpClient())

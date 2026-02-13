@@ -42,6 +42,14 @@ private val appDns = object : Dns {
 fun createApiHttpClient(): OkHttpClient {
     return OkHttpClient.Builder()
         .dns(appDns)
+        .addInterceptor { chain ->
+            val reqBuilder = chain.request().newBuilder()
+            val token = AppRuntimeState.appUserToken.trim()
+            if (token.isNotBlank()) {
+                reqBuilder.header("X-App-User-Token", token)
+            }
+            chain.proceed(reqBuilder.build())
+        }
         .connectTimeout(20, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(20, TimeUnit.SECONDS)

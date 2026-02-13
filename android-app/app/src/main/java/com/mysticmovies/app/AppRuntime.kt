@@ -1,5 +1,6 @@
 package com.mysticmovies.app
 
+import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -33,6 +34,9 @@ data class UpdateConfig(
 )
 
 object AppRuntimeState {
+    private const val PREFS = "mystic_app_prefs"
+    private const val KEY_APP_USER_TOKEN = "app_user_token"
+
     @Volatile
     var apiBaseUrl: String = BuildConfig.API_BASE_URL.trimEnd('/')
 
@@ -71,6 +75,34 @@ object AppRuntimeState {
 
     @Volatile
     var notifications: List<String> = emptyList()
+
+    @Volatile
+    var appUserToken: String = ""
+
+    fun loadAuthToken(context: Context) {
+        val token = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_APP_USER_TOKEN, "")
+            .orEmpty()
+            .trim()
+        appUserToken = token
+    }
+
+    fun saveAuthToken(context: Context, token: String) {
+        val cleaned = token.trim()
+        appUserToken = cleaned
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_APP_USER_TOKEN, cleaned)
+            .apply()
+    }
+
+    fun clearAuthToken(context: Context) {
+        appUserToken = ""
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .remove(KEY_APP_USER_TOKEN)
+            .apply()
+    }
 
     fun applyBootstrap(baseUrl: String, root: JSONObject) {
         apiBaseUrl = baseUrl.trimEnd('/')

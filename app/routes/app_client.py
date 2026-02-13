@@ -25,6 +25,7 @@ from app.db.models import (
     PlaybackProgress,
     SiteSettings,
     TokenSetting,
+    User,
     UserActivityEvent,
     WatchlistEntry,
 )
@@ -213,6 +214,25 @@ async def _handshake_secret() -> str:
     return secret
 
 
+async def _app_user_secret() -> str:
+    row = await TokenSetting.find_one(TokenSetting.key == "app_user_token_secret")
+    if row and row.value:
+        return row.value
+    secret = hashlib.sha256(uuid.uuid4().hex.encode("utf-8")).hexdigest()
+    if row:
+        row.value = secret
+        row.updated_at = datetime.now()
+        await row.save()
+    else:
+        await TokenSetting(
+            key="app_user_token_secret",
+            value=secret,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        ).insert()
+    return secret
+
+
 def _sign_payload(payload: dict[str, Any], secret: str) -> str:
     body = _b64url_encode(json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8"))
     sig = hmac.new(secret.encode("utf-8"), body.encode("ascii"), hashlib.sha256).digest()
@@ -253,6 +273,29 @@ def _extract_handshake_token(request: Request, explicit: str = "", header_value:
         return auth[7:].strip()
     token_q = (request.query_params.get("hs") or "").strip()
     return token_q
+
+
+async def _resolve_app_user(request: Request):
+    # First prefer regular web cookie login (browser/session).
+    user = await get_current_user(request)
+    if user:
+        return user
+
+    # Fallback for native app token-based auth.
+    token = (request.headers.get("X-App-User-Token") or request.query_params.get("app_user_token") or "").strip()
+    if not token:
+        return None
+    secret = await _app_user_secret()
+    payload = _verify_payload(token, secret)
+    if not payload:
+        return None
+    phone = (payload.get("phone") or "").strip()
+    if not phone:
+        return None
+    row = await User.find_one(User.phone_number == phone)
+    if not row or getattr(row, "status", "approved") != "approved":
+        return None
+    return row
 
 
 async def _link_token() -> str:
@@ -505,7 +548,7 @@ async def _track_app_event(
     content_title: str = "",
     meta: dict | None = None,
 ) -> None:
-    user = await get_current_user(request)
+    user = await _resolve_app_user(request)
     user_phone = user.phone_number if user else None
     user_name = ""
     if user:
@@ -549,7 +592,7 @@ async def app_handshake(request: Request):
     except Exception:
         build_number = 0
 
-    user = await get_current_user(request)
+    user = await _resolve_app_user(request)
     user_phone = user.phone_number if user else (payload.get("user_phone") or "")
     user_name = ""
     if user:
@@ -610,7 +653,7 @@ async def app_bootstrap(
     parsed = _verify_payload(token, secret)
     if not parsed:
         return JSONResponse({"ok": False, "error": "Invalid handshake"}, status_code=401)
-    session_user = await get_current_user(request)
+    session_user = await _resolve_app_user(request)
 
     app_cfg = await _app_settings()
     site_cfg = await _site_settings()
@@ -789,7 +832,7 @@ async def app_catalog(
     page: int = 1,
     per_page: int = 24,
 ):
-    user = await get_current_user(request)
+    user = await _resolve_app_user(request)
     is_admin = _is_admin(user)
 
     normalized_filter = _normalize_filter_type(filter)
@@ -893,7 +936,7 @@ async def app_catalog(
 
 @router.get("/session")
 async def app_session(request: Request):
-    user = await get_current_user(request)
+    user = await _resolve_app_user(request)
     if not user:
         return {
             "ok": True,
@@ -918,7 +961,7 @@ async def app_search_suggestions(request: Request, q: str = "", limit: int = 10)
     query = (q or "").strip()
     if len(query) < 2:
         return {"ok": True, "query": query, "items": [], "trending": []}
-    user = await get_current_user(request)
+    user = await _resolve_app_user(request)
     is_admin = _is_admin(user)
     cards = _decorate_catalog_cards(await _build_catalog(user, is_admin, limit=3200))
     cards = _sort_catalog_cards(cards, "release_new")
@@ -985,7 +1028,7 @@ async def app_search_suggestions(request: Request, q: str = "", limit: int = 10)
 
 @router.get("/profile")
 async def app_profile(request: Request):
-    user = await get_current_user(request)
+    user = await _resolve_app_user(request)
     if not user:
         return JSONResponse({"ok": False, "error": "Login required", "login_url": "/login"}, status_code=401)
     is_admin = _is_admin(user)
@@ -1112,7 +1155,7 @@ async def app_profile(request: Request):
 
 @router.post("/request-content")
 async def app_request_content(request: Request):
-    user = await get_current_user(request)
+    user = await _resolve_app_user(request)
     if not user:
         return JSONResponse({"ok": False, "error": "Login required", "login_url": "/login"}, status_code=401)
 
@@ -1161,7 +1204,7 @@ async def app_content_detail(
     request: Request,
     content_key: str,
 ):
-    user = await get_current_user(request)
+    user = await _resolve_app_user(request)
     is_admin = _is_admin(user)
 
     catalog = await _build_catalog(user, is_admin, limit=4500)

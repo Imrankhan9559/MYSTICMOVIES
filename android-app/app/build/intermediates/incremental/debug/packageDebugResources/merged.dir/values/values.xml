@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:ns1="http://schemas.android.com/tools">
+    <color name="ic_launcher_background">#0B0913</color>
+    <color name="mm_black">#090909</color>
+    <color name="mm_gold">#FACC15</color>
+    <color name="mm_muted">#9CA3AF</color>
+    <color name="mm_white">#FFFFFFFF</color>
+    <string name="app_name">MysticMovies</string>
+    <string name="open_content">Open Content</string>
+    <string name="open_telegram_link">Open Telegram Link</string>
+    <string name="share_token_hint">Enter share token for Telegram test</string>
+    <string name="status_initializing">Initializing...</string>
+    <string name="status_loading">Loading app status...</string>
+    <string name="update_app">Update App</string>
+    <style name="Theme.MysticMovies" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@color/mm_black</item>
+        <item name="android:navigationBarColor">@color/mm_black</item>
+        <item name="android:windowBackground">@color/mm_black</item>
+        <item name="colorPrimary">@color/mm_gold</item>
+        <item name="colorOnPrimary">#111111</item>
+        <item name="colorSecondary">@color/mm_gold</item>
+        <item name="colorOnSecondary">#111111</item>
+        <item name="colorSurface">@color/mm_black</item>
+        <item name="colorOnSurface">@color/mm_white</item>
+        <item name="android:textColorPrimary">@color/mm_white</item>
+        <item name="android:forceDarkAllowed" ns1:targetApi="q">false</item>
+    </style>
+</resources>
