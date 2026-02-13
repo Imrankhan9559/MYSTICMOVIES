@@ -198,6 +198,12 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a href="/app-management" class="nav-link {% if request.url.path.startswith('/app-management') or request.url.path.startswith('/dashboard/app-management') %}active{% endif %}">
+                            <i class="nav-icon fas fa-mobile-screen-button"></i>
+                            <p>App Management</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a href="/user-playback-analytics" class="nav-link {% if request.url.path.startswith('/user-playback-analytics') %}active{% endif %}">
                             <i class="nav-icon fas fa-chart-line"></i>
                             <p>User Playback Analytics</p>

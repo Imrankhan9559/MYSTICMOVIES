@@ -17,6 +17,10 @@ from app.db.models import (
     ContentRequest,
     UserActivityEvent,
     HomeSlider,
+    AppSettings,
+    AppRelease,
+    AppBroadcast,
+    AppDeviceSession,
 )
 from app.routes.dashboard import get_current_user, _cast_ids, _clone_parts, _build_search_regex
 from app.routes.content import refresh_tmdb_metadata, _parse_name, _tmdb_get, _ensure_group_assets
@@ -633,6 +637,299 @@ async def save_header_footer_settings(
 
 def _is_truthy(value: str) -> bool:
     return (value or "").strip().lower() in {"1", "true", "on", "yes"}
+
+
+def _safe_int(value: str, default: int = 0) -> int:
+    try:
+        return int((value or "").strip())
+    except Exception:
+        return default
+
+
+def _normalize_update_mode(value: str) -> str:
+    mode = (value or "").strip().lower()
+    if mode in {"forced", "recommended", "none"}:
+        return mode
+    return "none"
+
+
+async def _app_settings_row() -> AppSettings:
+    row = await AppSettings.find_one(AppSettings.key == "main")
+    if not row:
+        row = AppSettings(
+            key="main",
+            telegram_bot_username=(getattr(settings, "BOT_USERNAME", "") or "").strip(),
+            updated_at=datetime.now(),
+            created_at=datetime.now(),
+        )
+        await row.insert()
+    changed = False
+    if not (row.telegram_bot_username or "").strip() and (getattr(settings, "BOT_USERNAME", "") or "").strip():
+        row.telegram_bot_username = (getattr(settings, "BOT_USERNAME", "") or "").strip()
+        changed = True
+    if changed:
+        row.updated_at = datetime.now()
+        await row.save()
+    return row
+
+
+async def _ensure_apps_root(user: User) -> FileSystemItem:
+    owner_phone = (_normalize_phone(getattr(settings, "ADMIN_PHONE", "") or "") or _normalize_phone(user.phone_number))
+    return await _ensure_folder(owner_phone, "APPS", None, source="admin")
+
+
+async def _prepare_apk_item(user: User, file_id: str) -> FileSystemItem | None:
+    file_key = (file_id or "").strip()
+    if not file_key:
+        return None
+    item = await FileSystemItem.get(file_key)
+    if not item or item.is_folder:
+        return None
+    if not (item.name or "").lower().endswith(".apk"):
+        return None
+    apps_root = await _ensure_apps_root(user)
+    dirty = False
+    if str(item.parent_id or "") != str(apps_root.id):
+        item.parent_id = str(apps_root.id)
+        dirty = True
+    if not item.share_token:
+        item.share_token = str(uuid.uuid4())
+        dirty = True
+    if dirty:
+        await item.save()
+    return item
+
+
+async def _apk_candidates(limit: int = 700) -> list[dict]:
+    rows = await FileSystemItem.find(FileSystemItem.is_folder == False).sort("-created_at").limit(limit).to_list()
+    out: list[dict] = []
+    for row in rows:
+        name = (row.name or "").strip()
+        if not name.lower().endswith(".apk"):
+            continue
+        out.append({
+            "id": str(row.id),
+            "name": name,
+            "size": int(row.size or 0),
+            "size_label": format_size(int(row.size or 0)),
+            "owner_phone": row.owner_phone,
+            "created_at": row.created_at,
+            "share_token": (row.share_token or "").strip(),
+        })
+    return out
+
+
+@router.get("/app-management")
+@router.get("/dashboard/app-management")
+async def app_management(request: Request):
+    user = await get_current_user(request)
+    if not user:
+        return RedirectResponse("/admin-login")
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    base_ctx = await _admin_context_base(user)
+    app_cfg = await _app_settings_row()
+    release_rows = await AppRelease.find_all().sort([("build_number", -1), ("created_at", -1)]).limit(40).to_list()
+    broadcasts = await AppBroadcast.find_all().sort("-created_at").limit(40).to_list()
+    devices = await AppDeviceSession.find_all().sort("-last_ping_at").limit(120).to_list()
+    apk_files = await _apk_candidates()
+    selected_apk = next((row for row in apk_files if row["id"] == (app_cfg.latest_apk_item_id or "")), None)
+    now = datetime.now()
+    online_cutoff = now.timestamp() - 600
+    online_devices = 0
+    for row in devices:
+        ts = row.last_ping_at.timestamp() if row.last_ping_at else 0
+        if ts >= online_cutoff:
+            online_devices += 1
+
+    return templates.TemplateResponse("app_management.html", {
+        "request": request,
+        **base_ctx,
+        "saved": (request.query_params.get("saved") or "").strip() == "1",
+        "release_saved": (request.query_params.get("release") or "").strip() == "1",
+        "notify_saved": (request.query_params.get("notify") or "").strip() == "1",
+        "app_cfg": app_cfg,
+        "apk_files": apk_files,
+        "selected_apk": selected_apk,
+        "release_rows": release_rows,
+        "broadcasts": broadcasts,
+        "devices": devices,
+        "online_devices": online_devices,
+    })
+
+
+@router.post("/admin/app-management/save")
+async def app_management_save(
+    request: Request,
+    app_name: str = Form("MysticMovies Android"),
+    package_name: str = Form("com.mysticmovies.app"),
+    splash_image_url: str = Form(""),
+    loading_icon_url: str = Form(""),
+    onboarding_message: str = Form(""),
+    ads_message: str = Form(""),
+    update_popup_title: str = Form("Update Available"),
+    update_popup_body: str = Form("A new app version is available."),
+    latest_version: str = Form(""),
+    latest_build: str = Form("0"),
+    latest_release_notes: str = Form(""),
+    min_supported_version: str = Form(""),
+    recommended_update: str = Form(""),
+    force_update: str = Form(""),
+    maintenance_mode: str = Form(""),
+    maintenance_message: str = Form(""),
+    push_enabled: str = Form(""),
+    keepalive_on_launch: str = Form(""),
+    telegram_bot_username: str = Form(""),
+    latest_apk_item_id: str = Form(""),
+    clear_latest_apk: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    row = await _app_settings_row()
+    row.app_name = (app_name or "MysticMovies Android").strip()
+    row.package_name = (package_name or "com.mysticmovies.app").strip()
+    row.splash_image_url = (splash_image_url or "").strip()
+    row.loading_icon_url = (loading_icon_url or "").strip()
+    row.onboarding_message = (onboarding_message or "").strip()
+    row.ads_message = (ads_message or "").strip()
+    row.update_popup_title = (update_popup_title or "Update Available").strip()
+    row.update_popup_body = (update_popup_body or "A new app version is available.").strip()
+    row.latest_version = (latest_version or "").strip()
+    row.latest_build = _safe_int(latest_build, 0)
+    row.latest_release_notes = (latest_release_notes or "").strip()
+    row.min_supported_version = (min_supported_version or "").strip()
+    row.recommended_update = _is_truthy(recommended_update)
+    row.force_update = _is_truthy(force_update)
+    row.maintenance_mode = _is_truthy(maintenance_mode)
+    row.maintenance_message = (maintenance_message or "").strip()
+    row.push_enabled = _is_truthy(push_enabled)
+    row.keepalive_on_launch = _is_truthy(keepalive_on_launch)
+    row.telegram_bot_username = (telegram_bot_username or "").strip()
+
+    if _is_truthy(clear_latest_apk):
+        row.latest_apk_item_id = None
+        row.latest_apk_share_token = None
+        row.latest_apk_size = 0
+    else:
+        apk_item = await _prepare_apk_item(user, latest_apk_item_id)
+        if apk_item:
+            row.latest_apk_item_id = str(apk_item.id)
+            row.latest_apk_share_token = (apk_item.share_token or "").strip() or None
+            row.latest_apk_size = int(apk_item.size or 0)
+
+    row.updated_at = datetime.now()
+    await row.save()
+    return RedirectResponse("/app-management?saved=1", status_code=303)
+
+
+@router.post("/admin/app-management/release")
+async def app_management_release(
+    request: Request,
+    version: str = Form(""),
+    build_number: str = Form("0"),
+    release_notes: str = Form(""),
+    update_mode: str = Form("none"),
+    is_active: str = Form(""),
+    apk_item_id: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+
+    apk_item = await _prepare_apk_item(user, apk_item_id)
+    build_no = _safe_int(build_number, 0)
+    mode = _normalize_update_mode(update_mode)
+    row = AppRelease(
+        version=(version or "").strip(),
+        build_number=build_no,
+        release_notes=(release_notes or "").strip(),
+        apk_item_id=str(apk_item.id) if apk_item else None,
+        apk_share_token=(apk_item.share_token or "").strip() if apk_item else None,
+        apk_size=int(apk_item.size or 0) if apk_item else 0,
+        update_mode=mode,
+        is_active=_is_truthy(is_active),
+        created_by=user.phone_number,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    await row.insert()
+
+    # Sync latest release to app settings for bootstrap.
+    cfg = await _app_settings_row()
+    if row.version:
+        cfg.latest_version = row.version
+    if row.build_number:
+        cfg.latest_build = row.build_number
+    if row.release_notes:
+        cfg.latest_release_notes = row.release_notes
+    if row.apk_item_id:
+        cfg.latest_apk_item_id = row.apk_item_id
+    if row.apk_share_token:
+        cfg.latest_apk_share_token = row.apk_share_token
+        cfg.latest_apk_size = row.apk_size
+    if mode == "forced":
+        cfg.force_update = True
+        cfg.recommended_update = True
+    elif mode == "recommended":
+        cfg.recommended_update = True
+    cfg.updated_at = datetime.now()
+    await cfg.save()
+
+    return RedirectResponse("/app-management?release=1", status_code=303)
+
+
+@router.post("/admin/app-management/notify")
+async def app_management_notify(
+    request: Request,
+    title: str = Form(""),
+    message: str = Form(""),
+    notice_type: str = Form("news"),
+    is_active: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    notice_title = (title or "").strip()
+    notice_message = (message or "").strip()
+    if not notice_title or not notice_message:
+        return RedirectResponse("/app-management", status_code=303)
+    kind = (notice_type or "news").strip().lower()
+    if kind not in {"news", "ad", "feature", "maintenance"}:
+        kind = "news"
+    await AppBroadcast(
+        title=notice_title,
+        message=notice_message,
+        type=kind,
+        is_active=_is_truthy(is_active),
+        created_by=user.phone_number,
+        created_at=datetime.now(),
+    ).insert()
+    return RedirectResponse("/app-management?notify=1", status_code=303)
+
+
+@router.post("/admin/app-management/broadcast/{broadcast_id}/toggle")
+async def app_management_toggle_broadcast(request: Request, broadcast_id: str):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    row = await AppBroadcast.get(broadcast_id)
+    if row:
+        row.is_active = not bool(row.is_active)
+        await row.save()
+    return RedirectResponse("/app-management", status_code=303)
+
+
+@router.post("/admin/app-management/broadcast/{broadcast_id}/delete")
+async def app_management_delete_broadcast(request: Request, broadcast_id: str):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(403)
+    row = await AppBroadcast.get(broadcast_id)
+    if row:
+        await row.delete()
+    return RedirectResponse("/app-management", status_code=303)
 
 
 async def _slider_content_options(limit: int = 800) -> list[dict]:

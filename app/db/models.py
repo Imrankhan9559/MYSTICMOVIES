@@ -250,6 +250,83 @@ class UserActivityEvent(Document):
     class Settings:
         name = "user_activity_events"
 
+
+class AppSettings(Document):
+    key: str = Field(unique=True)
+    app_name: str = "MysticMovies Android"
+    package_name: str = "com.mysticmovies.app"
+    splash_image_url: str = ""
+    loading_icon_url: str = ""
+    onboarding_message: str = "Welcome to MysticMovies App"
+    ads_message: str = ""
+    update_popup_title: str = "Update Available"
+    update_popup_body: str = "A new app version is available."
+    latest_version: str = ""
+    latest_build: int = 0
+    latest_release_notes: str = ""
+    latest_apk_item_id: Optional[str] = None
+    latest_apk_share_token: Optional[str] = None
+    latest_apk_size: int = 0
+    recommended_update: bool = False
+    force_update: bool = False
+    min_supported_version: str = ""
+    maintenance_mode: bool = False
+    maintenance_message: str = ""
+    push_enabled: bool = True
+    keepalive_on_launch: bool = True
+    telegram_bot_username: str = ""
+    created_at: datetime = datetime.now()
+    updated_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "app_settings"
+
+
+class AppRelease(Document):
+    version: str = ""
+    build_number: int = 0
+    release_notes: str = ""
+    apk_item_id: Optional[str] = None
+    apk_share_token: Optional[str] = None
+    apk_size: int = 0
+    update_mode: str = "none"  # none | recommended | forced
+    is_active: bool = True
+    created_by: Optional[str] = None
+    created_at: datetime = datetime.now()
+    updated_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "app_releases"
+
+
+class AppBroadcast(Document):
+    title: str = ""
+    message: str = ""
+    type: str = "news"  # news | ad | feature | maintenance
+    is_active: bool = True
+    created_by: Optional[str] = None
+    created_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "app_broadcasts"
+
+
+class AppDeviceSession(Document):
+    device_id: str
+    platform: str = "android"
+    app_version: str = ""
+    build_number: int = 0
+    user_phone: Optional[str] = None
+    user_name: Optional[str] = None
+    handshake_token: str = ""
+    handshake_expire_at: Optional[datetime] = None
+    last_ping_at: datetime = datetime.now()
+    created_at: datetime = datetime.now()
+    updated_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "app_devices"
+
 async def init_db():
     client = AsyncIOMotorClient(settings.MONGO_URI)
     await init_beanie(
@@ -269,5 +346,9 @@ async def init_db():
             WatchlistEntry,
             ContentRequest,
             UserActivityEvent,
+            AppSettings,
+            AppRelease,
+            AppBroadcast,
+            AppDeviceSession,
         ],
     )

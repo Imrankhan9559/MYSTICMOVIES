@@ -12,7 +12,7 @@ from app.core.config import settings
 from app.core.telegram_bot import start_telegram, stop_telegram
 from app.core.telethon_storage import get_client as get_telethon_client, stop_client as stop_telethon_client
 from app.db.models import init_db
-from app.routes import auth, content, dashboard, stream, admin, share
+from app.routes import auth, content, dashboard, stream, admin, share, app_client
 
 # Prefer uvloop for faster asyncio if available
 try:
@@ -132,6 +132,7 @@ app.include_router(dashboard.router)
 app.include_router(stream.router)
 app.include_router(admin.router)
 app.include_router(share.router)
+app.include_router(app_client.router)
 
 if __name__ == "__main__":
     # Render sets PORT; default to 8000 for local dev.
