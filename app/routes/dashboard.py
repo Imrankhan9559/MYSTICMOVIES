@@ -8,6 +8,7 @@ import re
 import zipfile
 import asyncio
 import logging
+import urllib.parse
 from typing import Optional, Dict, List, Any
 
 from fastapi import APIRouter, Request, UploadFile, File, Form, BackgroundTasks, Body
@@ -1278,6 +1279,8 @@ async def profile_page(request: Request):
         return RedirectResponse("/login")
     is_admin = _is_admin(user)
     site = await _site_settings()
+    link_token = await _get_link_token()
+    viewer_name = (getattr(user, "requested_name", "") or getattr(user, "first_name", "") or user.phone_number or "").strip()
 
     catalog = await build_content_groups(user, is_admin, limit=5000, ensure_sync=True)
     grouped_by_slug: dict[str, dict[str, str]] = {}
@@ -1328,7 +1331,7 @@ async def profile_page(request: Request):
         watchlist_cards.append(match.copy())
 
     # Continue watching + history
-    public_name = (getattr(user, "requested_name", "") or getattr(user, "first_name", "") or "").strip()
+    public_name = viewer_name
     progress_match = [{"user_type": "user", "user_key": user.phone_number}]
     if public_name:
         progress_match.append({"user_type": "public", "user_key": public_name})
@@ -1357,19 +1360,32 @@ async def profile_page(request: Request):
         parsed = _parse_catalog_name(item.name or "")
         title = (linked.get("title") or getattr(item, "series_title", "") or getattr(item, "title", "") or parsed.get("title") or item.name or "").strip()
         year = (linked.get("year") or getattr(item, "year", "") or parsed.get("year") or "").strip()
+        display_title = f"{title}-{year}" if year else title
+        share_token = (getattr(item, "share_token", "") or "").strip()
+        if not share_token:
+            share_token = str(uuid.uuid4())
+            item.share_token = share_token
+            await item.save()
+        query = f"t={urllib.parse.quote(link_token, safe='')}&U={urllib.parse.quote(viewer_name, safe='')}"
+        watch_url = f"/s/{share_token}?{query}"
         position = float(getattr(progress, "position", 0) or 0)
         duration = float(getattr(progress, "duration", 0) or 0)
         remaining = max(0.0, duration - position)
         card = {
             "item_id": str(item.id),
             "title": title,
+            "display_title": display_title,
             "year": year,
             "poster": linked.get("poster") or getattr(item, "poster_url", "") or "",
             "slug": linked.get("slug") or _content_slug(item),
+            "share_token": share_token,
+            "watch_url": watch_url,
             "remaining": _format_remaining(remaining),
             "updated_at": getattr(progress, "updated_at", None),
             "position": position,
             "duration": duration,
+            "source_user_type": (getattr(progress, "user_type", "") or "").strip().lower(),
+            "source_token": (getattr(progress, "collection_token", "") or "").strip(),
         }
         history_rows.append(card)
         # Resume candidates: have meaningful position and not fully completed.
@@ -1378,6 +1394,36 @@ async def profile_page(request: Request):
 
     continue_cards = continue_cards[:20]
     history_rows = history_rows[:25]
+
+    # Ensure resume works on /s/{token} even if prior progress came from /player route.
+    for card in continue_cards:
+        share_token = (card.get("share_token") or "").strip()
+        if not share_token or not viewer_name:
+            continue
+        needs_sync = card.get("source_user_type") != "public" or (card.get("source_token") or "") != share_token
+        if not needs_sync:
+            continue
+        existing_public = await PlaybackProgress.find_one(
+            PlaybackProgress.user_type == "public",
+            PlaybackProgress.user_key == viewer_name,
+            PlaybackProgress.item_id == card["item_id"],
+            PlaybackProgress.collection_token == share_token,
+        )
+        if existing_public:
+            existing_public.position = max(float(existing_public.position or 0), float(card.get("position") or 0))
+            existing_public.duration = max(float(existing_public.duration or 0), float(card.get("duration") or 0))
+            existing_public.updated_at = datetime.now()
+            await existing_public.save()
+        else:
+            await PlaybackProgress(
+                user_key=viewer_name,
+                user_type="public",
+                item_id=card["item_id"],
+                collection_token=share_token,
+                position=float(card.get("position") or 0),
+                duration=float(card.get("duration") or 0),
+                updated_at=datetime.now(),
+            ).insert()
 
     return templates.TemplateResponse("profile.html", {
         "request": request,

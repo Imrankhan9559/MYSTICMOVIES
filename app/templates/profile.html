@@ -67,7 +67,7 @@
         {% if continue_cards %}
         <div class="flex gap-4 overflow-x-auto pb-1">
             {% for c in continue_cards %}
-            <a href="/player/{{ c.item_id }}" class="min-w-[160px] max-w-[160px] rounded-xl border border-gray-800 bg-black/80 overflow-hidden hover:border-yellow-500/60 transition">
+            <a href="{{ c.watch_url or ('/content/details/' ~ (c.slug or c.item_id)) }}" class="min-w-[160px] max-w-[160px] rounded-xl border border-gray-800 bg-black/80 overflow-hidden hover:border-yellow-500/60 transition">
                 <div class="aspect-[2/3]">
                     {% if c.poster %}
                     <img src="{{ c.poster }}" alt="{{ c.title }}" class="h-full w-full object-cover">
@@ -78,7 +78,7 @@
                     {% endif %}
                 </div>
                 <div class="p-3">
-                    <div class="text-sm text-white font-semibold truncate">{{ c.title }}</div>
+                    <div class="text-sm text-white font-semibold truncate">{{ c.display_title or c.title }}</div>
                     <div class="text-xs text-gray-500 mt-1">{{ c.remaining }}</div>
                 </div>
             </a>
@@ -97,7 +97,7 @@
         {% if history_rows %}
         <div class="space-y-3">
             {% for h in history_rows %}
-            <a href="/content/details/{{ h.slug or h.item_id }}" class="flex items-center gap-3 rounded-xl border border-gray-800 bg-black/80 p-3 hover:border-yellow-500/50 transition">
+            <a href="{{ h.watch_url or ('/content/details/' ~ (h.slug or h.item_id)) }}" class="flex items-center gap-3 rounded-xl border border-gray-800 bg-black/80 p-3 hover:border-yellow-500/50 transition">
                 <div class="h-14 w-10 rounded overflow-hidden border border-gray-700 bg-gray-900 shrink-0">
                     {% if h.poster %}
                     <img src="{{ h.poster }}" alt="{{ h.title }}" class="h-full w-full object-cover">
@@ -106,7 +106,7 @@
                     {% endif %}
                 </div>
                 <div class="min-w-0 flex-1">
-                    <div class="text-sm text-white font-semibold truncate">{{ h.title }}</div>
+                    <div class="text-sm text-white font-semibold truncate">{{ h.display_title or h.title }}</div>
                     <div class="text-xs text-gray-500">{{ h.remaining }}</div>
                 </div>
             </a>
