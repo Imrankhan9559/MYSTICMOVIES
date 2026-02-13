@@ -60,6 +60,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var swipeRefreshLayout: SwipeRefreshLayout
     private lateinit var progressBar: ProgressBar
+    private lateinit var loadingIcon: ImageView
     private lateinit var emptyView: TextView
     private lateinit var heroImage: ImageView
     private lateinit var heroTitle: TextView
@@ -112,6 +113,7 @@ class MainActivity : AppCompatActivity() {
 
         swipeRefreshLayout = findViewById(R.id.swipeRefreshLayout)
         progressBar = findViewById(R.id.progressBar)
+        loadingIcon = findViewById(R.id.imgLoadingIcon)
         emptyView = findViewById(R.id.tvEmpty)
         heroImage = findViewById(R.id.imgHero)
         heroTitle = findViewById(R.id.tvHeroTitle)
@@ -192,13 +194,26 @@ class MainActivity : AppCompatActivity() {
 
         if (ui.logoUrl.isNotBlank()) {
             imgHeaderLogo.visibility = View.VISIBLE
-            imgHeaderLogo.load(ui.logoUrl) {
+            imgHeaderLogo.load(resolveImageUrl(ui.logoUrl)) {
                 crossfade(true)
                 error(android.R.drawable.sym_def_app_icon)
                 placeholder(android.R.drawable.sym_def_app_icon)
             }
         } else {
             imgHeaderLogo.visibility = View.GONE
+        }
+
+        val loadingIconUrl = AppRuntimeState.loadingIconUrl
+        if (loadingIconUrl.isNotBlank()) {
+            loadingIcon.visibility = View.GONE
+            loadingIcon.load(resolveImageUrl(loadingIconUrl)) {
+                crossfade(true)
+                error(android.R.drawable.ic_popup_sync)
+                placeholder(android.R.drawable.ic_popup_sync)
+            }
+        } else {
+            loadingIcon.setImageResource(android.R.drawable.ic_popup_sync)
+            loadingIcon.visibility = View.GONE
         }
 
         if (AppRuntimeState.notifications.isNotEmpty()) {
@@ -346,8 +361,10 @@ class MainActivity : AppCompatActivity() {
 
         if (showLoader) {
             progressBar.visibility = View.VISIBLE
+            loadingIcon.visibility = View.VISIBLE
         } else {
             swipeRefreshLayout.isRefreshing = true
+            loadingIcon.visibility = View.GONE
         }
         emptyView.visibility = View.GONE
 
@@ -358,6 +375,7 @@ class MainActivity : AppCompatActivity() {
 
             loading = false
             progressBar.visibility = View.GONE
+            loadingIcon.visibility = View.GONE
             swipeRefreshLayout.isRefreshing = false
 
             if (result.response == null) {
@@ -387,7 +405,7 @@ class MainActivity : AppCompatActivity() {
         if (hero == null || hero.image.isBlank()) {
             val splash = AppRuntimeState.splashImageUrl
             if (splash.isNotBlank()) {
-                heroImage.load(splash) {
+                heroImage.load(resolveImageUrl(splash)) {
                     crossfade(true)
                     error(android.R.drawable.ic_menu_report_image)
                     placeholder(android.R.drawable.ic_menu_report_image)
@@ -400,7 +418,7 @@ class MainActivity : AppCompatActivity() {
             heroImage.setOnClickListener(null)
             return
         }
-        heroImage.load(hero.image) {
+        heroImage.load(resolveImageUrl(hero.image)) {
             crossfade(true)
             placeholder(android.R.drawable.ic_menu_report_image)
             error(android.R.drawable.ic_menu_report_image)
@@ -474,8 +492,8 @@ class MainActivity : AppCompatActivity() {
                             title = row.optString("title"),
                             year = row.optString("year"),
                             type = row.optString("type"),
-                            poster = row.optString("poster"),
-                            backdrop = row.optString("backdrop"),
+                            poster = row.optString("poster_original").ifBlank { row.optString("poster") },
+                            backdrop = row.optString("backdrop_original").ifBlank { row.optString("backdrop") },
                             qualityRow = readStringArray(row.optJSONArray("quality_row")),
                             seasonText = row.optString("season_text"),
                         )
@@ -500,7 +518,7 @@ class MainActivity : AppCompatActivity() {
         return HeroSlide(
             title = row.optString("title"),
             subtitle = row.optString("subtitle"),
-            image = row.optString("image"),
+            image = row.optString("image_original").ifBlank { row.optString("image") },
             contentKey = contentKey
         )
     }

@@ -48,6 +48,25 @@ fun createApiHttpClient(): OkHttpClient {
         .build()
 }
 
+fun resolveImageUrl(raw: String): String {
+    val absolute = absoluteUrl(raw)
+    if (absolute.isBlank()) return ""
+
+    val parsed = absolute.toHttpUrlOrNull() ?: return absolute
+    val base = AppRuntimeState.apiBaseUrl.toHttpUrlOrNull() ?: return absolute
+
+    // If the API sends an old domain for image proxy, pin it to active API base.
+    if (parsed.encodedPath.startsWith("/app-api/image") && !parsed.host.equals(base.host, ignoreCase = true)) {
+        return parsed.newBuilder()
+            .scheme(base.scheme)
+            .host(base.host)
+            .port(base.port)
+            .build()
+            .toString()
+    }
+    return absolute
+}
+
 fun apiBaseCandidates(): List<String> {
     val rows = linkedSetOf(
         AppRuntimeState.apiBaseUrl.trimEnd('/'),

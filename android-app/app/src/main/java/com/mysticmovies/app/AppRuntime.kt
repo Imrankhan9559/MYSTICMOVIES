@@ -80,8 +80,10 @@ object AppRuntimeState {
         keepaliveOnLaunch = app.optBoolean("keepalive_on_launch", true)
         maintenanceMode = app.optBoolean("maintenance_mode", false)
         maintenanceMessage = app.optString("maintenance_message")
-        splashImageUrl = app.optString("splash_image_url")
-        loadingIconUrl = app.optString("loading_icon_url")
+        splashImageUrl = app.optString("splash_image_original")
+            .ifBlank { app.optString("splash_image_url") }
+        loadingIconUrl = app.optString("loading_icon_original")
+            .ifBlank { app.optString("loading_icon_url") }
         adsMessage = app.optString("ads_message")
 
         val telegram = root.optJSONObject("telegram") ?: JSONObject()
@@ -92,7 +94,7 @@ object AppRuntimeState {
             siteName = uiRoot.optString("site_name").ifBlank { "mysticmovies" },
             footerText = uiRoot.optString("footer_text").ifBlank { "MysticMovies" },
             topbarText = uiRoot.optString("topbar_text").ifBlank { "Welcome to Mystic Movies" },
-            logoUrl = uiRoot.optString("logo_url"),
+            logoUrl = uiRoot.optString("logo_original").ifBlank { uiRoot.optString("logo_url") },
             headerMenu = readMenu(uiRoot.optJSONArray("header_menu")),
             footerExploreLinks = readMenu(uiRoot.optJSONArray("footer_explore_links")),
             footerSupportLinks = readMenu(uiRoot.optJSONArray("footer_support_links")),

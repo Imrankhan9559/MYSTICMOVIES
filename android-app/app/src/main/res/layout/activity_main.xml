@@ -178,6 +178,16 @@
         android:indeterminate="true"
         android:visibility="gone" />
 
+    <ImageView
+        android:id="@+id/imgLoadingIcon"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginTop="8dp"
+        android:contentDescription="Loading"
+        android:scaleType="centerCrop"
+        android:visibility="gone" />
+
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -257,4 +267,3 @@
             android:textStyle="bold" />
     </LinearLayout>
 </LinearLayout>
-

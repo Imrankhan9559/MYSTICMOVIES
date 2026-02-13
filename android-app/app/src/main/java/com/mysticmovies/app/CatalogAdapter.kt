@@ -63,7 +63,7 @@ class CatalogAdapter(
             }
 
             val imageUrl = card.poster.ifBlank { card.backdrop }
-            poster.load(imageUrl) {
+            poster.load(resolveImageUrl(imageUrl)) {
                 crossfade(true)
                 placeholder(android.R.drawable.ic_menu_report_image)
                 error(android.R.drawable.ic_menu_report_image)
@@ -81,4 +81,3 @@ class CatalogAdapter(
         }
     }
 }
-

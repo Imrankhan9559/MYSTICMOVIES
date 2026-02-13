@@ -456,13 +456,18 @@ async def app_bootstrap(
     if not footer_about:
         footer_about = "Mystic Movies provides high-quality content for free. If a movie is missing, let us know."
 
+    splash_raw = (getattr(app_cfg, "splash_image_url", "") or "").strip()
+    loading_raw = (getattr(app_cfg, "loading_icon_url", "") or "").strip()
+
     return {
         "ok": True,
         "app": {
             "name": (getattr(app_cfg, "app_name", "") or "MysticMovies Android").strip(),
             "package_name": (getattr(app_cfg, "package_name", "") or "com.mysticmovies.app").strip(),
-            "splash_image_url": (getattr(app_cfg, "splash_image_url", "") or "").strip(),
-            "loading_icon_url": (getattr(app_cfg, "loading_icon_url", "") or "").strip(),
+            "splash_image_url": _app_image_url(request, splash_raw),
+            "loading_icon_url": _app_image_url(request, loading_raw),
+            "splash_image_original": splash_raw,
+            "loading_icon_original": loading_raw,
             "onboarding_message": (getattr(app_cfg, "onboarding_message", "") or "").strip(),
             "ads_message": (getattr(app_cfg, "ads_message", "") or "").strip(),
             "push_enabled": bool(getattr(app_cfg, "push_enabled", True)),
@@ -491,6 +496,7 @@ async def app_bootstrap(
             "footer_text": footer_text,
             "topbar_text": topbar_text,
             "logo_url": _app_image_url(request, logo_path),
+            "logo_original": logo_path,
             "header_menu": header_menu,
             "footer_explore_links": footer_explore,
             "footer_support_links": footer_support,

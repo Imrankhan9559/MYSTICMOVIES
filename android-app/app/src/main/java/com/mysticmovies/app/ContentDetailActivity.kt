@@ -127,7 +127,7 @@ class ContentDetailActivity : AppCompatActivity() {
 
         if (ui.logoUrl.isNotBlank()) {
             imgHeaderLogo.visibility = View.VISIBLE
-            imgHeaderLogo.load(ui.logoUrl) {
+            imgHeaderLogo.load(resolveImageUrl(ui.logoUrl)) {
                 crossfade(true)
                 error(android.R.drawable.sym_def_app_icon)
                 placeholder(android.R.drawable.sym_def_app_icon)
@@ -197,8 +197,11 @@ class ContentDetailActivity : AppCompatActivity() {
         meta.text = if (itemYear.isNotBlank()) "$itemYear | $itemType" else itemType
         description.text = item.optString("description").ifBlank { "Description not available." }
 
-        val imageUrl = item.optString("poster").ifBlank { item.optString("backdrop") }
-        poster.load(imageUrl) {
+        val imageUrl = item.optString("poster_original")
+            .ifBlank { item.optString("poster") }
+            .ifBlank { item.optString("backdrop_original") }
+            .ifBlank { item.optString("backdrop") }
+        poster.load(resolveImageUrl(imageUrl)) {
             crossfade(true)
             placeholder(android.R.drawable.ic_menu_report_image)
             error(android.R.drawable.ic_menu_report_image)
