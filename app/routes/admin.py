@@ -11,6 +11,7 @@ from app.core.content_store import build_content_groups, sync_content_catalog
 from app.db.models import (
     User,
     FileSystemItem,
+    ContentItem,
     PlaybackProgress,
     TokenSetting,
     SiteSettings,
@@ -265,6 +266,46 @@ async def _cleanup_parents(folder_id: str | None) -> None:
         parent_id = folder.parent_id
         await folder.delete()
         current_id = parent_id
+
+
+async def _delete_tree(folder_id: str | None) -> list[str]:
+    current_id = (folder_id or "").strip()
+    if not current_id:
+        return []
+    folder = await FileSystemItem.get(current_id)
+    if not folder:
+        return []
+    deleted_file_ids: list[str] = []
+    children = await FileSystemItem.find(FileSystemItem.parent_id == str(folder.id)).to_list()
+    for child in children:
+        if child.is_folder:
+            deleted_file_ids.extend(await _delete_tree(str(child.id)))
+            continue
+        deleted_file_ids.append(str(child.id))
+        await child.delete()
+    await folder.delete()
+    return deleted_file_ids
+
+
+async def _remove_file_from_content_docs(file_id: str) -> None:
+    target = (file_id or "").strip()
+    if not target:
+        return
+    docs = await ContentItem.find({
+        "$or": [
+            {"file_ids": target},
+            {"files.file_id": target},
+        ]
+    }).to_list()
+    for doc in docs:
+        file_ids = [str(x).strip() for x in (getattr(doc, "file_ids", []) or [])]
+        file_refs = list(getattr(doc, "files", []) or [])
+        doc.file_ids = [x for x in file_ids if x and x != target]
+        doc.files = [row for row in file_refs if str(getattr(row, "file_id", "") or "").strip() != target]
+        if not doc.file_ids and not doc.files:
+            doc.status = "archived"
+        doc.updated_at = datetime.now()
+        await doc.save()
 
 def _quality_rank(q: str) -> int:
     order = {"2160P": 5, "1440P": 4, "1080P": 3, "720P": 2, "480P": 1, "380P": 0, "360P": 0, "HD": 0}
@@ -1600,6 +1641,11 @@ async def publish_content_add_files(
     if not raw_ids:
         return RedirectResponse(f"/dashboard/publish-content/edit/{group.get('id')}", status_code=303)
     items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(raw_ids))).to_list()
+    items = [
+        item for item in items
+        if (getattr(item, "source", "") or "").strip().lower() == "storage"
+        and (getattr(item, "catalog_status", "") or "").strip().lower() not in {"published", "used"}
+    ]
     if not items:
         return RedirectResponse(f"/dashboard/publish-content/edit/{group.get('id')}", status_code=303)
 
@@ -1670,12 +1716,14 @@ async def publish_content_delete(
         return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
     deleted_items: list[FileSystemItem] = []
+    deleted_file_ids: set[str] = set()
     if group and group.get("items"):
         ids = [i.get("id") for i in group["items"] if i.get("id")]
         if ids:
             deleted_items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(ids))).to_list()
             if deleted_items:
                 await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(ids))).delete()
+                deleted_file_ids.update(str(x.id) for x in deleted_items)
     if not deleted_items:
         query_items = [
             FileSystemItem.catalog_status == "published",
@@ -1687,6 +1735,7 @@ async def publish_content_delete(
         deleted_items = await FileSystemItem.find(*query_items).to_list()
         if deleted_items:
             await FileSystemItem.find(In(FileSystemItem.id, _cast_ids([str(x.id) for x in deleted_items]))).delete()
+            deleted_file_ids.update(str(x.id) for x in deleted_items)
 
     parent_ids = {str(item.parent_id) for item in deleted_items if item.parent_id}
     for parent_id in parent_ids:
@@ -1703,9 +1752,36 @@ async def publish_content_delete(
             target_folder = await _find_folder(admin_phone, group_title, str(root.id))
             if target_folder:
                 try:
-                    await _cleanup_empty_tree(str(target_folder.id))
+                    # Hard delete title folder subtree (all files + nested folders).
+                    subtree_deleted = await _delete_tree(str(target_folder.id))
+                    deleted_file_ids.update(subtree_deleted)
+                    # Then cleanup root if empty.
+                    await _cleanup_parents(str(root.id))
                 except Exception:
                     pass
+
+    # Remove stale file refs from content docs.
+    for fid in list(deleted_file_ids):
+        try:
+            await _remove_file_from_content_docs(fid)
+        except Exception:
+            pass
+
+    # Remove matching content docs so the publish list updates immediately.
+    if group and group.get("id"):
+        try:
+            doc = await ContentItem.get(str(group.get("id")))
+        except Exception:
+            doc = None
+        if doc:
+            await doc.delete()
+    doc_filters = [
+        ContentItem.content_type == group_type,
+        ContentItem.title == group_title,
+    ]
+    if group_year:
+        doc_filters.append(ContentItem.year == group_year)
+    await ContentItem.find(*doc_filters).delete()
 
     await sync_content_catalog(force=True)
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
@@ -1725,8 +1801,13 @@ async def publish_content_delete_file(
     if not item or item.catalog_status != "published":
         return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
     parent_id = item.parent_id
+    removed_id = str(item.id)
     await item.delete()
     await _cleanup_parents(parent_id)
+    try:
+        await _remove_file_from_content_docs(removed_id)
+    except Exception:
+        pass
     await sync_content_catalog(force=True)
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
@@ -1817,7 +1898,9 @@ async def admin_storage_search(request: Request, q: str = "", offset: int = 0, l
     limit = max(20, min(limit, 500))
 
     query: dict = {
-        "is_folder": False
+        "is_folder": False,
+        "source": "storage",
+        "catalog_status": {"$nin": ["published", "used"]},
     }
     if q:
         search_regex = _build_search_regex(q)
@@ -2142,6 +2225,9 @@ async def _publish_items(
 
     for item in items:
         try:
+            # Only consume storage rows; never change existing published catalog files to `used`.
+            if (getattr(item, "source", "") or "").strip().lower() != "storage":
+                continue
             override = overrides.get(str(item.id), {}) or {}
             if override.get("quality"):
                 item.quality = override.get("quality")
@@ -2192,6 +2278,11 @@ async def main_control_publish(
     if not raw_ids:
         return RedirectResponse("/dashboard", status_code=303)
     items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(raw_ids))).to_list()
+    items = [
+        item for item in items
+        if (getattr(item, "source", "") or "").strip().lower() == "storage"
+        and (getattr(item, "catalog_status", "") or "").strip().lower() not in {"published", "used"}
+    ]
     if not items:
         return RedirectResponse("/dashboard", status_code=303)
 
