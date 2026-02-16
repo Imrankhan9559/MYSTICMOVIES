@@ -2,6 +2,7 @@ import asyncio
 import csv
 import io
 import re
+from difflib import SequenceMatcher
 from datetime import datetime
 from typing import Any
 
@@ -15,14 +16,19 @@ from app.db.models import FileSystemItem, MassContentState, User
 from app.routes.admin import _admin_context_base, _build_title_regex, _is_admin, _publish_items
 from app.routes.content import _parse_name, _tmdb_details, _tmdb_get, _tmdb_search
 from app.routes.dashboard import _cast_ids, get_current_user
+from app.utils.file_utils import format_size
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
 _MASS_WS_CLIENTS: set[WebSocket] = set()
 _MASS_TASKS: dict[str, asyncio.Task] = {}
+_MASS_UPLOAD_TASKS: dict[str, asyncio.Task] = {}
 _MASS_LOCKS: dict[str, asyncio.Lock] = {}
 _MASS_BROADCAST_LOCK = asyncio.Lock()
+_MASS_PROCESS_SEMAPHORE = asyncio.Semaphore(3)
+_STORAGE_POOL_CACHE: dict[str, Any] = {"rows": [], "expires_at": datetime.min}
+_STORAGE_POOL_TTL_SECONDS = 45
 
 _SERIES_SE_RE = re.compile(r"[Ss](\d{1,2})\s*[Ee](\d{1,3})")
 _SERIES_SE_ALT_RE = re.compile(r"\b(\d{1,2})x(\d{1,3})\b", re.I)
@@ -35,6 +41,78 @@ def _norm_title(text: str) -> str:
 
 def _tokens(text: str) -> list[str]:
     return [x for x in re.split(r"[^a-z0-9]+", (text or "").lower()) if x]
+
+
+def _to_title_marker(title: str) -> str:
+    clean = " ".join((title or "").split()).strip()
+    return f"title:{clean}" if clean else ""
+
+
+def _to_source_marker(source_note: str) -> str:
+    clean = (source_note or "").strip().lower()
+    return f"source:{clean}" if clean else ""
+
+
+def _extract_title_markers(values: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for raw in values or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        lower = text.lower()
+        if lower.startswith("title:"):
+            t = text.split(":", 1)[1].strip()
+            if t:
+                out.append(t)
+            continue
+        if lower.startswith("source:"):
+            continue
+        if lower in {"manual", "csv_excel"}:
+            continue
+        # Backward compatibility: old rows may have saved plain titles directly.
+        out.append(text)
+    # Unique preserve order
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for t in out:
+        key = _norm_title(t)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        uniq.append(t)
+    return uniq
+
+
+def _expand_title_variants(title: str) -> list[str]:
+    clean = " ".join((title or "").split()).strip()
+    if not clean:
+        return []
+    variants = [clean]
+    parsed = _parse_name(clean)
+    parsed_title = " ".join((parsed.get("title") or "").split()).strip()
+    if parsed_title:
+        variants.append(parsed_title)
+    # Remove common suffix qualifiers.
+    for sep in [":", "-", "|", "("]:
+        if sep in clean:
+            part = clean.split(sep, 1)[0].strip()
+            if part and len(_tokens(part)) >= 2:
+                variants.append(part)
+    # Compact form with stop words removed helps with noisy filenames.
+    stop = {"the", "a", "an", "movie", "series", "season", "episode", "part", "vol", "volume"}
+    token_list = [t for t in _tokens(clean) if t not in stop]
+    if token_list:
+        variants.append(" ".join(token_list))
+    # Unique preserve order
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in variants:
+        key = _norm_title(value)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(value)
+    return out
 
 
 def _guess_type(raw_title: str, hint: str) -> str:
@@ -112,24 +190,42 @@ def _source_upload_label(item: FileSystemItem) -> str:
     return "Uploaded from Bot Listener" if source == "bot" else "Uploaded from Telegram Storage"
 
 
-def _title_match(target_title: str, file_name: str) -> bool:
-    target_norm = _norm_title(target_title)
-    if not target_norm:
-        return False
-
+def _title_match(target_titles: list[str], file_name: str, row_title: str = "", row_series_title: str = "") -> bool:
     parsed = _parse_name(file_name or "")
     parsed_title = (parsed.get("title") or "").strip()
-    parsed_norm = _norm_title(parsed_title)
-    name_norm = _norm_title(file_name or "")
-    if target_norm and (target_norm in parsed_norm or parsed_norm in target_norm):
-        return True
-    if target_norm and target_norm in name_norm:
-        return True
 
-    target_tokens = _tokens(target_title)
-    sample = f"{parsed_title} {file_name}".lower()
-    overlap = sum(1 for token in target_tokens if token and token in sample)
-    return overlap >= max(1, min(2, len(target_tokens)))
+    samples = [file_name or "", parsed_title, row_title or "", row_series_title or ""]
+    sample_norms = [_norm_title(s) for s in samples if s]
+    sample_token_sets = [set(_tokens(s)) for s in samples if s]
+
+    for target in target_titles:
+        target_norm = _norm_title(target)
+        if not target_norm:
+            continue
+        target_tokens = set(_tokens(target))
+        if not target_tokens:
+            continue
+
+        for sample_norm in sample_norms:
+            if not sample_norm:
+                continue
+            if target_norm in sample_norm or sample_norm in target_norm:
+                return True
+            # Fuzzy fallback for reordered/noisy names.
+            sim = SequenceMatcher(None, target_norm, sample_norm).ratio()
+            token_count = len(target_tokens)
+            threshold = 0.84 if token_count <= 2 else (0.78 if token_count == 3 else 0.72)
+            if sim >= threshold:
+                return True
+
+        for sample_tokens in sample_token_sets:
+            if not sample_tokens:
+                continue
+            overlap = len(target_tokens.intersection(sample_tokens))
+            required = 1 if len(target_tokens) <= 2 else min(3, max(2, len(target_tokens) - 1))
+            if overlap >= required:
+                return True
+    return False
 
 
 def _panel_label(panel: str) -> str:
@@ -141,6 +237,14 @@ def _panel_label(panel: str) -> str:
         "complete": "Complete Content",
     }
     return labels.get(panel, panel)
+
+
+def _file_note_suffix(row: dict) -> str:
+    name = (row.get("name") or "").strip()
+    size_label = format_size(int(row.get("size") or 0))
+    if name:
+        return f" | {name} ({size_label})"
+    return f" | {size_label}"
 
 
 def _parse_csv_payload(raw: bytes) -> list[dict]:
@@ -255,19 +359,114 @@ def _dedupe_rows(rows: list[dict]) -> list[dict]:
 
 
 async def _fetch_storage_candidates(title: str) -> list[FileSystemItem]:
-    pattern = _build_title_regex(title)
-    if not pattern:
-        return []
+    return await _fetch_storage_candidates_multi([title])
+
+
+def _search_titles_for_state(state: MassContentState) -> list[str]:
+    values: list[str] = []
+    values.extend(_extract_title_markers(list(state.source_inputs or [])))
+    if state.title:
+        values.append(state.title)
+    expanded: list[str] = []
+    for v in values:
+        expanded.extend(_expand_title_variants(v))
+    # Unique preserve order
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in expanded:
+        key = _norm_title(v)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(v)
+    return out
+
+
+async def _get_storage_pool_cached() -> list[FileSystemItem]:
+    now = datetime.now()
+    expires_at = _STORAGE_POOL_CACHE.get("expires_at") or datetime.min
+    rows = _STORAGE_POOL_CACHE.get("rows") or []
+    if rows and now < expires_at:
+        return rows
     query = {
         "is_folder": False,
-        "name": {"$regex": pattern, "$options": "i"},
         "$or": [
             {"source": "bot"},
             {"source": "storage", "catalog_status": {"$nin": ["published", "used"]}},
         ],
     }
-    rows = await FileSystemItem.find(query).sort("-created_at").limit(4000).to_list()
-    return [row for row in rows if _is_video_row(row) and _title_match(title, row.name or "")]
+    fresh = await FileSystemItem.find(query).sort("-created_at").limit(5500).to_list()
+    _STORAGE_POOL_CACHE["rows"] = fresh
+    _STORAGE_POOL_CACHE["expires_at"] = datetime.fromtimestamp(now.timestamp() + _STORAGE_POOL_TTL_SECONDS)
+    return fresh
+
+
+async def _fetch_storage_candidates_multi(search_titles: list[str]) -> list[FileSystemItem]:
+    expanded: list[str] = []
+    for title in search_titles:
+        expanded.extend(_expand_title_variants(title))
+    # Deduplicate and keep meaningful titles
+    seen: set[str] = set()
+    title_variants: list[str] = []
+    for title in expanded:
+        key = _norm_title(title)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        title_variants.append(title)
+
+    if not title_variants:
+        return []
+
+    # First pass: database regex match for efficiency.
+    name_or: list[dict] = []
+    for title in title_variants[:10]:
+        pattern = _build_title_regex(title)
+        if not pattern:
+            continue
+        name_or.append({"name": {"$regex": pattern, "$options": "i"}})
+        name_or.append({"title": {"$regex": pattern, "$options": "i"}})
+        name_or.append({"series_title": {"$regex": pattern, "$options": "i"}})
+
+    rows: list[FileSystemItem] = []
+    if name_or:
+        query = {
+            "is_folder": False,
+            "$and": [
+                {"$or": name_or},
+                {
+                    "$or": [
+                        {"source": "bot"},
+                        {"source": "storage", "catalog_status": {"$nin": ["published", "used"]}},
+                    ]
+                },
+            ],
+        }
+        rows = await FileSystemItem.find(query).sort("-created_at").limit(3500).to_list()
+
+    # Fallback pass: broader scan if strict query produced very few hits.
+    if len(rows) < 3:
+        fallback_rows = await _get_storage_pool_cached()
+        if fallback_rows:
+            # Merge by id
+            merged = {str(x.id): x for x in rows}
+            for item in fallback_rows:
+                merged[str(item.id)] = item
+            rows = list(merged.values())
+
+    filtered = [
+        row for row in rows
+        if _is_video_row(row)
+        and _title_match(
+            title_variants,
+            row.name or "",
+            row_title=(getattr(row, "title", "") or ""),
+            row_series_title=(getattr(row, "series_title", "") or ""),
+        )
+    ]
+    # Keep newest first
+    filtered.sort(key=lambda x: getattr(x, "created_at", None) or datetime.min, reverse=True)
+    return filtered
 
 
 def _best_row(rows: list[dict], season: int, episode: int, quality: str | None = None) -> dict | None:
@@ -291,7 +490,8 @@ def _best_row(rows: list[dict], season: int, episode: int, quality: str | None =
 async def _scan_files_for_state(
     state: MassContentState,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict], str, str, bool]:
-    candidates = await _fetch_storage_candidates(state.title)
+    search_titles = _search_titles_for_state(state)
+    candidates = await _fetch_storage_candidates_multi(search_titles or [state.title])
     found_rows: list[dict] = []
     for row in candidates:
         if state.content_type == "series":
@@ -359,7 +559,7 @@ async def _scan_files_for_state(
                         "episode": None,
                         "quality": quality,
                         "state": "found",
-                        "text": f"{quality} -> Found ({picked.get('upload_label')})",
+                        "text": f"{quality} -> Found ({picked.get('upload_label')}){_file_note_suffix(picked)}",
                     }
                 )
             else:
@@ -470,7 +670,7 @@ async def _scan_files_for_state(
                         "episode": episode_no,
                         "quality": chosen_quality,
                         "state": "found",
-                        "text": f"Season {season_no} Episode {episode_no} {chosen_quality} -> Found ({same_quality.get('upload_label')})",
+                        "text": f"Season {season_no} Episode {episode_no} {chosen_quality} -> Found ({same_quality.get('upload_label')}){_file_note_suffix(same_quality)}",
                     }
                 )
                 upload_plan.append(
@@ -490,7 +690,7 @@ async def _scan_files_for_state(
                         "episode": episode_no,
                         "quality": quality,
                         "state": "found_partial",
-                        "text": f"Season {season_no} Episode {episode_no} {quality} -> Found ({any_quality.get('upload_label')})",
+                        "text": f"Season {season_no} Episode {episode_no} {quality} -> Found ({any_quality.get('upload_label')}){_file_note_suffix(any_quality)}",
                     }
                 )
                 upload_plan.append(
@@ -569,8 +769,20 @@ async def _upsert_mass_entry(title: str, content_type: str, year: str, source_no
         if year and not existing.year:
             existing.year = year
             changed = True
-        if source_note and source_note not in (existing.source_inputs or []):
-            existing.source_inputs = list(existing.source_inputs or []) + [source_note]
+        markers: list[str] = []
+        source_marker = _to_source_marker(source_note)
+        title_marker = _to_title_marker(clean_title)
+        if source_marker:
+            markers.append(source_marker)
+        if title_marker:
+            markers.append(title_marker)
+        merged_inputs = list(existing.source_inputs or [])
+        for marker in markers:
+            if marker and marker not in merged_inputs:
+                merged_inputs.append(marker)
+                changed = True
+        if merged_inputs != list(existing.source_inputs or []):
+            existing.source_inputs = merged_inputs
             changed = True
         if existing.panel in {"tmdb_not_found", "file_not_found", "incomplete"}:
             existing.panel = "processing"
@@ -592,7 +804,7 @@ async def _upsert_mass_entry(title: str, content_type: str, year: str, source_no
         panel="processing",
         tmdb_status="pending",
         file_status="pending",
-        source_inputs=[source_note] if source_note else [],
+        source_inputs=[x for x in [_to_source_marker(source_note), _to_title_marker(clean_title)] if x],
         created_at=datetime.now(),
         updated_at=datetime.now(),
     )
@@ -650,8 +862,12 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                     await _mass_broadcast_snapshot()
                     return
 
+                pre_tmdb_title = (row.title or "").strip()
                 tmdb_title = details.get("name") if row.content_type == "series" else details.get("title")
                 if tmdb_title:
+                    marker = _to_title_marker(pre_tmdb_title)
+                    if marker and marker not in (row.source_inputs or []):
+                        row.source_inputs = list(row.source_inputs or []) + [marker]
                     row.title = tmdb_title.strip()
                     row.normalized_title = _norm_title(row.title)
 
@@ -768,7 +984,8 @@ def _schedule_process(item_id: str, mode: str = "full") -> None:
 
     async def _runner():
         try:
-            await _process_mass_item(item_id, mode=mode)
+            async with _MASS_PROCESS_SEMAPHORE:
+                await _process_mass_item(item_id, mode=mode)
         finally:
             _MASS_TASKS.pop(item_id, None)
 
@@ -795,6 +1012,8 @@ def _serialize_row(row: MassContentState) -> dict:
         "live_notes": list(row.live_notes or []),
         "matched_files_count": len(row.matched_files or []),
         "source_inputs": list(row.source_inputs or []),
+        "upload_state": str(getattr(row, "upload_state", "") or "idle"),
+        "upload_message": str(getattr(row, "upload_message", "") or ""),
         "last_error": row.last_error or "",
         "updated_at": row.updated_at.isoformat() if row.updated_at else "",
     }
@@ -1000,6 +1219,8 @@ async def advance_mass_content_adder_retry_files(request: Request, item_id: str)
     row.last_error = None
     row.updated_at = datetime.now()
     await row.save()
+    _STORAGE_POOL_CACHE["rows"] = []
+    _STORAGE_POOL_CACHE["expires_at"] = datetime.min
     _schedule_process(str(row.id), mode="files")
     await _mass_broadcast_snapshot()
     return {"ok": True}
@@ -1016,6 +1237,138 @@ async def advance_mass_content_adder_delete(request: Request, item_id: str):
     await row.delete()
     await _mass_broadcast_snapshot()
     return {"ok": True}
+
+
+def _build_upload_payload(row: MassContentState) -> tuple[list[str], dict[str, dict], str]:
+    plan = list(row.upload_plan or [])
+    if not plan:
+        return [], {}, "No files available for upload."
+
+    raw_file_ids: list[str] = []
+    overrides: dict[str, dict] = {}
+    for entry in plan:
+        file_id = (entry.get("file_id") or "").strip()
+        if not file_id:
+            continue
+        raw_file_ids.append(file_id)
+        payload = {"quality": (entry.get("quality") or "HD").upper()}
+        if row.content_type == "series":
+            payload["season"] = int(entry.get("season") or 1)
+            payload["episode"] = int(entry.get("episode") or 1)
+            payload["episode_title"] = (entry.get("episode_title") or "").strip()
+        overrides[file_id] = payload
+
+    raw_file_ids = list(dict.fromkeys(raw_file_ids))
+    if not raw_file_ids:
+        return [], {}, "No valid file ids found in upload plan."
+    return raw_file_ids, overrides, ""
+
+
+async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
+    lock = _MASS_LOCKS.setdefault(f"upload:{item_id}", asyncio.Lock())
+    async with lock:
+        row = await MassContentState.get(item_id)
+        if not row:
+            return
+
+        row.upload_state = "uploading"
+        row.upload_message = "Uploading content in background..."
+        row.updated_at = datetime.now()
+        await row.save()
+        await _mass_broadcast_snapshot()
+
+        try:
+            if row.tmdb_status != "found":
+                row.upload_state = "failed"
+                row.upload_message = "TMDB data not found."
+                row.last_error = "TMDB data not found."
+                row.updated_at = datetime.now()
+                await row.save()
+                await _mass_broadcast_snapshot()
+                return
+            if row.panel == "incomplete" and not allow_incomplete:
+                row.upload_state = "failed"
+                row.upload_message = "Incomplete content requires confirmation."
+                row.last_error = "Incomplete content requires confirmation."
+                row.updated_at = datetime.now()
+                await row.save()
+                await _mass_broadcast_snapshot()
+                return
+
+            raw_file_ids, overrides, build_err = _build_upload_payload(row)
+            if build_err:
+                row.upload_state = "failed"
+                row.upload_message = build_err
+                row.last_error = build_err
+                row.updated_at = datetime.now()
+                await row.save()
+                await _mass_broadcast_snapshot()
+                return
+
+            items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(raw_file_ids))).to_list()
+            items = [item for item in items if not item.is_folder]
+            if not items:
+                row.upload_state = "failed"
+                row.upload_message = "Selected files are not available anymore."
+                row.last_error = "Selected files are not available anymore."
+                row.updated_at = datetime.now()
+                await row.save()
+                await _mass_broadcast_snapshot()
+                return
+
+            await _publish_items(
+                items=items,
+                catalog_type=row.content_type,
+                title=row.title,
+                year=(row.year or "").strip(),
+                desc=(row.description or "").strip(),
+                genres_list=list(row.genres or []),
+                actors_list=list(row.actors or []),
+                director=(row.director or "").strip(),
+                trailer_url=(row.trailer_url or "").strip(),
+                release_date=(row.release_date or "").strip(),
+                poster_url=(row.poster_url or "").strip(),
+                backdrop_url=(row.backdrop_url or "").strip(),
+                trailer_key=(row.trailer_key or "").strip(),
+                cast_profiles=list(row.cast_profiles or []),
+                tmdb_id=row.tmdb_id,
+                overrides=overrides,
+            )
+            _STORAGE_POOL_CACHE["rows"] = []
+            _STORAGE_POOL_CACHE["expires_at"] = datetime.min
+
+            row.uploaded = True
+            row.uploaded_at = datetime.now()
+            row.upload_state = "done"
+            row.upload_message = "Upload completed successfully."
+            row.last_error = None
+            row.updated_at = datetime.now()
+            await row.save()
+            await _mass_broadcast_snapshot()
+        except Exception as exc:
+            row = await MassContentState.get(item_id)
+            if row:
+                row.upload_state = "failed"
+                row.upload_message = str(exc)
+                row.last_error = str(exc)
+                row.updated_at = datetime.now()
+                await row.save()
+                await _mass_broadcast_snapshot()
+
+
+def _queue_upload_worker(item_id: str, allow_incomplete: bool) -> bool:
+    task = _MASS_UPLOAD_TASKS.get(item_id)
+    if task and not task.done():
+        return False
+
+    async def _runner():
+        try:
+            await _run_upload_worker(item_id, allow_incomplete)
+        finally:
+            _MASS_UPLOAD_TASKS.pop(item_id, None)
+
+    _MASS_UPLOAD_TASKS[item_id] = asyncio.create_task(_runner())
+    return True
 
 
 @router.post("/advance-mass-content-adder/upload/{item_id}")
@@ -1046,65 +1399,27 @@ async def advance_mass_content_adder_upload(
             status_code=409,
         )
 
-    plan = list(row.upload_plan or [])
-    if not plan:
+    raw_ids, _, build_err = _build_upload_payload(row)
+    if build_err:
+        return JSONResponse({"ok": False, "error": build_err}, status_code=400)
+    if not raw_ids:
         return JSONResponse({"ok": False, "error": "No files available for upload."}, status_code=400)
 
-    raw_file_ids: list[str] = []
-    overrides: dict[str, dict] = {}
-    for entry in plan:
-        file_id = (entry.get("file_id") or "").strip()
-        if not file_id:
-            continue
-        raw_file_ids.append(file_id)
-        payload = {"quality": (entry.get("quality") or "HD").upper()}
-        if row.content_type == "series":
-            payload["season"] = int(entry.get("season") or 1)
-            payload["episode"] = int(entry.get("episode") or 1)
-            payload["episode_title"] = (entry.get("episode_title") or "").strip()
-        overrides[file_id] = payload
-
-    raw_file_ids = list(dict.fromkeys(raw_file_ids))
-    if not raw_file_ids:
-        return JSONResponse({"ok": False, "error": "No valid file ids found in upload plan."}, status_code=400)
-
-    items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(raw_file_ids))).to_list()
-    items = [item for item in items if not item.is_folder]
-    if not items:
-        return JSONResponse({"ok": False, "error": "Selected files are not available anymore."}, status_code=400)
-
-    try:
-        await _publish_items(
-            items=items,
-            catalog_type=row.content_type,
-            title=row.title,
-            year=(row.year or "").strip(),
-            desc=(row.description or "").strip(),
-            genres_list=list(row.genres or []),
-            actors_list=list(row.actors or []),
-            director=(row.director or "").strip(),
-            trailer_url=(row.trailer_url or "").strip(),
-            release_date=(row.release_date or "").strip(),
-            poster_url=(row.poster_url or "").strip(),
-            backdrop_url=(row.backdrop_url or "").strip(),
-            trailer_key=(row.trailer_key or "").strip(),
-            cast_profiles=list(row.cast_profiles or []),
-            tmdb_id=row.tmdb_id,
-            overrides=overrides,
-        )
-    except Exception as exc:
-        row.last_error = str(exc)
-        row.updated_at = datetime.now()
-        await row.save()
-        await _mass_broadcast_snapshot()
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
-
-    row.uploaded = True
-    row.uploaded_at = datetime.now()
+    queued = _queue_upload_worker(item_id, allow_incomplete)
+    row.upload_state = "queued" if queued else "uploading"
+    row.upload_message = "Upload queued. You can continue using this page."
     row.updated_at = datetime.now()
     await row.save()
     await _mass_broadcast_snapshot()
-    return {"ok": True}
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": True,
+            "already_running": (not queued),
+            "message": "Upload queued in background.",
+        },
+        status_code=202,
+    )
 
 
 def _rows_for_panel(panel: str, rows: list[MassContentState]) -> list[MassContentState]:

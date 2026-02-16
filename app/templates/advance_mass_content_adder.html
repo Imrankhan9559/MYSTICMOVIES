@@ -1,6 +1,53 @@
 {% extends "admin_base.html" %}
 
 {% block content %}
+<style>
+.mass-card {
+    animation: massFadeIn .28s ease;
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+    will-change: transform;
+}
+.mass-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.26);
+    border-color: #3b485a !important;
+}
+.panel-list {
+    max-height: 62vh;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+.panel-list::-webkit-scrollbar { width: 8px; }
+.panel-list::-webkit-scrollbar-thumb { background: #2f3b4b; border-radius: 10px; }
+.live-notes-box { max-height: 200px; overflow: auto; }
+.toast-wrap {
+    position: fixed;
+    right: 18px;
+    bottom: 18px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 360px;
+}
+.toast-item {
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 13px;
+    color: #fff;
+    box-shadow: 0 8px 20px rgba(0,0,0,.35);
+    border: 1px solid rgba(255,255,255,.15);
+    animation: massFadeIn .18s ease;
+}
+.toast-info { background: #0f172a; }
+.toast-success { background: #064e3b; }
+.toast-warn { background: #7c2d12; }
+.toast-error { background: #7f1d1d; }
+@keyframes massFadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+</style>
 <div class="content-header">
     <div class="container-fluid">
         <div class="row mb-2">
@@ -9,6 +56,7 @@
                 <div class="admin-section-note">CSV/Excel + TMDB + Telegram file matching with live status panels.</div>
             </div>
             <div class="col-sm-4 text-sm-right">
+                <button id="enable-noti-btn" class="btn btn-sm btn-outline-info mt-1">Enable Notifications</button>
                 <button id="refresh-now-btn" class="btn btn-sm btn-outline-light mt-1">Refresh State</button>
             </div>
         </div>
@@ -123,6 +171,7 @@
         </div>
     </div>
 </section>
+<div id="toast-wrap" class="toast-wrap"></div>
 {% endblock %}
 
 {% block page_scripts %}
@@ -138,6 +187,29 @@ const panelEls = {
 };
 
 let latestState = initialState || { panels: {} };
+const toastWrap = document.getElementById("toast-wrap");
+const panelFingerprints = {};
+let snapshotRenderScheduled = false;
+let pendingSnapshot = latestState;
+const uploadStateSeen = new Map();
+
+function toast(message, type = "info", timeout = 2600) {
+    const el = document.createElement("div");
+    el.className = `toast-item toast-${type}`;
+    el.textContent = message;
+    toastWrap.appendChild(el);
+    setTimeout(() => {
+        el.remove();
+    }, timeout);
+}
+
+function desktopNotify(title, body = "") {
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    try {
+        new Notification(title, { body, icon: "/favicon.ico" });
+    } catch (e) {}
+}
 
 function esc(value) {
     return String(value || "").replace(/[&<>"']/g, s => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;" }[s]));
@@ -150,19 +222,33 @@ function badge(text, cls = "secondary") {
 function notesHtml(item) {
     const notes = Array.isArray(item.live_notes) ? item.live_notes : [];
     if (!notes.length) return `<div class="text-xs text-muted">No note rows yet.</div>`;
-    return `<ul class="mb-0 pl-3">${notes.map(n => {
+    const preview = notes.slice(0, 12);
+    const extra = notes.slice(12);
+    const previewHtml = `<ul class="mb-0 pl-3">${preview.map(n => {
         const cls = n.state === "missing" ? "text-danger" : (n.state === "found_partial" ? "text-warning" : "text-success");
         return `<li class="text-xs ${cls}">${esc(n.text || "")}</li>`;
     }).join("")}</ul>`;
+    if (!extra.length) return previewHtml;
+    return `${previewHtml}
+        <details class="mt-1">
+            <summary class="text-xs text-muted">Show ${extra.length} more notes</summary>
+            <ul class="mb-0 pl-3 mt-1">${extra.map(n => {
+                const cls = n.state === "missing" ? "text-danger" : (n.state === "found_partial" ? "text-warning" : "text-success");
+                return `<li class="text-xs ${cls}">${esc(n.text || "")}</li>`;
+            }).join("")}</ul>
+        </details>`;
 }
 
 function actionsHtml(item, panelKey) {
     const id = esc(item.id);
+    const uploadState = String(item.upload_state || "idle");
     const retryTmdb = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-tmdb" data-id="${id}">Retry TMDB</button>`;
     const retryFiles = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-files" data-id="${id}">Retry Files</button>`;
     const del = `<button class="btn btn-xs btn-outline-danger mr-1 action-btn" data-action="delete" data-id="${id}">Delete</button>`;
-    const upload = `<button class="btn btn-xs btn-success mr-1 action-btn" data-action="upload" data-id="${id}">Upload</button>`;
-    const uploadIncomplete = `<button class="btn btn-xs btn-warning mr-1 action-btn" data-action="upload" data-id="${id}">Upload (Warn)</button>`;
+    const uploadLabel = (uploadState === "queued" || uploadState === "uploading") ? "Uploading..." : "Upload";
+    const uploadDisabled = (uploadState === "queued" || uploadState === "uploading") ? "disabled" : "";
+    const upload = `<button class="btn btn-xs btn-success mr-1 action-btn" data-action="upload" data-id="${id}" ${uploadDisabled}>${uploadLabel}</button>`;
+    const uploadIncomplete = `<button class="btn btn-xs btn-warning mr-1 action-btn" data-action="upload" data-id="${id}" ${uploadDisabled}>${uploadLabel === "Upload" ? "Upload (Warn)" : uploadLabel}</button>`;
 
     if (panelKey === "processing") return del;
     if (panelKey === "tmdb_not_found") return retryTmdb + del;
@@ -178,12 +264,16 @@ function itemHtml(item, panelKey) {
         : `<div style="width:70px;height:98px;border:1px solid #2b3441;border-radius:6px;display:flex;align-items:center;justify-content:center;"><i class="fas fa-film text-muted"></i></div>`;
     const uploadedBadge = item.uploaded ? badge("Uploaded", "success") : "";
     const readyBadge = item.upload_ready ? badge("Ready", "success") : badge("Not Ready", "warning");
+    const uploadState = String(item.upload_state || "idle");
+    const uploadCls = uploadState === "done" ? "success" : (uploadState === "failed" ? "danger" : (uploadState === "uploading" ? "info" : (uploadState === "queued" ? "warning" : "secondary"));
+    const uploadBadge = badge(`Upload: ${uploadState}`, uploadCls);
     const missing = Number(item.missing_count || 0);
-    const meta = `${badge((item.content_type || "movie").toUpperCase(), "dark")}${item.year ? badge(item.year, "secondary") : ""}${readyBadge}${uploadedBadge}`;
+    const meta = `${badge((item.content_type || "movie").toUpperCase(), "dark")}${item.year ? badge(item.year, "secondary") : ""}${readyBadge}${uploadBadge}${uploadedBadge}`;
     const error = item.last_error ? `<div class="text-xs text-danger mt-1">${esc(item.last_error)}</div>` : "";
+    const uploadMsg = item.upload_message ? `<div class="text-xs text-info mt-1">${esc(item.upload_message)}</div>` : "";
     const missingTxt = missing > 0 ? `<div class="text-xs text-warning mt-1">Missing: ${missing}</div>` : "";
     return `
-        <div class="border border-secondary rounded p-2 mb-2 bg-dark">
+        <div class="border border-secondary rounded p-2 mb-2 bg-dark mass-card">
             <div class="d-flex">
                 <div class="mr-2">${poster}</div>
                 <div class="flex-fill">
@@ -191,11 +281,12 @@ function itemHtml(item, panelKey) {
                     <div class="text-xs mt-1">${meta}</div>
                     <div class="text-xs text-muted mt-1">Matched files: ${Number(item.matched_files_count || 0)}</div>
                     ${missingTxt}
+                    ${uploadMsg}
                     ${error}
                     <div class="mt-2">${actionsHtml(item, panelKey)}</div>
                 </div>
             </div>
-            <div class="mt-2 p-2 border border-secondary rounded bg-black">
+            <div class="mt-2 p-2 border border-secondary rounded bg-black live-notes-box">
                 <div class="text-xs text-info mb-1">Live Notes</div>
                 ${notesHtml(item)}
             </div>
@@ -209,15 +300,52 @@ function renderPanels(snapshot) {
         const target = panelEls[key];
         if (!target) return;
         const list = Array.isArray(panels[key]) ? panels[key] : [];
+        const fp = list.map(x => `${x.id}:${x.updated_at}:${x.upload_state || ""}:${x.panel || ""}`).join("|");
+        if (panelFingerprints[key] === fp) {
+            return;
+        }
+        panelFingerprints[key] = fp;
         if (!list.length) {
             target.innerHTML = `<div class="text-muted text-sm p-2">No entries.</div>`;
             return;
         }
-        target.innerHTML = list.map(item => itemHtml(item, key)).join("");
+        const cap = 120;
+        const view = list.slice(0, cap);
+        const extraTxt = list.length > cap ? `<div class="text-xs text-muted mb-1">Showing first ${cap} of ${list.length} entries for smooth performance.</div>` : "";
+        target.innerHTML = `${extraTxt}${view.map(item => itemHtml(item, key)).join("")}`;
+    });
+
+    const allRows = Object.values(panels).flat();
+    allRows.forEach(item => {
+        const prev = uploadStateSeen.get(item.id);
+        const curr = String(item.upload_state || "idle");
+        if (prev && prev !== curr) {
+            if (curr === "done") {
+                toast(`Upload completed: ${item.title}`, "success");
+                desktopNotify("Upload Completed", item.title || "");
+            } else if (curr === "failed") {
+                const msg = item.upload_message || item.last_error || "Upload failed";
+                toast(`Upload failed: ${item.title} - ${msg}`, "error", 4500);
+                desktopNotify("Upload Failed", `${item.title || ""} - ${msg}`);
+            } else if (curr === "uploading") {
+                toast(`Uploading: ${item.title}`, "info");
+            }
+        }
+        uploadStateSeen.set(item.id, curr);
     });
 
     const counts = snapshot && snapshot.counts ? snapshot.counts : {};
     statusBanner.textContent = `Total: ${Number(snapshot.total || 0)} | Processing: ${Number(counts.processing || 0)} | TMDB Not Found: ${Number(counts.tmdb_not_found || 0)} | File Not Found: ${Number(counts.file_not_found || 0)} | Incomplete: ${Number(counts.incomplete || 0)} | Complete: ${Number(counts.complete || 0)}`;
+}
+
+function scheduleRender(snapshot) {
+    pendingSnapshot = snapshot || latestState;
+    if (snapshotRenderScheduled) return;
+    snapshotRenderScheduled = true;
+    requestAnimationFrame(() => {
+        snapshotRenderScheduled = false;
+        renderPanels(pendingSnapshot);
+    });
 }
 
 async function fetchState() {
@@ -225,7 +353,7 @@ async function fetchState() {
         const res = await fetch("/advance-mass-content-adder/state", { credentials: "same-origin" });
         if (!res.ok) return;
         latestState = await res.json();
-        renderPanels(latestState);
+        scheduleRender(latestState);
     } catch (e) {}
 }
 
@@ -241,9 +369,10 @@ document.getElementById("mass-import-form").addEventListener("submit", async (e)
     const fd = new FormData(e.currentTarget);
     const out = await postForm("/advance-mass-content-adder/import", fd);
     if (!out.ok) {
-        alert(out.data.error || "Import failed.");
+        toast(out.data.error || "Import failed.", "error", 4200);
         return;
     }
+    toast(`Imported ${Number(out.data.count || 0)} rows. Processing started.`, "success");
     e.currentTarget.reset();
     await fetchState();
 });
@@ -253,9 +382,10 @@ document.getElementById("mass-manual-form").addEventListener("submit", async (e)
     const fd = new FormData(e.currentTarget);
     const out = await postForm("/advance-mass-content-adder/manual-add", fd);
     if (!out.ok) {
-        alert(out.data.error || "Manual add failed.");
+        toast(out.data.error || "Manual add failed.", "error", 4200);
         return;
     }
+    toast("Manual item added to processing queue.", "success");
     e.currentTarget.reset();
     await fetchState();
 });
@@ -272,17 +402,22 @@ document.addEventListener("click", async (e) => {
     if (action === "delete") {
         if (!confirm("Delete this processing item?")) return;
         const out = await postForm(`/advance-mass-content-adder/delete/${encodeURIComponent(id)}`, new FormData());
-        if (!out.ok) alert(out.data.error || "Delete failed.");
+        if (!out.ok) toast(out.data.error || "Delete failed.", "error");
+        else toast("Item deleted.", "warn");
         await fetchState();
         return;
     }
     if (action === "retry-tmdb") {
-        await postForm(`/advance-mass-content-adder/retry-tmdb/${encodeURIComponent(id)}`, new FormData());
+        const out = await postForm(`/advance-mass-content-adder/retry-tmdb/${encodeURIComponent(id)}`, new FormData());
+        if (!out.ok) toast(out.data.error || "Retry TMDB failed.", "error");
+        else toast("TMDB retry started.", "info");
         await fetchState();
         return;
     }
     if (action === "retry-files") {
-        await postForm(`/advance-mass-content-adder/retry-files/${encodeURIComponent(id)}`, new FormData());
+        const out = await postForm(`/advance-mass-content-adder/retry-files/${encodeURIComponent(id)}`, new FormData());
+        if (!out.ok) toast(out.data.error || "Retry files failed.", "error");
+        else toast("File scan retry started.", "info");
         await fetchState();
         return;
     }
@@ -299,7 +434,9 @@ document.addEventListener("click", async (e) => {
             out = await postForm(`/advance-mass-content-adder/upload/${encodeURIComponent(id)}`, fd);
         }
         if (!out.ok) {
-            alert(out.data.error || "Upload failed.");
+            toast(out.data.error || "Upload failed.", "error", 4500);
+        } else {
+            toast(out.data.message || "Upload queued.", "success");
         }
         await fetchState();
     }
@@ -319,17 +456,40 @@ function connectWs() {
             const payload = JSON.parse(event.data || "{}");
             if (payload.type === "snapshot" && payload.data) {
                 latestState = payload.data;
-                renderPanels(latestState);
+                scheduleRender(latestState);
             }
         } catch (e) {}
     };
     ws.onclose = () => {
+        toast("Live connection lost. Reconnecting...", "warn", 1800);
         setTimeout(connectWs, 3000);
     };
 }
 
-renderPanels(latestState);
+document.getElementById("enable-noti-btn").addEventListener("click", async () => {
+    if (!("Notification" in window)) {
+        toast("Browser notifications are not supported.", "warn");
+        return;
+    }
+    if (Notification.permission === "granted") {
+        toast("Notifications already enabled.", "info");
+        return;
+    }
+    try {
+        const result = await Notification.requestPermission();
+        if (result === "granted") {
+            toast("Notifications enabled.", "success");
+            desktopNotify("MysticMovies", "Live panel notifications are now enabled.");
+        } else {
+            toast("Notification permission denied.", "warn");
+        }
+    } catch (e) {
+        toast("Notification permission failed.", "error");
+    }
+});
+
+scheduleRender(latestState);
 connectWs();
-setInterval(fetchState, 20000);
+setInterval(fetchState, 60000);
 </script>
 {% endblock %}
