@@ -21,3 +21,4 @@ flask-session
 psutil
 ffmpeg
 uvloop
+openpyxl

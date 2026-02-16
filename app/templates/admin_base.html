@@ -162,6 +162,12 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a href="/advance-mass-content-adder" class="nav-link {% if request.url.path.startswith('/advance-mass-content-adder') %}active{% endif %}">
+                            <i class="nav-icon fas fa-layer-group"></i>
+                            <p>Advanced Mass Adder</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a href="/publish-content" class="nav-link {% if request.url.path.startswith('/dashboard/publish-content') or request.url.path.startswith('/publish-content') %}active{% endif %}">
                             <i class="nav-icon fas fa-folder-open"></i>
                             <p>Publish Content</p>

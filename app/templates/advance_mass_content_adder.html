@@ -1,0 +1,335 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<div class="content-header">
+    <div class="container-fluid">
+        <div class="row mb-2">
+            <div class="col-sm-8">
+                <h1 class="m-0">Advanced Mass Content Adder</h1>
+                <div class="admin-section-note">CSV/Excel + TMDB + Telegram file matching with live status panels.</div>
+            </div>
+            <div class="col-sm-4 text-sm-right">
+                <button id="refresh-now-btn" class="btn btn-sm btn-outline-light mt-1">Refresh State</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<section class="content">
+    <div class="container-fluid">
+        {% if not tmdb_configured %}
+        <div class="alert alert-danger">
+            TMDB API is not configured. TMDB lookup-dependent panels will not process.
+        </div>
+        {% endif %}
+
+        <div class="card card-outline card-info mb-3">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-file-upload mr-1"></i> Import CSV / Excel</h3>
+            </div>
+            <div class="card-body">
+                <form id="mass-import-form" class="form-row align-items-end">
+                    <div class="form-group col-md-8 mb-2">
+                        <label>File (.csv or .xlsx)</label>
+                        <input type="file" class="form-control-file" name="file" accept=".csv,.xlsx" required>
+                    </div>
+                    <div class="form-group col-md-4 mb-2">
+                        <button type="submit" class="btn btn-info btn-block">Import & Process</button>
+                    </div>
+                </form>
+                <hr class="border-secondary">
+                <form id="mass-manual-form" class="form-row align-items-end">
+                    <div class="form-group col-md-6 mb-2">
+                        <label>Manual Content Name</label>
+                        <input type="text" name="title" class="form-control" placeholder="Enter movie or web-series name" required>
+                    </div>
+                    <div class="form-group col-md-2 mb-2">
+                        <label>Type</label>
+                        <select name="content_type" class="custom-select">
+                            <option value="">Auto</option>
+                            <option value="movie">Movie</option>
+                            <option value="series">Series</option>
+                        </select>
+                    </div>
+                    <div class="form-group col-md-2 mb-2">
+                        <label>Year</label>
+                        <input type="text" name="year" class="form-control" placeholder="2026">
+                    </div>
+                    <div class="form-group col-md-2 mb-2">
+                        <button type="submit" class="btn btn-primary btn-block">Add</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="mass-status-banner" class="small text-muted mb-2"></div>
+
+        <div class="row">
+            <div class="col-lg-6 mb-3">
+                <div class="card card-outline card-warning h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h3 class="card-title mb-0">Panel 1: Searching / Processing</h3>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/processing">Export CSV</a>
+                    </div>
+                    <div class="card-body p-2">
+                        <div id="panel-processing" class="panel-list"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-6 mb-3">
+                <div class="card card-outline card-danger h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h3 class="card-title mb-0">Panel 2: TMDB Not Found</h3>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/tmdb_not_found">Export CSV</a>
+                    </div>
+                    <div class="card-body p-2">
+                        <div id="panel-tmdb-not-found" class="panel-list"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-6 mb-3">
+                <div class="card card-outline card-danger h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h3 class="card-title mb-0">Panel 3: File Not Found</h3>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/file_not_found">Export CSV</a>
+                    </div>
+                    <div class="card-body p-2">
+                        <div id="panel-file-not-found" class="panel-list"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-6 mb-3">
+                <div class="card card-outline card-warning h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h3 class="card-title mb-0">Panel 4: Incomplete Content</h3>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/incomplete">Export CSV</a>
+                    </div>
+                    <div class="card-body p-2">
+                        <div id="panel-incomplete" class="panel-list"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 mb-3">
+                <div class="card card-outline card-success">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h3 class="card-title mb-0">Panel 5: Complete Content</h3>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/complete">Export CSV</a>
+                    </div>
+                    <div class="card-body p-2">
+                        <div id="panel-complete" class="panel-list"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+const initialState = {{ initial_state | tojson }};
+const statusBanner = document.getElementById("mass-status-banner");
+const panelEls = {
+    processing: document.getElementById("panel-processing"),
+    tmdb_not_found: document.getElementById("panel-tmdb-not-found"),
+    file_not_found: document.getElementById("panel-file-not-found"),
+    incomplete: document.getElementById("panel-incomplete"),
+    complete: document.getElementById("panel-complete"),
+};
+
+let latestState = initialState || { panels: {} };
+
+function esc(value) {
+    return String(value || "").replace(/[&<>"']/g, s => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;" }[s]));
+}
+
+function badge(text, cls = "secondary") {
+    return `<span class="badge badge-${cls} mr-1">${esc(text)}</span>`;
+}
+
+function notesHtml(item) {
+    const notes = Array.isArray(item.live_notes) ? item.live_notes : [];
+    if (!notes.length) return `<div class="text-xs text-muted">No note rows yet.</div>`;
+    return `<ul class="mb-0 pl-3">${notes.map(n => {
+        const cls = n.state === "missing" ? "text-danger" : (n.state === "found_partial" ? "text-warning" : "text-success");
+        return `<li class="text-xs ${cls}">${esc(n.text || "")}</li>`;
+    }).join("")}</ul>`;
+}
+
+function actionsHtml(item, panelKey) {
+    const id = esc(item.id);
+    const retryTmdb = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-tmdb" data-id="${id}">Retry TMDB</button>`;
+    const retryFiles = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-files" data-id="${id}">Retry Files</button>`;
+    const del = `<button class="btn btn-xs btn-outline-danger mr-1 action-btn" data-action="delete" data-id="${id}">Delete</button>`;
+    const upload = `<button class="btn btn-xs btn-success mr-1 action-btn" data-action="upload" data-id="${id}">Upload</button>`;
+    const uploadIncomplete = `<button class="btn btn-xs btn-warning mr-1 action-btn" data-action="upload" data-id="${id}">Upload (Warn)</button>`;
+
+    if (panelKey === "processing") return del;
+    if (panelKey === "tmdb_not_found") return retryTmdb + del;
+    if (panelKey === "file_not_found") return retryFiles + del;
+    if (panelKey === "incomplete") return retryFiles + uploadIncomplete + del;
+    if (panelKey === "complete") return upload + retryFiles + del;
+    return del;
+}
+
+function itemHtml(item, panelKey) {
+    const poster = item.poster_url
+        ? `<img src="${esc(item.poster_url)}" alt="${esc(item.title)}" style="width:70px;height:98px;object-fit:cover;border-radius:6px;border:1px solid #2b3441;">`
+        : `<div style="width:70px;height:98px;border:1px solid #2b3441;border-radius:6px;display:flex;align-items:center;justify-content:center;"><i class="fas fa-film text-muted"></i></div>`;
+    const uploadedBadge = item.uploaded ? badge("Uploaded", "success") : "";
+    const readyBadge = item.upload_ready ? badge("Ready", "success") : badge("Not Ready", "warning");
+    const missing = Number(item.missing_count || 0);
+    const meta = `${badge((item.content_type || "movie").toUpperCase(), "dark")}${item.year ? badge(item.year, "secondary") : ""}${readyBadge}${uploadedBadge}`;
+    const error = item.last_error ? `<div class="text-xs text-danger mt-1">${esc(item.last_error)}</div>` : "";
+    const missingTxt = missing > 0 ? `<div class="text-xs text-warning mt-1">Missing: ${missing}</div>` : "";
+    return `
+        <div class="border border-secondary rounded p-2 mb-2 bg-dark">
+            <div class="d-flex">
+                <div class="mr-2">${poster}</div>
+                <div class="flex-fill">
+                    <div class="font-weight-bold">${esc(item.title || "")}</div>
+                    <div class="text-xs mt-1">${meta}</div>
+                    <div class="text-xs text-muted mt-1">Matched files: ${Number(item.matched_files_count || 0)}</div>
+                    ${missingTxt}
+                    ${error}
+                    <div class="mt-2">${actionsHtml(item, panelKey)}</div>
+                </div>
+            </div>
+            <div class="mt-2 p-2 border border-secondary rounded bg-black">
+                <div class="text-xs text-info mb-1">Live Notes</div>
+                ${notesHtml(item)}
+            </div>
+        </div>
+    `;
+}
+
+function renderPanels(snapshot) {
+    const panels = (snapshot && snapshot.panels) ? snapshot.panels : {};
+    Object.keys(panelEls).forEach(key => {
+        const target = panelEls[key];
+        if (!target) return;
+        const list = Array.isArray(panels[key]) ? panels[key] : [];
+        if (!list.length) {
+            target.innerHTML = `<div class="text-muted text-sm p-2">No entries.</div>`;
+            return;
+        }
+        target.innerHTML = list.map(item => itemHtml(item, key)).join("");
+    });
+
+    const counts = snapshot && snapshot.counts ? snapshot.counts : {};
+    statusBanner.textContent = `Total: ${Number(snapshot.total || 0)} | Processing: ${Number(counts.processing || 0)} | TMDB Not Found: ${Number(counts.tmdb_not_found || 0)} | File Not Found: ${Number(counts.file_not_found || 0)} | Incomplete: ${Number(counts.incomplete || 0)} | Complete: ${Number(counts.complete || 0)}`;
+}
+
+async function fetchState() {
+    try {
+        const res = await fetch("/advance-mass-content-adder/state", { credentials: "same-origin" });
+        if (!res.ok) return;
+        latestState = await res.json();
+        renderPanels(latestState);
+    } catch (e) {}
+}
+
+async function postForm(url, formData) {
+    const res = await fetch(url, { method: "POST", body: formData, credentials: "same-origin" });
+    let data = {};
+    try { data = await res.json(); } catch (e) {}
+    return { ok: res.ok, status: res.status, data };
+}
+
+document.getElementById("mass-import-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const out = await postForm("/advance-mass-content-adder/import", fd);
+    if (!out.ok) {
+        alert(out.data.error || "Import failed.");
+        return;
+    }
+    e.currentTarget.reset();
+    await fetchState();
+});
+
+document.getElementById("mass-manual-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const out = await postForm("/advance-mass-content-adder/manual-add", fd);
+    if (!out.ok) {
+        alert(out.data.error || "Manual add failed.");
+        return;
+    }
+    e.currentTarget.reset();
+    await fetchState();
+});
+
+document.getElementById("refresh-now-btn").addEventListener("click", fetchState);
+
+document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".action-btn");
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    if (!action || !id) return;
+
+    if (action === "delete") {
+        if (!confirm("Delete this processing item?")) return;
+        const out = await postForm(`/advance-mass-content-adder/delete/${encodeURIComponent(id)}`, new FormData());
+        if (!out.ok) alert(out.data.error || "Delete failed.");
+        await fetchState();
+        return;
+    }
+    if (action === "retry-tmdb") {
+        await postForm(`/advance-mass-content-adder/retry-tmdb/${encodeURIComponent(id)}`, new FormData());
+        await fetchState();
+        return;
+    }
+    if (action === "retry-files") {
+        await postForm(`/advance-mass-content-adder/retry-files/${encodeURIComponent(id)}`, new FormData());
+        await fetchState();
+        return;
+    }
+    if (action === "upload") {
+        let fd = new FormData();
+        let out = await postForm(`/advance-mass-content-adder/upload/${encodeURIComponent(id)}`, fd);
+        if (!out.ok && out.status === 409 && out.data && out.data.needs_confirm) {
+            const missing = Array.isArray(out.data.missing_items) ? out.data.missing_items : [];
+            const lines = missing.slice(0, 12).map(x => x.note || "").filter(Boolean);
+            const msg = "This content is incomplete.\n\nMissing files:\n" + (lines.join("\n") || "Some files are missing.") + "\n\nUpload anyway?";
+            if (!confirm(msg)) return;
+            fd = new FormData();
+            fd.append("force_upload", "1");
+            out = await postForm(`/advance-mass-content-adder/upload/${encodeURIComponent(id)}`, fd);
+        }
+        if (!out.ok) {
+            alert(out.data.error || "Upload failed.");
+        }
+        await fetchState();
+    }
+});
+
+function connectWs() {
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    const url = `${proto}://${window.location.host}/advance-mass-content-adder/ws`;
+    let ws;
+    try {
+        ws = new WebSocket(url);
+    } catch (e) {
+        return;
+    }
+    ws.onmessage = (event) => {
+        try {
+            const payload = JSON.parse(event.data || "{}");
+            if (payload.type === "snapshot" && payload.data) {
+                latestState = payload.data;
+                renderPanels(latestState);
+            }
+        } catch (e) {}
+    };
+    ws.onclose = () => {
+        setTimeout(connectWs, 3000);
+    };
+}
+
+renderPanels(latestState);
+connectWs();
+setInterval(fetchState, 20000);
+</script>
+{% endblock %}

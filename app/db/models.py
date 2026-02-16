@@ -327,6 +327,48 @@ class AppDeviceSession(Document):
     class Settings:
         name = "app_devices"
 
+
+class MassContentState(Document):
+    key: str = Field(unique=True)
+    title: str
+    normalized_title: str
+    content_type: str = "movie"  # movie | series
+    year: Optional[str] = None
+
+    panel: str = "processing"  # processing | tmdb_not_found | file_not_found | incomplete | complete
+    tmdb_status: str = "pending"  # pending | found | not_found
+    file_status: str = "pending"  # pending | missing | incomplete | complete
+    upload_ready: bool = False
+    uploaded: bool = False
+    uploaded_at: Optional[datetime] = None
+
+    source_inputs: List[str] = []
+    tmdb_id: Optional[int] = None
+    poster_url: Optional[str] = None
+    backdrop_url: Optional[str] = None
+    description: Optional[str] = None
+    release_date: Optional[str] = None
+    genres: List[str] = []
+    actors: List[str] = []
+    director: Optional[str] = None
+    trailer_url: Optional[str] = None
+    trailer_key: Optional[str] = None
+    cast_profiles: List[dict] = []
+
+    seasons: List[Dict[str, Any]] = []
+    matched_files: List[Dict[str, Any]] = []
+    live_notes: List[Dict[str, Any]] = []
+    missing_items: List[Dict[str, Any]] = []
+    upload_plan: List[Dict[str, Any]] = []
+    last_error: Optional[str] = None
+
+    created_at: datetime = datetime.now()
+    updated_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+
+    class Settings:
+        name = "mass_content_states"
+
 async def init_db():
     client = AsyncIOMotorClient(settings.MONGO_URI)
     await init_beanie(
@@ -350,5 +392,6 @@ async def init_db():
             AppRelease,
             AppBroadcast,
             AppDeviceSession,
+            MassContentState,
         ],
     )
