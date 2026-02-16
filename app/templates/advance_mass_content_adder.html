@@ -265,7 +265,13 @@ function itemHtml(item, panelKey) {
     const uploadedBadge = item.uploaded ? badge("Uploaded", "success") : "";
     const readyBadge = item.upload_ready ? badge("Ready", "success") : badge("Not Ready", "warning");
     const uploadState = String(item.upload_state || "idle");
-    const uploadCls = uploadState === "done" ? "success" : (uploadState === "failed" ? "danger" : (uploadState === "uploading" ? "info" : (uploadState === "queued" ? "warning" : "secondary"));
+    const uploadCls = uploadState === "done"
+        ? "success"
+        : (uploadState === "failed"
+            ? "danger"
+            : (uploadState === "uploading"
+                ? "info"
+                : (uploadState === "queued" ? "warning" : "secondary")));
     const uploadBadge = badge(`Upload: ${uploadState}`, uploadCls);
     const missing = Number(item.missing_count || 0);
     const meta = `${badge((item.content_type || "movie").toUpperCase(), "dark")}${item.year ? badge(item.year, "secondary") : ""}${readyBadge}${uploadBadge}${uploadedBadge}`;
