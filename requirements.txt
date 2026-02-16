@@ -1,6 +1,8 @@
 fastapi
 starlette
 uvicorn
+websockets
+wsproto
 jinja2
 python-multipart
 beanie

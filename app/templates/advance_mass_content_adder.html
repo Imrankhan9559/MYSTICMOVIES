@@ -192,6 +192,12 @@ const panelFingerprints = {};
 let snapshotRenderScheduled = false;
 let pendingSnapshot = latestState;
 const uploadStateSeen = new Map();
+const actionInFlight = new Set();
+let wsInstance = null;
+let wsPingTimer = null;
+let wsReconnectTimer = null;
+let wsReconnectAttempts = 0;
+let wsConnected = false;
 
 function toast(message, type = "info", timeout = 2600) {
     const el = document.createElement("div");
@@ -239,6 +245,30 @@ function notesHtml(item) {
         </details>`;
 }
 
+function matchedFilesHtml(item) {
+    const files = Array.isArray(item.matched_files_preview) ? item.matched_files_preview : [];
+    if (!files.length) {
+        return `<div class="text-xs text-muted mt-1">Matched files: 0</div>`;
+    }
+    const list = files.slice(0, 8);
+    const more = files.length > 8 ? `<div class="text-xs text-muted">+ ${files.length - 8} more</div>` : "";
+    return `
+        <details class="mt-1">
+            <summary class="text-xs text-info">Matched files: ${Number(item.matched_files_count || files.length)} (show)</summary>
+            <ul class="mb-0 pl-3 mt-1">
+                ${list.map(f => {
+                    const se = f.se ? `${esc(f.se)} ` : "";
+                    const q = f.quality ? `${esc(f.quality)} ` : "";
+                    const src = f.source_label ? ` | ${esc(f.source_label)}` : "";
+                    const size = f.size_label ? ` (${esc(f.size_label)})` : "";
+                    return `<li class="text-xs">${se}${q}${esc(f.name || "")}${size}${src}</li>`;
+                }).join("")}
+            </ul>
+            ${more}
+        </details>
+    `;
+}
+
 function actionsHtml(item, panelKey) {
     const id = esc(item.id);
     const uploadState = String(item.upload_state || "idle");
@@ -259,6 +289,7 @@ function actionsHtml(item, panelKey) {
 }
 
 function itemHtml(item, panelKey) {
+    const id = esc(item.id || "");
     const poster = item.poster_url
         ? `<img src="${esc(item.poster_url)}" alt="${esc(item.title)}" style="width:70px;height:98px;object-fit:cover;border-radius:6px;border:1px solid #2b3441;">`
         : `<div style="width:70px;height:98px;border:1px solid #2b3441;border-radius:6px;display:flex;align-items:center;justify-content:center;"><i class="fas fa-film text-muted"></i></div>`;
@@ -278,6 +309,14 @@ function itemHtml(item, panelKey) {
     const error = item.last_error ? `<div class="text-xs text-danger mt-1">${esc(item.last_error)}</div>` : "";
     const uploadMsg = item.upload_message ? `<div class="text-xs text-info mt-1">${esc(item.upload_message)}</div>` : "";
     const missingTxt = missing > 0 ? `<div class="text-xs text-warning mt-1">Missing: ${missing}</div>` : "";
+    const manualHint = panelKey !== "tmdb_not_found" ? `
+        <div class="input-group input-group-sm mt-2 manual-hint-wrap">
+            <input type="text" class="form-control manual-file-hint" data-id="${id}" placeholder="Manual filename hint (comma or line-separated)">
+            <div class="input-group-append">
+                <button class="btn btn-outline-warning action-btn" data-action="manual-hint" data-id="${id}">Apply</button>
+            </div>
+        </div>
+    ` : "";
     return `
         <div class="border border-secondary rounded p-2 mb-2 bg-dark mass-card">
             <div class="d-flex">
@@ -285,11 +324,12 @@ function itemHtml(item, panelKey) {
                 <div class="flex-fill">
                     <div class="font-weight-bold">${esc(item.title || "")}</div>
                     <div class="text-xs mt-1">${meta}</div>
-                    <div class="text-xs text-muted mt-1">Matched files: ${Number(item.matched_files_count || 0)}</div>
+                    ${matchedFilesHtml(item)}
                     ${missingTxt}
                     ${uploadMsg}
                     ${error}
                     <div class="mt-2">${actionsHtml(item, panelKey)}</div>
+                    ${manualHint}
                 </div>
             </div>
             <div class="mt-2 p-2 border border-secondary rounded bg-black live-notes-box">
@@ -341,7 +381,13 @@ function renderPanels(snapshot) {
     });
 
     const counts = snapshot && snapshot.counts ? snapshot.counts : {};
-    statusBanner.textContent = `Total: ${Number(snapshot.total || 0)} | Processing: ${Number(counts.processing || 0)} | TMDB Not Found: ${Number(counts.tmdb_not_found || 0)} | File Not Found: ${Number(counts.file_not_found || 0)} | Incomplete: ${Number(counts.incomplete || 0)} | Complete: ${Number(counts.complete || 0)}`;
+    const imp = snapshot && snapshot.import ? snapshot.import : {};
+    const workers = snapshot && snapshot.workers ? snapshot.workers : {};
+    const importTxt = imp.running || Number(imp.queued || 0) > 0
+        ? ` | Import Queue: ${Number(imp.queued || 0)} queued, ${Number(imp.processed || 0)} processed, ${Number(imp.failed || 0)} failed (batch ${Number(imp.chunk_size || 0)})`
+        : "";
+    const syncTxt = wsConnected ? "Live" : "Polling";
+    statusBanner.textContent = `Total: ${Number(snapshot.total || 0)} | Processing: ${Number(counts.processing || 0)} | TMDB Not Found: ${Number(counts.tmdb_not_found || 0)} | File Not Found: ${Number(counts.file_not_found || 0)} | Incomplete: ${Number(counts.incomplete || 0)} | Complete: ${Number(counts.complete || 0)} | Workers: P${Number(workers.process_active || 0)}/U${Number(workers.upload_active || 0)}${importTxt} | Sync: ${syncTxt}`;
 }
 
 function scheduleRender(snapshot) {
@@ -372,28 +418,40 @@ async function postForm(url, formData) {
 
 document.getElementById("mass-import-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    const submitBtn = e.currentTarget.querySelector("button[type='submit']");
+    if (submitBtn) submitBtn.disabled = true;
     const fd = new FormData(e.currentTarget);
-    const out = await postForm("/advance-mass-content-adder/import", fd);
-    if (!out.ok) {
-        toast(out.data.error || "Import failed.", "error", 4200);
-        return;
+    try {
+        const out = await postForm("/advance-mass-content-adder/import", fd);
+        if (!out.ok) {
+            toast(out.data.error || "Import failed.", "error", 4200);
+            return;
+        }
+        toast(out.data.message || `Queued ${Number(out.data.queued || out.data.count || 0)} rows for background processing.`, "success", 4200);
+        e.currentTarget.reset();
+        await fetchState();
+    } finally {
+        if (submitBtn) submitBtn.disabled = false;
     }
-    toast(`Imported ${Number(out.data.count || 0)} rows. Processing started.`, "success");
-    e.currentTarget.reset();
-    await fetchState();
 });
 
 document.getElementById("mass-manual-form").addEventListener("submit", async (e) => {
     e.preventDefault();
+    const submitBtn = e.currentTarget.querySelector("button[type='submit']");
+    if (submitBtn) submitBtn.disabled = true;
     const fd = new FormData(e.currentTarget);
-    const out = await postForm("/advance-mass-content-adder/manual-add", fd);
-    if (!out.ok) {
-        toast(out.data.error || "Manual add failed.", "error", 4200);
-        return;
+    try {
+        const out = await postForm("/advance-mass-content-adder/manual-add", fd);
+        if (!out.ok) {
+            toast(out.data.error || "Manual add failed.", "error", 4200);
+            return;
+        }
+        toast("Manual item added to processing queue.", "success");
+        e.currentTarget.reset();
+        await fetchState();
+    } finally {
+        if (submitBtn) submitBtn.disabled = false;
     }
-    toast("Manual item added to processing queue.", "success");
-    e.currentTarget.reset();
-    await fetchState();
 });
 
 document.getElementById("refresh-now-btn").addEventListener("click", fetchState);
@@ -404,60 +462,111 @@ document.addEventListener("click", async (e) => {
     const action = btn.dataset.action;
     const id = btn.dataset.id;
     if (!action || !id) return;
-
-    if (action === "delete") {
-        if (!confirm("Delete this processing item?")) return;
-        const out = await postForm(`/advance-mass-content-adder/delete/${encodeURIComponent(id)}`, new FormData());
-        if (!out.ok) toast(out.data.error || "Delete failed.", "error");
-        else toast("Item deleted.", "warn");
-        await fetchState();
-        return;
-    }
-    if (action === "retry-tmdb") {
-        const out = await postForm(`/advance-mass-content-adder/retry-tmdb/${encodeURIComponent(id)}`, new FormData());
-        if (!out.ok) toast(out.data.error || "Retry TMDB failed.", "error");
-        else toast("TMDB retry started.", "info");
-        await fetchState();
-        return;
-    }
-    if (action === "retry-files") {
-        const out = await postForm(`/advance-mass-content-adder/retry-files/${encodeURIComponent(id)}`, new FormData());
-        if (!out.ok) toast(out.data.error || "Retry files failed.", "error");
-        else toast("File scan retry started.", "info");
-        await fetchState();
-        return;
-    }
-    if (action === "upload") {
-        let fd = new FormData();
-        let out = await postForm(`/advance-mass-content-adder/upload/${encodeURIComponent(id)}`, fd);
-        if (!out.ok && out.status === 409 && out.data && out.data.needs_confirm) {
-            const missing = Array.isArray(out.data.missing_items) ? out.data.missing_items : [];
-            const lines = missing.slice(0, 12).map(x => x.note || "").filter(Boolean);
-            const msg = "This content is incomplete.\n\nMissing files:\n" + (lines.join("\n") || "Some files are missing.") + "\n\nUpload anyway?";
-            if (!confirm(msg)) return;
-            fd = new FormData();
-            fd.append("force_upload", "1");
-            out = await postForm(`/advance-mass-content-adder/upload/${encodeURIComponent(id)}`, fd);
+    const lockKey = `${action}:${id}`;
+    if (actionInFlight.has(lockKey)) return;
+    actionInFlight.add(lockKey);
+    btn.disabled = true;
+    try {
+        if (action === "delete") {
+            if (!confirm("Delete this processing item?")) return;
+            const out = await postForm(`/advance-mass-content-adder/delete/${encodeURIComponent(id)}`, new FormData());
+            if (!out.ok) toast(out.data.error || "Delete failed.", "error");
+            else toast("Item deleted.", "warn");
+            await fetchState();
+            return;
         }
-        if (!out.ok) {
-            toast(out.data.error || "Upload failed.", "error", 4500);
-        } else {
-            toast(out.data.message || "Upload queued.", "success");
+        if (action === "retry-tmdb") {
+            const out = await postForm(`/advance-mass-content-adder/retry-tmdb/${encodeURIComponent(id)}`, new FormData());
+            if (!out.ok) toast(out.data.error || "Retry TMDB failed.", "error");
+            else toast("TMDB retry started.", "info");
+            await fetchState();
+            return;
         }
-        await fetchState();
+        if (action === "retry-files") {
+            const out = await postForm(`/advance-mass-content-adder/retry-files/${encodeURIComponent(id)}`, new FormData());
+            if (!out.ok) toast(out.data.error || "Retry files failed.", "error");
+            else toast("File scan retry started.", "info");
+            await fetchState();
+            return;
+        }
+        if (action === "manual-hint") {
+            const wrap = btn.closest(".manual-hint-wrap");
+            const input = wrap ? wrap.querySelector(".manual-file-hint") : null;
+            const hintValue = input ? String(input.value || "").trim() : "";
+            if (!hintValue) {
+                toast("Enter manual filename hint first.", "warn");
+                return;
+            }
+            const fd = new FormData();
+            fd.append("hint", hintValue);
+            const out = await postForm(`/advance-mass-content-adder/manual-file-hint/${encodeURIComponent(id)}`, fd);
+            if (!out.ok) {
+                toast(out.data.error || "Manual file hint failed.", "error");
+            } else {
+                toast("Manual hint added. Re-scanning files.", "success");
+                if (input) input.value = "";
+            }
+            await fetchState();
+            return;
+        }
+        if (action === "upload") {
+            let fd = new FormData();
+            let out = await postForm(`/advance-mass-content-adder/upload/${encodeURIComponent(id)}`, fd);
+            if (!out.ok && out.status === 409 && out.data && out.data.needs_confirm) {
+                const missing = Array.isArray(out.data.missing_items) ? out.data.missing_items : [];
+                const lines = missing.slice(0, 12).map(x => x.note || "").filter(Boolean);
+                const msg = "This content is incomplete.\n\nMissing files:\n" + (lines.join("\n") || "Some files are missing.") + "\n\nUpload anyway?";
+                if (!confirm(msg)) return;
+                fd = new FormData();
+                fd.append("force_upload", "1");
+                out = await postForm(`/advance-mass-content-adder/upload/${encodeURIComponent(id)}`, fd);
+            }
+            if (!out.ok) {
+                toast(out.data.error || "Upload failed.", "error", 4500);
+            } else if (out.data && out.data.already_running) {
+                toast(out.data.message || "Upload already running.", "info");
+            } else {
+                toast(out.data.message || "Upload queued.", "success");
+            }
+            await fetchState();
+            return;
+        }
+    } finally {
+        actionInFlight.delete(lockKey);
+        btn.disabled = false;
     }
 });
 
 function connectWs() {
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
     const url = `${proto}://${window.location.host}/advance-mass-content-adder/ws`;
-    let ws;
+    if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+    }
     try {
-        ws = new WebSocket(url);
+        wsInstance = new WebSocket(url);
     } catch (e) {
+        wsConnected = false;
+        const delay = Math.min(20000, 1200 + (wsReconnectAttempts * 1500));
+        wsReconnectAttempts += 1;
+        wsReconnectTimer = setTimeout(connectWs, delay);
         return;
     }
-    ws.onmessage = (event) => {
+    wsInstance.onopen = () => {
+        wsConnected = true;
+        wsReconnectAttempts = 0;
+        if (wsPingTimer) clearInterval(wsPingTimer);
+        wsPingTimer = setInterval(() => {
+            try {
+                if (wsInstance && wsInstance.readyState === WebSocket.OPEN) {
+                    wsInstance.send("ping");
+                }
+            } catch (e) {}
+        }, 25000);
+        scheduleRender(latestState);
+    };
+    wsInstance.onmessage = (event) => {
         try {
             const payload = JSON.parse(event.data || "{}");
             if (payload.type === "snapshot" && payload.data) {
@@ -466,9 +575,21 @@ function connectWs() {
             }
         } catch (e) {}
     };
-    ws.onclose = () => {
-        toast("Live connection lost. Reconnecting...", "warn", 1800);
-        setTimeout(connectWs, 3000);
+    wsInstance.onerror = () => {
+        try { wsInstance.close(); } catch (e) {}
+    };
+    wsInstance.onclose = () => {
+        wsConnected = false;
+        if (wsPingTimer) {
+            clearInterval(wsPingTimer);
+            wsPingTimer = null;
+        }
+        const base = 1500;
+        const delay = Math.min(20000, Math.floor(base * Math.pow(1.35, wsReconnectAttempts)));
+        wsReconnectAttempts += 1;
+        // Silent reconnect. No repeated noisy toasts.
+        wsReconnectTimer = setTimeout(connectWs, delay);
+        scheduleRender(latestState);
     };
 }
 
@@ -496,6 +617,6 @@ document.getElementById("enable-noti-btn").addEventListener("click", async () =>
 
 scheduleRender(latestState);
 connectWs();
-setInterval(fetchState, 60000);
+setInterval(fetchState, 20000);
 </script>
 {% endblock %}
