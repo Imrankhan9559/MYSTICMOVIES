@@ -846,6 +846,9 @@ async def _scan_files_for_state(
         if len(complete_qualities) > 4:
             complete_qualities = sorted(complete_qualities, key=_quality_rank, reverse=True)[:4]
         season_ready.append(len(complete_qualities) > 0)
+        # Keep multiple fully-complete qualities (max 4) for upload.
+        # If none are fully complete, fall back to one best quality for partial workflow.
+        season_quality_targets = list(complete_qualities) if complete_qualities else ([chosen_quality] if chosen_quality else [])
 
         for episode_no in expected_episodes:
             episode_title = ""
@@ -853,6 +856,50 @@ async def _scan_files_for_state(
                 if int(entry.get("episode") or 0) == episode_no:
                     episode_title = (entry.get("name") or "").strip()
                     break
+
+            if complete_qualities:
+                # Add one plan row per complete quality for the same episode.
+                for quality in season_quality_targets:
+                    same_quality = _best_row(season_found, season_no, episode_no, quality)
+                    if same_quality:
+                        notes.append(
+                            {
+                                "season": season_no,
+                                "episode": episode_no,
+                                "quality": quality,
+                                "state": "found",
+                                "text": f"Season {season_no} Episode {episode_no} {quality} -> Found ({same_quality.get('upload_label')}){_file_note_suffix(same_quality)}",
+                            }
+                        )
+                        upload_plan.append(
+                            {
+                                "file_id": same_quality.get("file_id"),
+                                "quality": quality,
+                                "season": season_no,
+                                "episode": episode_no,
+                                "episode_title": episode_title,
+                            }
+                        )
+                    else:
+                        # Defensive note; should be rare because quality is marked complete.
+                        notes.append(
+                            {
+                                "season": season_no,
+                                "episode": episode_no,
+                                "quality": quality,
+                                "state": "missing",
+                                "text": f"Season {season_no} Episode {episode_no} {quality} -> NOT FOUND (Upload Required)",
+                            }
+                        )
+                        missing.append(
+                            {
+                                "season": season_no,
+                                "episode": episode_no,
+                                "quality": quality,
+                                "note": f"Season {season_no} Episode {episode_no} missing at {quality}",
+                            }
+                        )
+                continue
 
             same_quality = _best_row(season_found, season_no, episode_no, chosen_quality)
             any_quality = _best_row(season_found, season_no, episode_no, None)
