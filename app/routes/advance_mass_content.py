@@ -215,6 +215,30 @@ def _movie_quality_from_size(size: int) -> str:
     return "480P"
 
 
+def _normalize_quality_label(value: str) -> str:
+    raw = (value or "").strip().upper().replace(" ", "")
+    if not raw:
+        return "HD"
+    aliases = {
+        "2160": "4K",
+        "2160P": "4K",
+        "4KP": "4K",
+        "4K": "4K",
+        "1080": "1080P",
+        "1080P": "1080P",
+        "720": "720P",
+        "720P": "720P",
+        "480": "480P",
+        "480P": "480P",
+        "360": "360P",
+        "360P": "360P",
+        "380": "360P",
+        "380P": "360P",
+        "HD": "HD",
+    }
+    return aliases.get(raw, raw)
+
+
 def _series_season_episode(name: str) -> tuple[int | None, int | None]:
     raw = name or ""
     match = _SERIES_SE_RE.search(raw)
@@ -227,6 +251,19 @@ def _series_season_episode(name: str) -> tuple[int | None, int | None]:
     if match:
         return int(match.group(1)), int(match.group(2))
     return None, None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        val = int(text)
+        return val if val > 0 else None
+    except Exception:
+        return None
 
 
 def _is_video_row(item: FileSystemItem) -> bool:
@@ -704,16 +741,58 @@ async def _scan_files_for_state(
 ) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict], str, str, bool]:
     search_titles = _search_titles_for_state(state)
     candidates = await _fetch_storage_candidates_multi(search_titles or [state.title])
+
+    # Manual include pool: admin can attach specific storage files even if title matching misses them.
+    include_ids = {
+        str(x).strip()
+        for x in (getattr(state, "included_file_ids", []) or [])
+        if str(x).strip()
+    }
+    if include_ids:
+        include_rows = await FileSystemItem.find(
+            In(FileSystemItem.id, _cast_ids(list(include_ids)))
+        ).to_list()
+        merged_candidates: dict[str, FileSystemItem] = {
+            str(row.id): row for row in candidates
+        }
+        for row in include_rows:
+            if not _is_video_row(row):
+                continue
+            merged_candidates[str(row.id)] = row
+        candidates = list(merged_candidates.values())
+
+    quality_overrides: dict[str, str] = {}
+    for file_id, value in dict(getattr(state, "file_quality_overrides", {}) or {}).items():
+        key = str(file_id or "").strip()
+        if not key:
+            continue
+        quality_overrides[key] = _normalize_quality_label(str(value or ""))
+
+    series_overrides: dict[str, dict[str, int]] = {}
+    raw_series_overrides = dict(getattr(state, "file_season_episode_overrides", {}) or {})
+    for file_id, payload in raw_series_overrides.items():
+        key = str(file_id or "").strip()
+        if not key or not isinstance(payload, dict):
+            continue
+        season_val = _int_or_none(payload.get("season"))
+        episode_val = _int_or_none(payload.get("episode"))
+        if season_val and episode_val:
+            series_overrides[key] = {"season": season_val, "episode": episode_val}
+
     found_rows: list[dict] = []
     for row in candidates:
+        file_id = str(row.id)
         if state.content_type == "series":
             season, episode = _series_season_episode(row.name or "")
-            if season is None or episode is None:
+            override_se = series_overrides.get(file_id) or {}
+            season = int(override_se.get("season") or season or 0)
+            episode = int(override_se.get("episode") or episode or 0)
+            if season <= 0 or episode <= 0:
                 continue
-            quality = _series_quality_from_name(row.name or "")
+            quality = quality_overrides.get(file_id) or _series_quality_from_name(row.name or "")
             found_rows.append(
                 {
-                    "file_id": str(row.id),
+                    "file_id": file_id,
                     "name": row.name,
                     "size": int(row.size or 0),
                     "quality": quality,
@@ -725,10 +804,10 @@ async def _scan_files_for_state(
                 }
             )
         else:
-            quality = _movie_quality_from_size(int(row.size or 0))
+            quality = quality_overrides.get(file_id) or _movie_quality_from_size(int(row.size or 0))
             found_rows.append(
                 {
-                    "file_id": str(row.id),
+                    "file_id": file_id,
                     "name": row.name,
                     "size": int(row.size or 0),
                     "quality": quality,
@@ -1238,6 +1317,86 @@ async def _upsert_mass_entry(title: str, content_type: str, year: str, source_no
     return row
 
 
+async def _content_exists_for_input(title: str, content_type: str, year: str = "") -> tuple[bool, dict]:
+    clean_title = " ".join((title or "").split()).strip()
+    if not clean_title:
+        return False, {}
+    ctype = _guess_type(clean_title, content_type)
+    clean_year = (year or "").strip()
+
+    query: dict[str, Any] = {
+        "content_type": ctype,
+        "status": "published",
+        "title": {"$regex": f"^{re.escape(clean_title)}$", "$options": "i"},
+    }
+    if clean_year:
+        query["year"] = clean_year
+    doc = await ContentItem.find_one(query)
+    if not doc:
+        row_norm = _norm_title(clean_title)
+        candidates = await ContentItem.find(
+            ContentItem.content_type == ctype,
+            ContentItem.status == "published",
+        ).limit(3000).to_list()
+        for cand in candidates:
+            cand_title = (getattr(cand, "title", "") or "").strip()
+            if _norm_title(cand_title) != row_norm:
+                continue
+            cand_year = (getattr(cand, "year", "") or "").strip()
+            if clean_year and cand_year and clean_year != cand_year:
+                continue
+            doc = cand
+            break
+    if not doc:
+        return False, {}
+    return True, {
+        "id": str(doc.id),
+        "title": (doc.title or "").strip(),
+        "year": (doc.year or "").strip(),
+        "content_type": (doc.content_type or ctype).strip().lower(),
+        "slug": (doc.slug or "").strip(),
+    }
+
+
+async def _build_existing_content_index() -> dict[str, set]:
+    docs = await ContentItem.find(ContentItem.status == "published").limit(50000).to_list()
+    by_exact: set[tuple[str, str, str]] = set()
+    by_any_year: set[tuple[str, str]] = set()
+    by_unknown_year: set[tuple[str, str]] = set()
+    for doc in docs:
+        ctype = (getattr(doc, "content_type", "") or "movie").strip().lower()
+        title = (getattr(doc, "title", "") or "").strip()
+        norm = _norm_title(title)
+        if not norm:
+            continue
+        year = (getattr(doc, "year", "") or "").strip()
+        by_any_year.add((ctype, norm))
+        if year:
+            by_exact.add((ctype, norm, year))
+        else:
+            by_unknown_year.add((ctype, norm))
+    return {
+        "exact": by_exact,
+        "any_year": by_any_year,
+        "unknown_year": by_unknown_year,
+    }
+
+
+def _row_exists_in_content_index(title: str, content_type: str, year: str, index: dict[str, set]) -> bool:
+    ctype = _guess_type(title, content_type)
+    norm = _norm_title(title)
+    if not norm:
+        return False
+    clean_year = (year or "").strip()
+    if clean_year and (ctype, norm, clean_year) in index.get("exact", set()):
+        return True
+    if (ctype, norm) in index.get("unknown_year", set()):
+        return True
+    if not clean_year and (ctype, norm) in index.get("any_year", set()):
+        return True
+    return False
+
+
 async def _process_mass_item(item_id: str, mode: str = "full") -> None:
     lock = _MASS_LOCKS.setdefault(item_id, asyncio.Lock())
     async with lock:
@@ -1421,6 +1580,7 @@ def _schedule_process(item_id: str, mode: str = "full") -> None:
 
 def _serialize_row(row: MassContentState) -> dict:
     matched_preview = []
+    matched_full = []
     for item in list(row.matched_files or [])[:12]:
         season = item.get("season")
         episode = item.get("episode")
@@ -1433,6 +1593,21 @@ def _serialize_row(row: MassContentState) -> dict:
                 "name": (item.get("name") or "").strip(),
                 "quality": (item.get("quality") or "").upper(),
                 "se": se_label,
+                "size": int(item.get("size") or 0),
+                "size_label": format_size(int(item.get("size") or 0)),
+                "source_label": item.get("source_label") or "",
+            }
+        )
+    for item in list(row.matched_files or [])[:180]:
+        season = _int_or_none(item.get("season"))
+        episode = _int_or_none(item.get("episode"))
+        matched_full.append(
+            {
+                "file_id": str(item.get("file_id") or ""),
+                "name": (item.get("name") or "").strip(),
+                "quality": _normalize_quality_label(item.get("quality") or ""),
+                "season": season,
+                "episode": episode,
                 "size": int(item.get("size") or 0),
                 "size_label": format_size(int(item.get("size") or 0)),
                 "source_label": item.get("source_label") or "",
@@ -1457,7 +1632,9 @@ def _serialize_row(row: MassContentState) -> dict:
         "live_notes": list(row.live_notes or []),
         "matched_files_count": len(row.matched_files or []),
         "matched_files_preview": matched_preview,
+        "matched_files": matched_full,
         "file_choice_groups": list(getattr(row, "file_choice_groups", []) or []),
+        "included_file_ids_count": len([str(x).strip() for x in (getattr(row, "included_file_ids", []) or []) if str(x).strip()]),
         "source_inputs": list(row.source_inputs or []),
         "upload_state": str(getattr(row, "upload_state", "") or "idle"),
         "upload_message": str(getattr(row, "upload_message", "") or ""),
@@ -1630,6 +1807,7 @@ async def advance_mass_content_adder_manual_add(
     title: str = Form(""),
     content_type: str = Form(""),
     year: str = Form(""),
+    force_add_existing: str = Form("0"),
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
@@ -1638,6 +1816,18 @@ async def advance_mass_content_adder_manual_add(
     name = (title or "").strip()
     if not name:
         return JSONResponse({"ok": False, "error": "Title is required."}, status_code=400)
+    allow_existing = (force_add_existing or "").strip().lower() in {"1", "true", "yes", "on"}
+    exists, existing_payload = await _content_exists_for_input(name, content_type, (year or "").strip())
+    if exists and not allow_existing:
+        return JSONResponse(
+            {
+                "ok": False,
+                "needs_existing_confirm": True,
+                "message": "Content already exists in the database.",
+                "existing": existing_payload,
+            },
+            status_code=409,
+        )
     try:
         row = await _upsert_mass_entry(name, content_type, (year or "").strip(), "manual")
     except Exception as exc:
@@ -1673,6 +1863,29 @@ async def advance_mass_content_adder_import(request: Request, file: UploadFile =
     if not rows:
         return JSONResponse({"ok": False, "error": "No valid content rows found."}, status_code=400)
 
+    existing_index = await _build_existing_content_index()
+    filtered_rows: list[dict] = []
+    skipped_existing = 0
+    for row in rows:
+        title = (row.get("title") or "").strip()
+        ctype = (row.get("type") or "").strip()
+        year = (row.get("year") or "").strip()
+        if _row_exists_in_content_index(title, ctype, year, existing_index):
+            skipped_existing += 1
+            continue
+        filtered_rows.append(row)
+
+    rows = filtered_rows
+    if not rows:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "All imported entries already exist in content database.",
+                "skipped_existing": skipped_existing,
+            },
+            status_code=409,
+        )
+
     queued_count = await _enqueue_import_rows(rows)
 
     await _mass_broadcast_snapshot()
@@ -1680,8 +1893,10 @@ async def advance_mass_content_adder_import(request: Request, file: UploadFile =
         "ok": True,
         "count": len(rows),
         "queued": queued_count,
+        "skipped_existing": skipped_existing,
         "chunk_size": _IMPORT_CHUNK_SIZE,
-        "message": f"Queued {queued_count} rows for background processing in chunks of {_IMPORT_CHUNK_SIZE}.",
+        "message": f"Queued {queued_count} rows for background processing in chunks of {_IMPORT_CHUNK_SIZE}."
+                   + (f" Skipped {skipped_existing} existing entries." if skipped_existing else ""),
     }
 
 
@@ -1721,6 +1936,180 @@ async def advance_mass_content_adder_retry_files(request: Request, item_id: str)
     await row.save()
     _STORAGE_POOL_CACHE["rows"] = []
     _STORAGE_POOL_CACHE["expires_at"] = datetime.min
+    _schedule_process(str(row.id), mode="files")
+    await _mass_broadcast_snapshot()
+    return {"ok": True}
+
+
+@router.get("/advance-mass-content-adder/storage/search")
+async def advance_mass_content_storage_search(
+    request: Request,
+    q: str = "",
+    offset: int = 0,
+    limit: int = 60,
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    q = (q or "").strip()
+    try:
+        offset = max(int(offset), 0)
+    except Exception:
+        offset = 0
+    try:
+        limit = int(limit)
+    except Exception:
+        limit = 60
+    limit = max(20, min(limit, 200))
+
+    query: dict[str, Any] = {
+        "is_folder": False,
+        "source": "storage",
+        "catalog_status": {"$nin": ["published", "used"]},
+    }
+    if q:
+        search_regex = _build_title_regex(q)
+        if not search_regex:
+            return {"ok": True, "items": [], "has_more": False}
+        query["name"] = {"$regex": search_regex, "$options": "i"}
+
+    sort_field = "name" if q else "-created_at"
+    rows = await FileSystemItem.find(query).sort(sort_field).skip(offset).limit(limit + 1).to_list()
+    has_more = len(rows) > limit
+    if has_more:
+        rows = rows[:limit]
+
+    payload = []
+    for row in rows:
+        if not _is_video_row(row):
+            continue
+        season_guess, episode_guess = _series_season_episode(row.name or "")
+        quality_guess = _series_quality_from_name(row.name or "")
+        if quality_guess == "HD":
+            quality_guess = _movie_quality_from_size(int(row.size or 0))
+        payload.append(
+            {
+                "id": str(row.id),
+                "name": row.name or "",
+                "size": int(row.size or 0),
+                "size_label": format_size(int(row.size or 0)),
+                "season_guess": int(season_guess) if season_guess else None,
+                "episode_guess": int(episode_guess) if episode_guess else None,
+                "quality_guess": quality_guess,
+            }
+        )
+    return {"ok": True, "items": payload, "has_more": has_more}
+
+
+@router.post("/advance-mass-content-adder/attach-file/{item_id}")
+async def advance_mass_content_adder_attach_file(
+    request: Request,
+    item_id: str,
+    file_id: str = Form(""),
+    quality: str = Form(""),
+    season: str = Form(""),
+    episode: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    row = await MassContentState.get(item_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if row.tmdb_status != "found":
+        return JSONResponse({"ok": False, "error": "TMDB data is missing for this item."}, status_code=400)
+
+    file_id = (file_id or "").strip()
+    if not file_id:
+        return JSONResponse({"ok": False, "error": "file_id is required."}, status_code=400)
+    storage_row = await FileSystemItem.get(file_id)
+    if not storage_row or storage_row.is_folder:
+        return JSONResponse({"ok": False, "error": "File not found."}, status_code=404)
+    if (storage_row.source or "").strip().lower() != "storage":
+        return JSONResponse({"ok": False, "error": "Only storage files can be attached here."}, status_code=400)
+    if not _is_video_row(storage_row):
+        return JSONResponse({"ok": False, "error": "Selected item is not a video file."}, status_code=400)
+
+    included = [str(x).strip() for x in (getattr(row, "included_file_ids", []) or []) if str(x).strip()]
+    if file_id not in included:
+        included.append(file_id)
+    row.included_file_ids = included
+
+    excluded = [str(x).strip() for x in (getattr(row, "excluded_file_ids", []) or []) if str(x).strip()]
+    if file_id in excluded:
+        excluded = [x for x in excluded if x != file_id]
+    row.excluded_file_ids = excluded
+
+    raw_quality = (quality or "").strip()
+    if raw_quality:
+        clean_quality = _normalize_quality_label(raw_quality)
+        quality_map = dict(getattr(row, "file_quality_overrides", {}) or {})
+        quality_map[file_id] = clean_quality
+        row.file_quality_overrides = quality_map
+
+    if row.content_type == "series":
+        season_no = _int_or_none(season)
+        episode_no = _int_or_none(episode)
+        if season_no and episode_no:
+            se_map = dict(getattr(row, "file_season_episode_overrides", {}) or {})
+            se_map[file_id] = {"season": int(season_no), "episode": int(episode_no)}
+            row.file_season_episode_overrides = se_map
+
+    row.panel = "processing"
+    row.file_status = "pending"
+    row.last_error = None
+    row.updated_at = datetime.now()
+    await row.save()
+    _schedule_process(str(row.id), mode="files")
+    await _mass_broadcast_snapshot()
+    return {"ok": True}
+
+
+@router.post("/advance-mass-content-adder/reassign-quality/{item_id}")
+async def advance_mass_content_adder_reassign_quality(
+    request: Request,
+    item_id: str,
+    file_id: str = Form(""),
+    quality: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    row = await MassContentState.get(item_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if row.tmdb_status != "found":
+        return JSONResponse({"ok": False, "error": "TMDB data is missing for this item."}, status_code=400)
+
+    file_id = (file_id or "").strip()
+    if not file_id:
+        return JSONResponse({"ok": False, "error": "file_id is required."}, status_code=400)
+    raw_quality = (quality or "").strip()
+    if not raw_quality:
+        return JSONResponse({"ok": False, "error": "quality is required."}, status_code=400)
+    quality = _normalize_quality_label(raw_quality)
+
+    matched_ids = {str(x.get("file_id") or "").strip() for x in (row.matched_files or [])}
+    included_ids = {str(x).strip() for x in (getattr(row, "included_file_ids", []) or []) if str(x).strip()}
+    if file_id not in matched_ids and file_id not in included_ids:
+        return JSONResponse({"ok": False, "error": "File is not attached to this content."}, status_code=400)
+
+    quality_map = dict(getattr(row, "file_quality_overrides", {}) or {})
+    quality_map[file_id] = quality
+    row.file_quality_overrides = quality_map
+
+    selected_map = dict(getattr(row, "selected_file_map", {}) or {})
+    for key, value in list(selected_map.items()):
+        if str(value or "").strip() == file_id:
+            selected_map.pop(key, None)
+    row.selected_file_map = selected_map
+
+    row.panel = "processing"
+    row.file_status = "pending"
+    row.last_error = None
+    row.updated_at = datetime.now()
+    await row.save()
     _schedule_process(str(row.id), mode="files")
     await _mass_broadcast_snapshot()
     return {"ok": True}
@@ -1782,13 +2171,26 @@ async def advance_mass_content_adder_remove_matched_file(
         return JSONResponse({"ok": False, "error": "file_id is required."}, status_code=400)
 
     matched_ids = {str(x.get("file_id") or "").strip() for x in (row.matched_files or [])}
-    if file_id and file_id not in matched_ids:
+    included_ids = {str(x).strip() for x in (getattr(row, "included_file_ids", []) or []) if str(x).strip()}
+    if file_id and file_id not in matched_ids and file_id not in included_ids:
         return JSONResponse({"ok": False, "error": "File not found in matched list."}, status_code=400)
 
     excluded = [str(x).strip() for x in (getattr(row, "excluded_file_ids", []) or []) if str(x).strip()]
     if file_id not in excluded:
         excluded.append(file_id)
     row.excluded_file_ids = excluded
+
+    included = [str(x).strip() for x in (getattr(row, "included_file_ids", []) or []) if str(x).strip()]
+    if included:
+        row.included_file_ids = [x for x in included if x != file_id]
+
+    quality_map = dict(getattr(row, "file_quality_overrides", {}) or {})
+    quality_map.pop(file_id, None)
+    row.file_quality_overrides = quality_map
+
+    se_map = dict(getattr(row, "file_season_episode_overrides", {}) or {})
+    se_map.pop(file_id, None)
+    row.file_season_episode_overrides = se_map
 
     selected_map = dict(getattr(row, "selected_file_map", {}) or {})
     for key, value in list(selected_map.items()):

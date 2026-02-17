@@ -94,6 +94,81 @@ section.content .card-header {
     border-radius: 10px;
     padding: 6px 10px;
 }
+.quality-board {
+    border: 1px solid #243551;
+    background: linear-gradient(180deg, rgba(8,13,25,0.92), rgba(6,12,22,0.86));
+    border-radius: 10px;
+    padding: 8px;
+}
+.quality-lanes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+}
+.quality-lane {
+    border: 1px dashed #2d4365;
+    border-radius: 8px;
+    background: rgba(12, 20, 34, 0.78);
+    padding: 6px;
+    min-height: 120px;
+    transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+.quality-lane.drag-over {
+    border-color: #22c55e;
+    box-shadow: 0 0 0 2px rgba(34,197,94,.25) inset;
+    transform: translateY(-1px);
+}
+.quality-lane-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+.quality-chip {
+    border: 1px solid #324866;
+    border-radius: 8px;
+    background: rgba(17, 29, 45, 0.92);
+    padding: 5px 6px;
+    margin-bottom: 6px;
+    font-size: 11px;
+    cursor: grab;
+}
+.quality-chip:active { cursor: grabbing; }
+.quality-chip:last-child { margin-bottom: 0; }
+.quality-chip-title {
+    color: #dbe7ff;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.quality-chip-meta {
+    color: #9db4d6;
+}
+.storage-picker-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 5000;
+    background: rgba(3, 7, 16, 0.75);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+.storage-picker-modal {
+    width: min(980px, 96vw);
+    max-height: 88vh;
+    overflow: hidden;
+    border: 1px solid #2a3d59;
+    border-radius: 12px;
+    background: linear-gradient(180deg, #0a1324 0%, #08101d 100%);
+    box-shadow: 0 20px 48px rgba(0,0,0,.5);
+}
+.storage-picker-body {
+    max-height: 60vh;
+    overflow: auto;
+}
 .btn, .badge { transition: all .2s ease; }
 .btn:hover { transform: translateY(-1px); }
 @keyframes massFadeIn {
@@ -227,6 +302,53 @@ section.content .card-header {
     </div>
 </section>
 <div id="toast-wrap" class="toast-wrap"></div>
+<div id="storage-picker-backdrop" class="storage-picker-backdrop">
+    <div class="storage-picker-modal">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <div>
+                <strong>Attach Storage File</strong>
+                <div id="storage-picker-subtitle" class="text-xs text-muted mt-1"></div>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-light" id="storage-picker-close">Close</button>
+        </div>
+        <div class="p-2 border-bottom border-secondary">
+            <div class="form-row align-items-end">
+                <div class="form-group col-md-5 mb-1">
+                    <label class="mb-1 text-xs">Search Storage</label>
+                    <input id="storage-picker-query" class="form-control form-control-sm" placeholder="Search filename...">
+                </div>
+                <div class="form-group col-md-2 mb-1">
+                    <label class="mb-1 text-xs">Quality</label>
+                    <select id="storage-picker-quality" class="custom-select custom-select-sm">
+                        <option>4K</option>
+                        <option>1080P</option>
+                        <option selected>720P</option>
+                        <option>480P</option>
+                        <option>360P</option>
+                        <option>HD</option>
+                    </select>
+                </div>
+                <div class="form-group col-md-2 mb-1">
+                    <label class="mb-1 text-xs">Season</label>
+                    <input id="storage-picker-season" class="form-control form-control-sm" type="number" min="1" placeholder="1">
+                </div>
+                <div class="form-group col-md-2 mb-1">
+                    <label class="mb-1 text-xs">Episode</label>
+                    <input id="storage-picker-episode" class="form-control form-control-sm" type="number" min="1" placeholder="1">
+                </div>
+                <div class="form-group col-md-1 mb-1">
+                    <button type="button" class="btn btn-sm btn-info btn-block" id="storage-picker-search-btn">Go</button>
+                </div>
+            </div>
+        </div>
+        <div id="storage-picker-body" class="storage-picker-body p-2">
+            <div class="text-muted text-sm p-2">Search storage files to attach.</div>
+        </div>
+        <div class="p-2 border-top border-secondary text-center">
+            <button type="button" class="btn btn-sm btn-outline-light" id="storage-picker-more">Load More</button>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block page_scripts %}
@@ -253,6 +375,23 @@ let wsPingTimer = null;
 let wsReconnectTimer = null;
 let wsReconnectAttempts = 0;
 let wsConnected = false;
+const qualityOrder = ["4K", "1080P", "720P", "480P", "360P", "HD"];
+
+const storagePickerBackdrop = document.getElementById("storage-picker-backdrop");
+const storagePickerBody = document.getElementById("storage-picker-body");
+const storagePickerQuery = document.getElementById("storage-picker-query");
+const storagePickerQuality = document.getElementById("storage-picker-quality");
+const storagePickerSeason = document.getElementById("storage-picker-season");
+const storagePickerEpisode = document.getElementById("storage-picker-episode");
+const storagePickerSubtitle = document.getElementById("storage-picker-subtitle");
+const storagePickerMoreBtn = document.getElementById("storage-picker-more");
+const storagePickerState = {
+    itemId: "",
+    contentType: "movie",
+    query: "",
+    offset: 0,
+    hasMore: false,
+};
 
 function toast(message, type = "info", timeout = 2600) {
     const el = document.createElement("div");
@@ -278,6 +417,29 @@ function esc(value) {
 
 function badge(text, cls = "secondary") {
     return `<span class="badge badge-${cls} mr-1">${esc(text)}</span>`;
+}
+
+function normalizeQuality(value) {
+    const raw = String(value || "").trim().toUpperCase().replace(/\s+/g, "");
+    if (!raw) return "HD";
+    const map = {
+        "2160": "4K",
+        "2160P": "4K",
+        "4K": "4K",
+        "4KP": "4K",
+        "1080": "1080P",
+        "1080P": "1080P",
+        "720": "720P",
+        "720P": "720P",
+        "480": "480P",
+        "480P": "480P",
+        "360": "360P",
+        "360P": "360P",
+        "380": "360P",
+        "380P": "360P",
+        "HD": "HD"
+    };
+    return map[raw] || raw;
 }
 
 function notesHtml(item) {
@@ -342,6 +504,7 @@ function fileChoicesHtml(item) {
                             <span class="choice-candidate ${c.selected ? "selected" : ""}">
                                 <span>${esc(c.size_label || "")}</span>
                                 <span>${esc(c.source_label || "")}</span>
+                                <span title="${esc(c.name || "")}" style="max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(c.name || "")}</span>
                                 <button class="btn btn-xs btn-outline-info action-btn"
                                     data-action="select-file"
                                     data-id="${esc(item.id || "")}"
@@ -355,6 +518,72 @@ function fileChoicesHtml(item) {
                 </div>
             `).join("")}
             ${(groups.length > view.length) ? `<div class="text-xs text-muted">+ ${groups.length - view.length} more groups</div>` : ""}
+        </div>
+    `;
+}
+
+function qualityBoardHtml(item, panelKey) {
+    if (!["incomplete", "complete"].includes(panelKey)) return "";
+    const files = Array.isArray(item.matched_files) ? item.matched_files : [];
+    const id = esc(item.id || "");
+    const grouped = {};
+    for (const row of files) {
+        const quality = normalizeQuality(row.quality || "HD");
+        if (!grouped[quality]) grouped[quality] = [];
+        grouped[quality].push(row);
+    }
+    const dynamic = Object.keys(grouped).filter(q => !qualityOrder.includes(q)).sort();
+    const lanes = [...qualityOrder, ...dynamic];
+    const laneHtml = lanes.map((q) => {
+        const rows = (grouped[q] || []).sort((a, b) => Number(b.size || 0) - Number(a.size || 0));
+        return `
+            <div class="quality-lane quality-drop-lane" data-id="${id}" data-quality="${esc(q)}">
+                <div class="quality-lane-head">
+                    <span class="badge badge-secondary">${esc(q)}</span>
+                    <div class="d-flex align-items-center">
+                        <span class="text-xs text-muted mr-1">${rows.length}</span>
+                        <button class="btn btn-xs btn-outline-warning action-btn"
+                            data-action="open-storage-picker"
+                            data-id="${id}"
+                            data-quality="${esc(q)}"
+                            data-type="${esc(item.content_type || "movie")}">
+                            + Add
+                        </button>
+                    </div>
+                </div>
+                ${rows.length ? rows.map((f) => {
+                    const se = (Number(f.season || 0) > 0 && Number(f.episode || 0) > 0)
+                        ? `S${String(Number(f.season)).padStart(2, "0")}E${String(Number(f.episode)).padStart(2, "0")}`
+                        : "";
+                    return `
+                        <div class="quality-chip"
+                            draggable="true"
+                            data-item-id="${id}"
+                            data-file-id="${esc(f.file_id || "")}"
+                            data-quality="${esc(q)}"
+                            title="Drag to move quality">
+                            <div class="quality-chip-title" title="${esc(f.name || "")}">${esc(f.name || "")}</div>
+                            <div class="d-flex justify-content-between align-items-center mt-1">
+                                <div class="quality-chip-meta">
+                                    ${se ? `${esc(se)} | ` : ""}${esc(f.size_label || "")}
+                                </div>
+                                <button class="btn btn-xs btn-outline-danger action-btn"
+                                    data-action="remove-match"
+                                    data-id="${id}"
+                                    data-file="${esc(f.file_id || "")}">
+                                    Remove
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }).join("") : `<div class="text-xs text-muted">Drop file here or add from storage.</div>`}
+            </div>
+        `;
+    }).join("");
+    return `
+        <div class="quality-board mt-2">
+            <div class="text-xs text-info mb-2">Quality Board: drag file cards between qualities to reassign.</div>
+            <div class="quality-lanes">${laneHtml}</div>
         </div>
     `;
 }
@@ -421,6 +650,7 @@ function itemHtml(item, panelKey) {
                     <div class="mt-2">${actionsHtml(item, panelKey)}</div>
                     ${manualHint}
                     ${fileChoicesHtml(item)}
+                    ${qualityBoardHtml(item, panelKey)}
                 </div>
             </div>
             <div class="mt-2 p-2 border border-secondary rounded bg-black live-notes-box">
@@ -500,6 +730,89 @@ async function fetchState() {
     } catch (e) {}
 }
 
+function closeStoragePicker() {
+    storagePickerBackdrop.style.display = "none";
+    storagePickerState.itemId = "";
+    storagePickerState.query = "";
+    storagePickerState.offset = 0;
+    storagePickerState.hasMore = false;
+    storagePickerBody.innerHTML = `<div class="text-muted text-sm p-2">Search storage files to attach.</div>`;
+}
+
+function openStoragePicker(itemId, contentType, qualityPref) {
+    storagePickerState.itemId = String(itemId || "").trim();
+    storagePickerState.contentType = String(contentType || "movie").toLowerCase() === "series" ? "series" : "movie";
+    storagePickerState.query = "";
+    storagePickerState.offset = 0;
+    storagePickerState.hasMore = false;
+    storagePickerQuery.value = "";
+    storagePickerQuality.value = normalizeQuality(qualityPref || "720P");
+    storagePickerSeason.value = "";
+    storagePickerEpisode.value = "";
+    const isSeries = storagePickerState.contentType === "series";
+    storagePickerSeason.disabled = !isSeries;
+    storagePickerEpisode.disabled = !isSeries;
+    storagePickerSubtitle.textContent = `${storagePickerState.contentType.toUpperCase()} | Attach to content ${storagePickerState.itemId}`;
+    storagePickerBackdrop.style.display = "flex";
+    fetchStoragePickerRows(true);
+}
+
+function renderStoragePickerRows(items, reset = false) {
+    const rows = Array.isArray(items) ? items : [];
+    const html = rows.length ? rows.map((x) => `
+        <div class="border border-secondary rounded p-2 mb-2 d-flex justify-content-between align-items-center">
+            <div class="mr-2" style="min-width:0;">
+                <div class="text-sm" title="${esc(x.name || "")}" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(x.name || "")}</div>
+                <div class="text-xs text-muted">${esc(x.size_label || "")} | Guess: ${esc(normalizeQuality(x.quality_guess || "HD"))}${(x.season_guess && x.episode_guess) ? ` | S${String(x.season_guess).padStart(2, "0")}E${String(x.episode_guess).padStart(2, "0")}` : ""}</div>
+            </div>
+            <button class="btn btn-sm btn-outline-warning action-btn"
+                data-action="attach-storage"
+                data-id="${esc(storagePickerState.itemId)}"
+                data-file="${esc(x.id || "")}"
+                data-qguess="${esc(normalizeQuality(x.quality_guess || "HD"))}"
+                data-sguess="${esc(x.season_guess || "")}"
+                data-eguess="${esc(x.episode_guess || "")}">
+                Attach
+            </button>
+        </div>
+    `).join("") : `<div class="text-muted text-sm p-2">No storage files found.</div>`;
+    if (reset) {
+        storagePickerBody.innerHTML = html;
+    } else {
+        storagePickerBody.insertAdjacentHTML("beforeend", html);
+    }
+}
+
+async function fetchStoragePickerRows(reset = false) {
+    if (!storagePickerState.itemId) return;
+    if (reset) {
+        storagePickerState.offset = 0;
+        storagePickerBody.innerHTML = `<div class="text-muted text-sm p-2">Loading...</div>`;
+    }
+    const q = reset ? storagePickerQuery.value.trim() : storagePickerState.query;
+    if (reset) storagePickerState.query = q;
+    try {
+        const params = new URLSearchParams({
+            q,
+            offset: String(storagePickerState.offset || 0),
+            limit: "50",
+        });
+        const res = await fetch(`/advance-mass-content-adder/storage/search?${params.toString()}`, { credentials: "same-origin" });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+            if (reset) storagePickerBody.innerHTML = `<div class="text-danger text-sm p-2">${esc(data.error || "Search failed.")}</div>`;
+            return;
+        }
+        const items = Array.isArray(data.items) ? data.items : [];
+        renderStoragePickerRows(items, reset);
+        storagePickerState.offset = Number(storagePickerState.offset || 0) + items.length;
+        storagePickerState.hasMore = Boolean(data.has_more);
+        storagePickerMoreBtn.disabled = !storagePickerState.hasMore;
+    } catch (e) {
+        if (reset) storagePickerBody.innerHTML = `<div class="text-danger text-sm p-2">Search failed.</div>`;
+    }
+}
+
 async function postForm(url, formData) {
     const res = await fetch(url, { method: "POST", body: formData, credentials: "same-origin" });
     let data = {};
@@ -530,9 +843,18 @@ document.getElementById("mass-manual-form").addEventListener("submit", async (e)
     e.preventDefault();
     const submitBtn = e.currentTarget.querySelector("button[type='submit']");
     if (submitBtn) submitBtn.disabled = true;
-    const fd = new FormData(e.currentTarget);
+    let fd = new FormData(e.currentTarget);
     try {
-        const out = await postForm("/advance-mass-content-adder/manual-add", fd);
+        let out = await postForm("/advance-mass-content-adder/manual-add", fd);
+        if (!out.ok && out.status === 409 && out.data && out.data.needs_existing_confirm) {
+            const existing = out.data.existing || {};
+            const existingLabel = `${existing.title || ""}${existing.year ? " (" + existing.year + ")" : ""}`;
+            const msg = `Content is already in database: ${existingLabel}\n\nDo you want to add it again in this panel?`;
+            if (!confirm(msg)) return;
+            fd = new FormData(e.currentTarget);
+            fd.append("force_add_existing", "1");
+            out = await postForm("/advance-mass-content-adder/manual-add", fd);
+        }
         if (!out.ok) {
             toast(out.data.error || "Manual add failed.", "error", 4200);
             return;
@@ -628,6 +950,31 @@ document.addEventListener("click", async (e) => {
                 if (input) input.value = "";
             }
             await fetchState();
+            return;
+        }
+        if (action === "open-storage-picker") {
+            openStoragePicker(id, btn.dataset.type || "movie", btn.dataset.quality || "720P");
+            return;
+        }
+        if (action === "attach-storage") {
+            if (!fileId) {
+                toast("Invalid storage file payload.", "error");
+                return;
+            }
+            const fd = new FormData();
+            fd.append("file_id", fileId);
+            fd.append("quality", normalizeQuality(storagePickerQuality.value || btn.dataset.qguess || "720P"));
+            if (!storagePickerSeason.disabled) {
+                const sVal = (storagePickerSeason.value || btn.dataset.sguess || "").trim();
+                const eVal = (storagePickerEpisode.value || btn.dataset.eguess || "").trim();
+                if (sVal) fd.append("season", sVal);
+                if (eVal) fd.append("episode", eVal);
+            }
+            const out = await postForm(`/advance-mass-content-adder/attach-file/${encodeURIComponent(id)}`, fd);
+            if (!out.ok) toast(out.data.error || "Attach failed.", "error");
+            else toast("File attached. Re-scanning.", "success");
+            await fetchState();
+            await fetchStoragePickerRows(true);
             return;
         }
         if (action === "upload") {
@@ -742,6 +1089,88 @@ document.getElementById("enable-noti-btn").addEventListener("click", async () =>
         }
     } catch (e) {
         toast("Notification permission failed.", "error");
+    }
+});
+
+document.getElementById("storage-picker-close").addEventListener("click", closeStoragePicker);
+document.getElementById("storage-picker-search-btn").addEventListener("click", () => fetchStoragePickerRows(true));
+document.getElementById("storage-picker-more").addEventListener("click", () => {
+    if (storagePickerState.hasMore) fetchStoragePickerRows(false);
+});
+storagePickerQuery.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        e.preventDefault();
+        fetchStoragePickerRows(true);
+    }
+});
+storagePickerBackdrop.addEventListener("click", (e) => {
+    if (e.target === storagePickerBackdrop) closeStoragePicker();
+});
+
+document.addEventListener("dragstart", (e) => {
+    const chip = e.target.closest(".quality-chip");
+    if (!chip) return;
+    const payload = {
+        itemId: String(chip.dataset.itemId || ""),
+        fileId: String(chip.dataset.fileId || ""),
+        fromQuality: normalizeQuality(chip.dataset.quality || "HD"),
+    };
+    if (!payload.itemId || !payload.fileId) return;
+    try {
+        e.dataTransfer.setData("text/plain", JSON.stringify(payload));
+        e.dataTransfer.effectAllowed = "move";
+    } catch (err) {}
+});
+
+document.addEventListener("dragover", (e) => {
+    const lane = e.target.closest(".quality-drop-lane");
+    if (!lane) return;
+    e.preventDefault();
+    lane.classList.add("drag-over");
+});
+
+document.addEventListener("dragleave", (e) => {
+    const lane = e.target.closest(".quality-drop-lane");
+    if (!lane) return;
+    lane.classList.remove("drag-over");
+});
+
+document.addEventListener("drop", async (e) => {
+    const lane = e.target.closest(".quality-drop-lane");
+    if (!lane) return;
+    e.preventDefault();
+    document.querySelectorAll(".quality-drop-lane.drag-over").forEach((el) => el.classList.remove("drag-over"));
+    let payload = null;
+    try {
+        payload = JSON.parse(e.dataTransfer.getData("text/plain") || "{}");
+    } catch (err) {
+        payload = null;
+    }
+    if (!payload || !payload.itemId || !payload.fileId) return;
+    const targetItemId = String(lane.dataset.id || "");
+    const targetQuality = normalizeQuality(lane.dataset.quality || "");
+    if (!targetItemId || !targetQuality) return;
+    if (payload.itemId !== targetItemId) {
+        toast("Move files only inside the same content card.", "warn");
+        return;
+    }
+    if (normalizeQuality(payload.fromQuality || "") === targetQuality) return;
+    const lockKey = `drag:${targetItemId}:${payload.fileId}`;
+    if (actionInFlight.has(lockKey)) return;
+    actionInFlight.add(lockKey);
+    try {
+        const fd = new FormData();
+        fd.append("file_id", payload.fileId);
+        fd.append("quality", targetQuality);
+        const out = await postForm(`/advance-mass-content-adder/reassign-quality/${encodeURIComponent(targetItemId)}`, fd);
+        if (!out.ok) {
+            toast(out.data.error || "Quality move failed.", "error");
+        } else {
+            toast(`Moved file to ${targetQuality}.`, "success");
+            await fetchState();
+        }
+    } finally {
+        actionInFlight.delete(lockKey);
     }
 });
 
