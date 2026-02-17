@@ -1606,6 +1606,33 @@ async def publish_content_update(
         item.release_date = release_date
         await item.save()
 
+    # Keep the content document in sync so admin edits reflect immediately.
+    target_doc = None
+    if group and group.get("id"):
+        try:
+            target_doc = await ContentItem.get(str(group.get("id")))
+        except Exception:
+            target_doc = None
+
+    if target_doc:
+        slug_base = _slugify(new_title)
+        target_doc.title = new_title
+        target_doc.year = new_year
+        target_doc.slug = f"{slug_base}-{new_year}" if (slug_base and new_year) else slug_base
+        target_doc.search_title = (new_title or "").strip().lower()
+        target_doc.content_type = group_type
+        target_doc.description = desc
+        target_doc.genres = genres_list
+        target_doc.actors = actors_list
+        target_doc.director = director
+        target_doc.trailer_url = trailer_url
+        target_doc.trailer_key = trailer_key
+        target_doc.poster_url = poster_url
+        target_doc.backdrop_url = backdrop_url
+        target_doc.release_date = release_date
+        target_doc.updated_at = datetime.now()
+        await target_doc.save()
+
     # Rename catalog folder if title changed
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     old_title = group_title

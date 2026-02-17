@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core.config import settings
-from app.db.models import FileSystemItem, MassContentState, User
+from app.db.models import ContentItem, FileSystemItem, MassContentState, User
 from app.routes.admin import _admin_context_base, _build_title_regex, _is_admin, _publish_items
 from app.routes.content import _parse_name, _tmdb_details, _tmdb_get, _tmdb_search
 from app.routes.dashboard import _cast_ids, get_current_user
@@ -662,13 +662,24 @@ async def _fetch_storage_candidates_multi(search_titles: list[str]) -> list[File
     return filtered
 
 
-def _best_row(rows: list[dict], season: int, episode: int, quality: str | None = None) -> dict | None:
+def _best_row(
+    rows: list[dict],
+    season: int,
+    episode: int,
+    quality: str | None = None,
+    preferred_file_id: str | None = None,
+) -> dict | None:
     picks = [r for r in rows if int(r.get("season") or 0) == season and int(r.get("episode") or 0) == episode]
     if quality:
         q = (quality or "").upper()
         picks = [r for r in picks if (r.get("quality") or "").upper() == q]
     if not picks:
         return None
+    if preferred_file_id:
+        pref = (preferred_file_id or "").strip()
+        for row in picks:
+            if str(row.get("file_id") or "").strip() == pref:
+                return row
     picks.sort(
         key=lambda x: (
             _quality_rank(x.get("quality") or ""),
@@ -680,9 +691,17 @@ def _best_row(rows: list[dict], season: int, episode: int, quality: str | None =
     return picks[0]
 
 
+def _series_choice_bucket(season: int, episode: int, quality: str) -> str:
+    return f"series:s{int(season)}:e{int(episode)}:q{(quality or 'HD').upper()}"
+
+
+def _movie_choice_bucket(quality: str) -> str:
+    return f"movie:q{(quality or 'HD').upper()}"
+
+
 async def _scan_files_for_state(
     state: MassContentState,
-) -> tuple[list[dict], list[dict], list[dict], list[dict], str, str, bool]:
+) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict], str, str, bool]:
     search_titles = _search_titles_for_state(state)
     candidates = await _fetch_storage_candidates_multi(search_titles or [state.title])
     found_rows: list[dict] = []
@@ -727,6 +746,13 @@ async def _scan_files_for_state(
         uniq[row["file_id"]] = row
     found_rows = list(uniq.values())
 
+    excluded_ids = {str(x).strip() for x in (getattr(state, "excluded_file_ids", []) or []) if str(x).strip()}
+    if excluded_ids:
+        found_rows = [row for row in found_rows if str(row.get("file_id") or "").strip() not in excluded_ids]
+
+    selected_file_map = dict(getattr(state, "selected_file_map", {}) or {})
+    file_choice_groups: list[dict] = []
+
     notes: list[dict] = []
     missing: list[dict] = []
     upload_plan: list[dict] = []
@@ -735,12 +761,66 @@ async def _scan_files_for_state(
     upload_ready = False
 
     if state.content_type == "movie":
-        by_quality: dict[str, dict] = {}
+        by_quality_rows: dict[str, list[dict]] = {}
         for row in found_rows:
-            quality = (row.get("quality") or "").upper()
-            current = by_quality.get(quality)
-            if not current or int(row.get("size") or 0) > int(current.get("size") or 0):
-                by_quality[quality] = row
+            quality = (row.get("quality") or "HD").upper()
+            by_quality_rows.setdefault(quality, []).append(row)
+
+        by_quality: dict[str, dict] = {}
+        for quality, rows in by_quality_rows.items():
+            bucket = _movie_choice_bucket(quality)
+            preferred_file_id = str(selected_file_map.get(bucket) or "").strip()
+            chosen = None
+            if preferred_file_id:
+                for cand in rows:
+                    if str(cand.get("file_id") or "").strip() == preferred_file_id:
+                        chosen = cand
+                        break
+            if not chosen:
+                rows_sorted = sorted(
+                    rows,
+                    key=lambda x: (
+                        1 if (x.get("source") or "").lower() == "storage" else 0,
+                        int(x.get("size") or 0),
+                    ),
+                    reverse=True,
+                )
+                chosen = rows_sorted[0] if rows_sorted else None
+            if chosen:
+                by_quality[quality] = chosen
+
+            if len(rows) > 1:
+                candidates_sorted = sorted(
+                    rows,
+                    key=lambda x: (
+                        1 if str(x.get("file_id") or "").strip() == preferred_file_id else 0,
+                        1 if (x.get("source") or "").lower() == "storage" else 0,
+                        int(x.get("size") or 0),
+                    ),
+                    reverse=True,
+                )
+                selected_id = preferred_file_id or (str(candidates_sorted[0].get("file_id") or "").strip() if candidates_sorted else "")
+                file_choice_groups.append(
+                    {
+                        "bucket_key": bucket,
+                        "label": f"{quality}",
+                        "season": None,
+                        "episode": None,
+                        "quality": quality,
+                        "selected_file_id": selected_id,
+                        "candidates": [
+                            {
+                                "file_id": str(c.get("file_id") or ""),
+                                "name": c.get("name") or "",
+                                "size": int(c.get("size") or 0),
+                                "size_label": format_size(int(c.get("size") or 0)),
+                                "source_label": c.get("source_label") or "",
+                                "selected": str(c.get("file_id") or "").strip() == selected_id,
+                            }
+                            for c in candidates_sorted
+                        ],
+                    }
+                )
 
         required = ["1080P", "720P", "480P"]
         for quality in required:
@@ -791,7 +871,7 @@ async def _scan_files_for_state(
             panel = "incomplete"
             file_status = "incomplete"
             upload_ready = False
-        return found_rows, notes, missing, upload_plan, panel, file_status, upload_ready
+        return found_rows, notes, missing, upload_plan, file_choice_groups, panel, file_status, upload_ready
 
     seasons = list(state.seasons or [])
     if not seasons:
@@ -826,6 +906,56 @@ async def _scan_files_for_state(
             quality = (row.get("quality") or "HD").upper()
             quality_to_episodes.setdefault(quality, set()).add(int(row.get("episode") or 0))
 
+        # Build duplicate-choice groups for admin (same season/episode/quality with multiple files).
+        season_bucket_rows: dict[str, list[dict]] = {}
+        for row in season_found:
+            episode_no = int(row.get("episode") or 0)
+            quality = (row.get("quality") or "HD").upper()
+            if episode_no <= 0:
+                continue
+            bucket_key = _series_choice_bucket(season_no, episode_no, quality)
+            season_bucket_rows.setdefault(bucket_key, []).append(row)
+
+        for bucket_key, rows in season_bucket_rows.items():
+            if len(rows) <= 1:
+                continue
+            preferred_file_id = str(selected_file_map.get(bucket_key) or "").strip()
+            candidates_sorted = sorted(
+                rows,
+                key=lambda x: (
+                    1 if str(x.get("file_id") or "").strip() == preferred_file_id else 0,
+                    1 if (x.get("source") or "").lower() == "storage" else 0,
+                    int(x.get("size") or 0),
+                ),
+                reverse=True,
+            )
+            first = candidates_sorted[0] if candidates_sorted else {}
+            selected_id = preferred_file_id or str(first.get("file_id") or "").strip()
+            parts = bucket_key.split(":")
+            episode_from_bucket = int(parts[2].replace("e", "")) if len(parts) >= 3 else 0
+            quality_from_bucket = parts[3].replace("q", "").upper() if len(parts) >= 4 else ""
+            file_choice_groups.append(
+                {
+                    "bucket_key": bucket_key,
+                    "label": f"S{season_no:02d}E{episode_from_bucket:02d} {quality_from_bucket}",
+                    "season": season_no,
+                    "episode": episode_from_bucket,
+                    "quality": quality_from_bucket,
+                    "selected_file_id": selected_id,
+                    "candidates": [
+                        {
+                            "file_id": str(c.get("file_id") or ""),
+                            "name": c.get("name") or "",
+                            "size": int(c.get("size") or 0),
+                            "size_label": format_size(int(c.get("size") or 0)),
+                            "source_label": c.get("source_label") or "",
+                            "selected": str(c.get("file_id") or "").strip() == selected_id,
+                        }
+                        for c in candidates_sorted
+                    ],
+                }
+            )
+
         complete_qualities = []
         for quality, covered in quality_to_episodes.items():
             if all(ep in covered for ep in expected_episodes):
@@ -846,9 +976,24 @@ async def _scan_files_for_state(
         if len(complete_qualities) > 4:
             complete_qualities = sorted(complete_qualities, key=_quality_rank, reverse=True)[:4]
         season_ready.append(len(complete_qualities) > 0)
-        # Keep multiple fully-complete qualities (max 4) for upload.
-        # If none are fully complete, fall back to one best quality for partial workflow.
-        season_quality_targets = list(complete_qualities) if complete_qualities else ([chosen_quality] if chosen_quality else [])
+        # Keep multiple qualities per season (max 4):
+        # 1) all fully-complete qualities, then
+        # 2) strongest partial qualities for extra episode-level captures.
+        ranked_qualities = sorted(
+            quality_to_episodes.items(),
+            key=lambda kv: (len(kv[1]), _quality_rank(kv[0])),
+            reverse=True,
+        )
+        season_quality_targets = list(complete_qualities)
+        for quality, _covered in ranked_qualities:
+            if quality in season_quality_targets:
+                continue
+            if len(season_quality_targets) >= 4:
+                break
+            season_quality_targets.append(quality)
+        if not season_quality_targets and chosen_quality:
+            season_quality_targets = [chosen_quality]
+        complete_quality_set = set(complete_qualities)
 
         for episode_no in expected_episodes:
             episode_title = ""
@@ -859,8 +1004,10 @@ async def _scan_files_for_state(
 
             if complete_qualities:
                 # Add one plan row per complete quality for the same episode.
-                for quality in season_quality_targets:
-                    same_quality = _best_row(season_found, season_no, episode_no, quality)
+                for quality in complete_qualities:
+                    bucket_key = _series_choice_bucket(season_no, episode_no, quality)
+                    preferred_file_id = str(selected_file_map.get(bucket_key) or "").strip()
+                    same_quality = _best_row(season_found, season_no, episode_no, quality, preferred_file_id=preferred_file_id)
                     if same_quality:
                         notes.append(
                             {
@@ -899,9 +1046,39 @@ async def _scan_files_for_state(
                                 "note": f"Season {season_no} Episode {episode_no} missing at {quality}",
                             }
                         )
+                # Also capture extra partial qualities when available for this episode
+                # (do not mark missing if absent, because they are optional extras).
+                for quality in season_quality_targets:
+                    if quality in complete_quality_set:
+                        continue
+                    bucket_key = _series_choice_bucket(season_no, episode_no, quality)
+                    preferred_file_id = str(selected_file_map.get(bucket_key) or "").strip()
+                    extra_quality_row = _best_row(season_found, season_no, episode_no, quality, preferred_file_id=preferred_file_id)
+                    if not extra_quality_row:
+                        continue
+                    notes.append(
+                        {
+                            "season": season_no,
+                            "episode": episode_no,
+                            "quality": quality,
+                            "state": "found_partial",
+                            "text": f"Season {season_no} Episode {episode_no} {quality} -> Found ({extra_quality_row.get('upload_label')}){_file_note_suffix(extra_quality_row)}",
+                        }
+                    )
+                    upload_plan.append(
+                        {
+                            "file_id": extra_quality_row.get("file_id"),
+                            "quality": quality,
+                            "season": season_no,
+                            "episode": episode_no,
+                            "episode_title": episode_title,
+                        }
+                    )
                 continue
 
-            same_quality = _best_row(season_found, season_no, episode_no, chosen_quality)
+            chosen_bucket = _series_choice_bucket(season_no, episode_no, chosen_quality)
+            preferred_file_id = str(selected_file_map.get(chosen_bucket) or "").strip()
+            same_quality = _best_row(season_found, season_no, episode_no, chosen_quality, preferred_file_id=preferred_file_id)
             any_quality = _best_row(season_found, season_no, episode_no, None)
             if same_quality:
                 notes.append(
@@ -993,7 +1170,7 @@ async def _scan_files_for_state(
         file_status = "incomplete"
         upload_ready = False
 
-    return found_rows, notes, missing, upload_plan, panel, file_status, upload_ready
+    return found_rows, notes, missing, upload_plan, file_choice_groups, panel, file_status, upload_ready
 
 
 async def _upsert_mass_entry(title: str, content_type: str, year: str, source_note: str) -> MassContentState:
@@ -1206,11 +1383,12 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                 await _mass_broadcast_snapshot()
                 return
 
-            found_rows, notes, missing, upload_plan, panel, file_status, upload_ready = await _scan_files_for_state(row)
+            found_rows, notes, missing, upload_plan, file_choice_groups, panel, file_status, upload_ready = await _scan_files_for_state(row)
             row.matched_files = found_rows
             row.live_notes = notes
             row.missing_items = missing
             row.upload_plan = upload_plan
+            row.file_choice_groups = file_choice_groups
             row.panel = panel
             row.file_status = file_status
             row.upload_ready = bool(upload_ready)
@@ -1251,6 +1429,7 @@ def _serialize_row(row: MassContentState) -> dict:
             se_label = f"S{season:02d}E{episode:02d}"
         matched_preview.append(
             {
+                "file_id": str(item.get("file_id") or ""),
                 "name": (item.get("name") or "").strip(),
                 "quality": (item.get("quality") or "").upper(),
                 "se": se_label,
@@ -1278,6 +1457,7 @@ def _serialize_row(row: MassContentState) -> dict:
         "live_notes": list(row.live_notes or []),
         "matched_files_count": len(row.matched_files or []),
         "matched_files_preview": matched_preview,
+        "file_choice_groups": list(getattr(row, "file_choice_groups", []) or []),
         "source_inputs": list(row.source_inputs or []),
         "upload_state": str(getattr(row, "upload_state", "") or "idle"),
         "upload_message": str(getattr(row, "upload_message", "") or ""),
@@ -1546,6 +1726,86 @@ async def advance_mass_content_adder_retry_files(request: Request, item_id: str)
     return {"ok": True}
 
 
+@router.post("/advance-mass-content-adder/select-file/{item_id}")
+async def advance_mass_content_adder_select_file(
+    request: Request,
+    item_id: str,
+    bucket_key: str = Form(""),
+    file_id: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    row = await MassContentState.get(item_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if row.tmdb_status != "found":
+        return JSONResponse({"ok": False, "error": "TMDB data is missing for this item."}, status_code=400)
+
+    bucket_key = (bucket_key or "").strip()
+    file_id = (file_id or "").strip()
+    if not bucket_key or not file_id:
+        return JSONResponse({"ok": False, "error": "bucket_key and file_id are required."}, status_code=400)
+
+    matched_ids = {str(x.get("file_id") or "").strip() for x in (row.matched_files or [])}
+    if file_id not in matched_ids:
+        return JSONResponse({"ok": False, "error": "Selected file is not available in current matched list."}, status_code=400)
+
+    selected_map = dict(getattr(row, "selected_file_map", {}) or {})
+    selected_map[bucket_key] = file_id
+    row.selected_file_map = selected_map
+    row.panel = "processing"
+    row.file_status = "pending"
+    row.last_error = None
+    row.updated_at = datetime.now()
+    await row.save()
+    _schedule_process(str(row.id), mode="files")
+    await _mass_broadcast_snapshot()
+    return {"ok": True}
+
+
+@router.post("/advance-mass-content-adder/remove-matched-file/{item_id}")
+async def advance_mass_content_adder_remove_matched_file(
+    request: Request,
+    item_id: str,
+    file_id: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    row = await MassContentState.get(item_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    file_id = (file_id or "").strip()
+    if not file_id:
+        return JSONResponse({"ok": False, "error": "file_id is required."}, status_code=400)
+
+    matched_ids = {str(x.get("file_id") or "").strip() for x in (row.matched_files or [])}
+    if file_id and file_id not in matched_ids:
+        return JSONResponse({"ok": False, "error": "File not found in matched list."}, status_code=400)
+
+    excluded = [str(x).strip() for x in (getattr(row, "excluded_file_ids", []) or []) if str(x).strip()]
+    if file_id not in excluded:
+        excluded.append(file_id)
+    row.excluded_file_ids = excluded
+
+    selected_map = dict(getattr(row, "selected_file_map", {}) or {})
+    for key, value in list(selected_map.items()):
+        if str(value or "").strip() == file_id:
+            selected_map.pop(key, None)
+    row.selected_file_map = selected_map
+
+    row.panel = "processing"
+    row.file_status = "pending"
+    row.last_error = None
+    row.updated_at = datetime.now()
+    await row.save()
+    _schedule_process(str(row.id), mode="files")
+    await _mass_broadcast_snapshot()
+    return {"ok": True}
+
+
 @router.post("/advance-mass-content-adder/manual-file-hint/{item_id}")
 async def advance_mass_content_adder_manual_file_hint(
     request: Request,
@@ -1625,6 +1885,58 @@ def _build_upload_payload(row: MassContentState) -> tuple[list[str], dict[str, d
     if not raw_file_ids:
         return [], {}, "No valid file ids found in upload plan."
     return raw_file_ids, overrides, ""
+
+
+async def _content_exists_for_row(row: MassContentState) -> tuple[bool, dict]:
+    ctype = (row.content_type or "movie").strip().lower()
+    tmdb_id = int(row.tmdb_id or 0)
+    title = (row.title or "").strip()
+    year = (row.year or "").strip()
+
+    doc = None
+    if tmdb_id > 0:
+        doc = await ContentItem.find_one(
+            ContentItem.content_type == ctype,
+            ContentItem.tmdb_id == tmdb_id,
+            ContentItem.status == "published",
+        )
+    if not doc and title:
+        query = {
+            "content_type": ctype,
+            "status": "published",
+            "title": {"$regex": f"^{re.escape(title)}$", "$options": "i"},
+        }
+        if year:
+            query["year"] = year
+        doc = await ContentItem.find_one(query)
+    if not doc and title:
+        # Fallback by normalized title when year differs.
+        candidates = await ContentItem.find(
+            ContentItem.content_type == ctype,
+            ContentItem.status == "published",
+        ).limit(2000).to_list()
+        row_norm = _norm_title(title)
+        row_year = (year or "").strip()
+        for cand in candidates:
+            if _norm_title(getattr(cand, "title", "") or "") != row_norm:
+                continue
+            cand_year = (getattr(cand, "year", "") or "").strip()
+            if row_year and cand_year and row_year != cand_year:
+                continue
+            doc = cand
+            break
+
+    if not doc:
+        return False, {}
+
+    payload = {
+        "id": str(doc.id),
+        "slug": (doc.slug or "").strip(),
+        "title": doc.title or "",
+        "year": doc.year or "",
+        "content_type": doc.content_type or ctype,
+    }
+    return True, payload
 
 
 async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
@@ -1740,6 +2052,7 @@ async def advance_mass_content_adder_upload(
     request: Request,
     item_id: str,
     force_upload: str = Form("0"),
+    force_reupload: str = Form("0"),
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
@@ -1752,6 +2065,7 @@ async def advance_mass_content_adder_upload(
         return JSONResponse({"ok": False, "error": "TMDB data not found for this item."}, status_code=400)
 
     allow_incomplete = (force_upload or "").strip().lower() in {"1", "true", "yes", "on"}
+    allow_reupload = (force_reupload or "").strip().lower() in {"1", "true", "yes", "on"}
     if row.panel == "incomplete" and not allow_incomplete:
         return JSONResponse(
             {
@@ -1759,6 +2073,18 @@ async def advance_mass_content_adder_upload(
                 "needs_confirm": True,
                 "message": "Content is incomplete. Confirm to upload with missing files.",
                 "missing_items": list(row.missing_items or []),
+            },
+            status_code=409,
+        )
+
+    exists, existing_payload = await _content_exists_for_row(row)
+    if exists and not allow_reupload:
+        return JSONResponse(
+            {
+                "ok": False,
+                "needs_existing_confirm": True,
+                "message": "Content already exists in content database. Do you want to upload again?",
+                "existing": existing_payload,
             },
             status_code=409,
         )

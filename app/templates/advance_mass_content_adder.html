@@ -43,6 +43,59 @@
 .toast-success { background: #064e3b; }
 .toast-warn { background: #7c2d12; }
 .toast-error { background: #7f1d1d; }
+section.content .card {
+    border-radius: 14px;
+    border: 1px solid #1f2a3a;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.24);
+    backdrop-filter: blur(2px);
+}
+section.content .card-header {
+    border-bottom: 1px solid #203048;
+    background: linear-gradient(90deg, rgba(9,16,32,0.95), rgba(13,28,51,0.92));
+}
+.manual-file-hint {
+    background: #0a1322 !important;
+    color: #dbe7ff !important;
+    border-color: #2c3b55 !important;
+}
+.choice-groups {
+    border: 1px solid #223149;
+    background: linear-gradient(180deg, rgba(7,13,24,0.95), rgba(7,13,24,0.86));
+    border-radius: 10px;
+    padding: 8px;
+}
+.choice-item {
+    border: 1px solid #27354d;
+    border-radius: 8px;
+    padding: 6px 8px;
+    margin-bottom: 8px;
+    background: rgba(14, 21, 36, 0.72);
+}
+.choice-item:last-child { margin-bottom: 0; }
+.choice-candidate {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin: 3px 6px 3px 0;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid #2b3a53;
+    background: rgba(19, 28, 44, 0.8);
+    color: #cdd8ef;
+    font-size: 11px;
+}
+.choice-candidate.selected {
+    border-color: #22c55e;
+    background: rgba(17, 64, 42, 0.5);
+}
+.mass-toolbar {
+    background: linear-gradient(90deg, rgba(5,10,18,0.9), rgba(9,17,31,0.9));
+    border: 1px solid #1c2a3d;
+    border-radius: 10px;
+    padding: 6px 10px;
+}
+.btn, .badge { transition: all .2s ease; }
+.btn:hover { transform: translateY(-1px); }
 @keyframes massFadeIn {
     from { opacity: 0; transform: translateY(6px); }
     to { opacity: 1; transform: translateY(0); }
@@ -110,7 +163,9 @@
             </div>
         </div>
 
-        <div id="mass-status-banner" class="small text-muted mb-2"></div>
+        <div class="mass-toolbar mb-2">
+            <div id="mass-status-banner" class="small text-muted mb-0"></div>
+        </div>
 
         <div class="row">
             <div class="col-lg-6 mb-3">
@@ -261,11 +316,46 @@ function matchedFilesHtml(item) {
                     const q = f.quality ? `${esc(f.quality)} ` : "";
                     const src = f.source_label ? ` | ${esc(f.source_label)}` : "";
                     const size = f.size_label ? ` (${esc(f.size_label)})` : "";
-                    return `<li class="text-xs">${se}${q}${esc(f.name || "")}${size}${src}</li>`;
+                    const rmBtn = f.file_id
+                        ? `<button class="btn btn-xs btn-outline-danger ml-2 action-btn" data-action="remove-match" data-id="${esc(item.id || "")}" data-file="${esc(f.file_id)}">Remove</button>`
+                        : "";
+                    return `<li class="text-xs">${se}${q}${esc(f.name || "")}${size}${src}${rmBtn}</li>`;
                 }).join("")}
             </ul>
             ${more}
         </details>
+    `;
+}
+
+function fileChoicesHtml(item) {
+    const groups = Array.isArray(item.file_choice_groups) ? item.file_choice_groups : [];
+    if (!groups.length) return "";
+    const view = groups.slice(0, 16);
+    return `
+        <div class="choice-groups mt-2">
+            <div class="text-xs text-warning mb-1">Duplicate File Choices</div>
+            ${view.map(group => `
+                <div class="choice-item">
+                    <div class="text-xs font-weight-bold mb-1">${esc(group.label || "")}</div>
+                    <div>
+                        ${(group.candidates || []).map(c => `
+                            <span class="choice-candidate ${c.selected ? "selected" : ""}">
+                                <span>${esc(c.size_label || "")}</span>
+                                <span>${esc(c.source_label || "")}</span>
+                                <button class="btn btn-xs btn-outline-info action-btn"
+                                    data-action="select-file"
+                                    data-id="${esc(item.id || "")}"
+                                    data-bucket="${esc(group.bucket_key || "")}"
+                                    data-file="${esc(c.file_id || "")}">
+                                    Use
+                                </button>
+                            </span>
+                        `).join("")}
+                    </div>
+                </div>
+            `).join("")}
+            ${(groups.length > view.length) ? `<div class="text-xs text-muted">+ ${groups.length - view.length} more groups</div>` : ""}
+        </div>
     `;
 }
 
@@ -330,6 +420,7 @@ function itemHtml(item, panelKey) {
                     ${error}
                     <div class="mt-2">${actionsHtml(item, panelKey)}</div>
                     ${manualHint}
+                    ${fileChoicesHtml(item)}
                 </div>
             </div>
             <div class="mt-2 p-2 border border-secondary rounded bg-black live-notes-box">
@@ -461,6 +552,8 @@ document.addEventListener("click", async (e) => {
     if (!btn) return;
     const action = btn.dataset.action;
     const id = btn.dataset.id;
+    const fileId = btn.dataset.file || "";
+    const bucketKey = btn.dataset.bucket || "";
     if (!action || !id) return;
     const lockKey = `${action}:${id}`;
     if (actionInFlight.has(lockKey)) return;
@@ -486,6 +579,34 @@ document.addEventListener("click", async (e) => {
             const out = await postForm(`/advance-mass-content-adder/retry-files/${encodeURIComponent(id)}`, new FormData());
             if (!out.ok) toast(out.data.error || "Retry files failed.", "error");
             else toast("File scan retry started.", "info");
+            await fetchState();
+            return;
+        }
+        if (action === "select-file") {
+            if (!bucketKey || !fileId) {
+                toast("Invalid file selection payload.", "error");
+                return;
+            }
+            const fd = new FormData();
+            fd.append("bucket_key", bucketKey);
+            fd.append("file_id", fileId);
+            const out = await postForm(`/advance-mass-content-adder/select-file/${encodeURIComponent(id)}`, fd);
+            if (!out.ok) toast(out.data.error || "Failed to save file choice.", "error");
+            else toast("File choice saved. Re-scanning content.", "success");
+            await fetchState();
+            return;
+        }
+        if (action === "remove-match") {
+            if (!fileId) {
+                toast("Invalid file remove payload.", "error");
+                return;
+            }
+            if (!confirm("Remove this file from current content matching?")) return;
+            const fd = new FormData();
+            fd.append("file_id", fileId);
+            const out = await postForm(`/advance-mass-content-adder/remove-matched-file/${encodeURIComponent(id)}`, fd);
+            if (!out.ok) toast(out.data.error || "Failed to remove file.", "error");
+            else toast("File removed from this content. Re-scanning.", "warn");
             await fetchState();
             return;
         }
@@ -519,6 +640,15 @@ document.addEventListener("click", async (e) => {
                 if (!confirm(msg)) return;
                 fd = new FormData();
                 fd.append("force_upload", "1");
+                out = await postForm(`/advance-mass-content-adder/upload/${encodeURIComponent(id)}`, fd);
+            }
+            if (!out.ok && out.status === 409 && out.data && out.data.needs_existing_confirm) {
+                const existing = out.data.existing || {};
+                const existingLabel = `${existing.title || ""}${existing.year ? " (" + existing.year + ")" : ""}`;
+                const msg = `Content already in database: ${existingLabel}\n\nDo you want to upload again?`;
+                if (!confirm(msg)) return;
+                fd = new FormData();
+                fd.append("force_reupload", "1");
                 out = await postForm(`/advance-mass-content-adder/upload/${encodeURIComponent(id)}`, fd);
             }
             if (!out.ok) {
