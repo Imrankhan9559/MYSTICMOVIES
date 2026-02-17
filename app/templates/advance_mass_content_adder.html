@@ -238,8 +238,11 @@ section.content .card-header {
             </div>
         </div>
 
-        <div class="mass-toolbar mb-2">
+        <div class="mass-toolbar mb-2 d-flex justify-content-between align-items-center flex-wrap">
             <div id="mass-status-banner" class="small text-muted mb-0"></div>
+            <div class="mt-2 mt-md-0">
+                <button type="button" class="btn btn-sm btn-outline-danger" id="clear-all-panels-btn">Clear All Panels</button>
+            </div>
         </div>
 
         <div class="row">
@@ -247,7 +250,10 @@ section.content .card-header {
                 <div class="card card-outline card-warning h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 1: Searching / Processing</h3>
-                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/processing">Export CSV</a>
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/processing">Export CSV</a>
+                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="processing">Clear All</button>
+                        </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-processing" class="panel-list"></div>
@@ -258,7 +264,10 @@ section.content .card-header {
                 <div class="card card-outline card-danger h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 2: TMDB Not Found</h3>
-                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/tmdb_not_found">Export CSV</a>
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/tmdb_not_found">Export CSV</a>
+                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="tmdb_not_found">Clear All</button>
+                        </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-tmdb-not-found" class="panel-list"></div>
@@ -269,7 +278,10 @@ section.content .card-header {
                 <div class="card card-outline card-danger h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 3: File Not Found</h3>
-                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/file_not_found">Export CSV</a>
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/file_not_found">Export CSV</a>
+                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="file_not_found">Clear All</button>
+                        </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-file-not-found" class="panel-list"></div>
@@ -280,7 +292,10 @@ section.content .card-header {
                 <div class="card card-outline card-warning h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 4: Incomplete Content</h3>
-                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/incomplete">Export CSV</a>
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/incomplete">Export CSV</a>
+                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="incomplete">Clear All</button>
+                        </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-incomplete" class="panel-list"></div>
@@ -291,10 +306,41 @@ section.content .card-header {
                 <div class="card card-outline card-success">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 5: Complete Content</h3>
-                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/complete">Export CSV</a>
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/complete">Export CSV</a>
+                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="complete">Clear All</button>
+                        </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-complete" class="panel-list"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 mb-3">
+                <div class="card card-outline card-secondary">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h3 class="card-title mb-0">Panel 6: Uploaded Content</h3>
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/uploaded">Export CSV</a>
+                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="uploaded">Clear All</button>
+                        </div>
+                    </div>
+                    <div class="card-body p-2">
+                        <div id="panel-uploaded" class="panel-list"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 mb-3">
+                <div class="card card-outline card-warning">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h3 class="card-title mb-0">Panel 7: Skipped Existing</h3>
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/skipped">Export CSV</a>
+                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="skipped">Clear All</button>
+                        </div>
+                    </div>
+                    <div class="card-body p-2">
+                        <div id="panel-skipped" class="panel-list"></div>
                     </div>
                 </div>
             </div>
@@ -361,6 +407,8 @@ const panelEls = {
     file_not_found: document.getElementById("panel-file-not-found"),
     incomplete: document.getElementById("panel-incomplete"),
     complete: document.getElementById("panel-complete"),
+    uploaded: document.getElementById("panel-uploaded"),
+    skipped: document.getElementById("panel-skipped"),
 };
 
 let latestState = initialState || { panels: {} };
@@ -598,12 +646,15 @@ function actionsHtml(item, panelKey) {
     const uploadDisabled = (uploadState === "queued" || uploadState === "uploading") ? "disabled" : "";
     const upload = `<button class="btn btn-xs btn-success mr-1 action-btn" data-action="upload" data-id="${id}" ${uploadDisabled}>${uploadLabel}</button>`;
     const uploadIncomplete = `<button class="btn btn-xs btn-warning mr-1 action-btn" data-action="upload" data-id="${id}" ${uploadDisabled}>${uploadLabel === "Upload" ? "Upload (Warn)" : uploadLabel}</button>`;
+    const processSkipped = `<button class="btn btn-xs btn-outline-success mr-1 action-btn" data-action="process-skipped" data-id="${id}">Add Anyway</button>`;
 
     if (panelKey === "processing") return del;
     if (panelKey === "tmdb_not_found") return retryTmdb + del;
     if (panelKey === "file_not_found") return retryFiles + del;
     if (panelKey === "incomplete") return retryFiles + uploadIncomplete + del;
     if (panelKey === "complete") return upload + retryFiles + del;
+    if (panelKey === "uploaded") return del;
+    if (panelKey === "skipped") return processSkipped + del;
     return del;
 }
 
@@ -628,6 +679,21 @@ function itemHtml(item, panelKey) {
     const error = item.last_error ? `<div class="text-xs text-danger mt-1">${esc(item.last_error)}</div>` : "";
     const uploadMsg = item.upload_message ? `<div class="text-xs text-info mt-1">${esc(item.upload_message)}</div>` : "";
     const missingTxt = missing > 0 ? `<div class="text-xs text-warning mt-1">Missing: ${missing}</div>` : "";
+    const existing = (item && typeof item.existing_content === "object" && item.existing_content) ? item.existing_content : {};
+    const existingTitle = String(existing.title || "").trim();
+    const existingYear = String(existing.year || "").trim();
+    const existingType = String(existing.content_type || "").trim();
+    const existingId = String(existing.id || "").trim();
+    const existingSlug = String(existing.slug || "").trim();
+    const existingLabel = `${existingTitle}${existingYear ? ` (${existingYear})` : ""}${existingType ? ` | ${existingType.toUpperCase()}` : ""}`;
+    const skippedInfo = panelKey === "skipped" ? `
+        <div class="mt-1 p-2 border border-warning rounded bg-black">
+            <div class="text-xs text-warning">Reason: ${esc(item.skip_reason || "Already exists in content database.")}</div>
+            ${existingTitle ? `<div class="text-xs text-info mt-1">Existing: ${esc(existingLabel)}</div>` : ""}
+            ${existingId ? `<div class="text-xs text-muted">ID: ${esc(existingId)}</div>` : ""}
+            ${existingSlug ? `<div class="text-xs text-muted">Slug: ${esc(existingSlug)}</div>` : ""}
+        </div>
+    ` : "";
     const manualHint = panelKey !== "tmdb_not_found" ? `
         <div class="input-group input-group-sm mt-2 manual-hint-wrap">
             <input type="text" class="form-control manual-file-hint" data-id="${id}" placeholder="Manual filename hint (comma or line-separated)">
@@ -645,6 +711,7 @@ function itemHtml(item, panelKey) {
                     <div class="text-xs mt-1">${meta}</div>
                     ${matchedFilesHtml(item)}
                     ${missingTxt}
+                    ${skippedInfo}
                     ${uploadMsg}
                     ${error}
                     <div class="mt-2">${actionsHtml(item, panelKey)}</div>
@@ -708,7 +775,7 @@ function renderPanels(snapshot) {
         ? ` | Import Queue: ${Number(imp.queued || 0)} queued, ${Number(imp.processed || 0)} processed, ${Number(imp.failed || 0)} failed (batch ${Number(imp.chunk_size || 0)})`
         : "";
     const syncTxt = wsConnected ? "Live" : "Polling";
-    statusBanner.textContent = `Total: ${Number(snapshot.total || 0)} | Processing: ${Number(counts.processing || 0)} | TMDB Not Found: ${Number(counts.tmdb_not_found || 0)} | File Not Found: ${Number(counts.file_not_found || 0)} | Incomplete: ${Number(counts.incomplete || 0)} | Complete: ${Number(counts.complete || 0)} | Workers: P${Number(workers.process_active || 0)}/U${Number(workers.upload_active || 0)}${importTxt} | Sync: ${syncTxt}`;
+    statusBanner.textContent = `Total: ${Number(snapshot.total || 0)} | Processing: ${Number(counts.processing || 0)} | TMDB Not Found: ${Number(counts.tmdb_not_found || 0)} | File Not Found: ${Number(counts.file_not_found || 0)} | Incomplete: ${Number(counts.incomplete || 0)} | Complete: ${Number(counts.complete || 0)} | Uploaded: ${Number(counts.uploaded || 0)} | Skipped: ${Number(counts.skipped || 0)} | Workers: P${Number(workers.process_active || 0)}/U${Number(workers.upload_active || 0)}${importTxt} | Sync: ${syncTxt}`;
 }
 
 function scheduleRender(snapshot) {
@@ -870,6 +937,44 @@ document.getElementById("mass-manual-form").addEventListener("submit", async (e)
 document.getElementById("refresh-now-btn").addEventListener("click", fetchState);
 
 document.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".clear-panel-btn");
+    if (!btn) return;
+    const panel = String(btn.dataset.panel || "").trim();
+    if (!panel) return;
+    const panelTitle = panel.replaceAll("_", " ");
+    if (!confirm(`Clear all entries from panel "${panelTitle}"?`)) return;
+    btn.disabled = true;
+    try {
+        const out = await postForm(`/advance-mass-content-adder/clear-panel/${encodeURIComponent(panel)}`, new FormData());
+        if (!out.ok) {
+            toast(out.data.error || "Failed to clear panel.", "error", 4200);
+        } else {
+            toast(`Cleared ${Number(out.data.deleted || 0)} entries from ${panelTitle}.`, "warn", 3200);
+            await fetchState();
+        }
+    } finally {
+        btn.disabled = false;
+    }
+});
+
+document.getElementById("clear-all-panels-btn").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    if (!confirm("Clear ALL entries from all panels? This cannot be undone.")) return;
+    btn.disabled = true;
+    try {
+        const out = await postForm("/advance-mass-content-adder/clear-all", new FormData());
+        if (!out.ok) {
+            toast(out.data.error || "Failed to clear all panels.", "error", 4200);
+        } else {
+            toast(`Cleared ${Number(out.data.deleted || 0)} total entries.`, "warn", 3500);
+            await fetchState();
+        }
+    } finally {
+        btn.disabled = false;
+    }
+});
+
+document.addEventListener("click", async (e) => {
     const btn = e.target.closest(".action-btn");
     if (!btn) return;
     const action = btn.dataset.action;
@@ -901,6 +1006,13 @@ document.addEventListener("click", async (e) => {
             const out = await postForm(`/advance-mass-content-adder/retry-files/${encodeURIComponent(id)}`, new FormData());
             if (!out.ok) toast(out.data.error || "Retry files failed.", "error");
             else toast("File scan retry started.", "info");
+            await fetchState();
+            return;
+        }
+        if (action === "process-skipped") {
+            const out = await postForm(`/advance-mass-content-adder/process-skipped/${encodeURIComponent(id)}`, new FormData());
+            if (!out.ok) toast(out.data.error || "Failed to process skipped item.", "error");
+            else toast("Skipped item moved to processing.", "success");
             await fetchState();
             return;
         }

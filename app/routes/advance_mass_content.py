@@ -48,6 +48,7 @@ _MASS_IMPORT_STATUS: dict[str, Any] = {
 _SERIES_SE_RE = re.compile(r"[Ss](\d{1,2})\s*[Ee](\d{1,3})")
 _SERIES_SE_ALT_RE = re.compile(r"\b(\d{1,2})x(\d{1,3})\b", re.I)
 _SERIES_WORD_RE = re.compile(r"\bSeason\s*(\d{1,2})\b.*?\bEpisode\s*(\d{1,3})\b", re.I)
+_YEAR_TOKEN_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 
 _TITLE_STOP_TOKENS = {
     "the", "a", "an", "and", "or", "to", "of", "for", "with", "in", "on", "at", "by", "from",
@@ -80,7 +81,10 @@ def _clean_match_tokens(text: str, *, for_file_name: bool = False) -> set[str]:
                 continue
             if re.fullmatch(r"\d{1,2}bit", tok):
                 continue
-        # Remove tiny noise tokens while keeping meaningful numerics like year.
+        # Ignore release-year tokens for matching.
+        if re.fullmatch(r"(19|20)\d{2}", tok):
+            continue
+        # Remove tiny noise tokens while keeping meaningful numerics.
         if len(tok) == 1 and not tok.isdigit():
             continue
         out.add(tok)
@@ -266,6 +270,33 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
+def _extract_years_from_text(text: str) -> set[int]:
+    years: set[int] = set()
+    for match in _YEAR_TOKEN_RE.finditer(text or ""):
+        try:
+            year = int(match.group(1))
+        except Exception:
+            continue
+        if 1900 <= year <= 2099:
+            years.add(year)
+    return years
+
+
+def _extract_primary_year(text: str) -> int | None:
+    years = _extract_years_from_text(text or "")
+    if not years:
+        return None
+    return sorted(years)[0]
+
+
+def _content_release_year(state: MassContentState) -> int | None:
+    # Prefer TMDB release date year. Fallback to imported/manual year when absent.
+    tmdb_year = _extract_primary_year(str(getattr(state, "release_date", "") or ""))
+    if tmdb_year:
+        return tmdb_year
+    return _extract_primary_year(str(getattr(state, "year", "") or ""))
+
+
 def _is_video_row(item: FileSystemItem) -> bool:
     if item.is_folder:
         return False
@@ -340,6 +371,8 @@ def _panel_label(panel: str) -> str:
         "file_not_found": "File Not Found",
         "incomplete": "Incomplete Content",
         "complete": "Complete Content",
+        "uploaded": "Uploaded Content",
+        "skipped": "Skipped Existing",
     }
     return labels.get(panel, panel)
 
@@ -741,6 +774,7 @@ async def _scan_files_for_state(
 ) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict], str, str, bool]:
     search_titles = _search_titles_for_state(state)
     candidates = await _fetch_storage_candidates_multi(search_titles or [state.title])
+    content_year = _content_release_year(state)
 
     # Manual include pool: admin can attach specific storage files even if title matching misses them.
     include_ids = {
@@ -781,19 +815,27 @@ async def _scan_files_for_state(
 
     found_rows: list[dict] = []
     for row in candidates:
+        file_name = row.name or ""
+        # Year rule:
+        # - If filename has no year token -> allow.
+        # - If filename has year token(s) and content year known -> must include content year.
+        file_years = _extract_years_from_text(file_name)
+        if content_year and file_years and content_year not in file_years:
+            continue
+
         file_id = str(row.id)
         if state.content_type == "series":
-            season, episode = _series_season_episode(row.name or "")
+            season, episode = _series_season_episode(file_name)
             override_se = series_overrides.get(file_id) or {}
             season = int(override_se.get("season") or season or 0)
             episode = int(override_se.get("episode") or episode or 0)
             if season <= 0 or episode <= 0:
                 continue
-            quality = quality_overrides.get(file_id) or _series_quality_from_name(row.name or "")
+            quality = quality_overrides.get(file_id) or _series_quality_from_name(file_name)
             found_rows.append(
                 {
                     "file_id": file_id,
-                    "name": row.name,
+                    "name": file_name,
                     "size": int(row.size or 0),
                     "quality": quality,
                     "season": int(season),
@@ -808,7 +850,7 @@ async def _scan_files_for_state(
             found_rows.append(
                 {
                     "file_id": file_id,
-                    "name": row.name,
+                    "name": file_name,
                     "size": int(row.size or 0),
                     "quality": quality,
                     "season": None,
@@ -1289,7 +1331,7 @@ async def _upsert_mass_entry(title: str, content_type: str, year: str, source_no
         if merged_inputs != list(existing.source_inputs or []):
             existing.source_inputs = merged_inputs
             changed = True
-        if existing.panel in {"tmdb_not_found", "file_not_found", "incomplete"}:
+        if existing.panel in {"tmdb_not_found", "file_not_found", "incomplete", "skipped"}:
             existing.panel = "processing"
             existing.tmdb_status = "pending"
             existing.file_status = "pending"
@@ -1322,15 +1364,11 @@ async def _content_exists_for_input(title: str, content_type: str, year: str = "
     if not clean_title:
         return False, {}
     ctype = _guess_type(clean_title, content_type)
-    clean_year = (year or "").strip()
-
     query: dict[str, Any] = {
         "content_type": ctype,
         "status": "published",
         "title": {"$regex": f"^{re.escape(clean_title)}$", "$options": "i"},
     }
-    if clean_year:
-        query["year"] = clean_year
     doc = await ContentItem.find_one(query)
     if not doc:
         row_norm = _norm_title(clean_title)
@@ -1341,9 +1379,6 @@ async def _content_exists_for_input(title: str, content_type: str, year: str = "
         for cand in candidates:
             cand_title = (getattr(cand, "title", "") or "").strip()
             if _norm_title(cand_title) != row_norm:
-                continue
-            cand_year = (getattr(cand, "year", "") or "").strip()
-            if clean_year and cand_year and clean_year != cand_year:
                 continue
             doc = cand
             break
@@ -1360,25 +1395,27 @@ async def _content_exists_for_input(title: str, content_type: str, year: str = "
 
 async def _build_existing_content_index() -> dict[str, set]:
     docs = await ContentItem.find(ContentItem.status == "published").limit(50000).to_list()
-    by_exact: set[tuple[str, str, str]] = set()
-    by_any_year: set[tuple[str, str]] = set()
-    by_unknown_year: set[tuple[str, str]] = set()
+    by_title: set[tuple[str, str]] = set()
+    details_by_title: dict[tuple[str, str], dict[str, str]] = {}
     for doc in docs:
         ctype = (getattr(doc, "content_type", "") or "movie").strip().lower()
         title = (getattr(doc, "title", "") or "").strip()
         norm = _norm_title(title)
         if not norm:
             continue
-        year = (getattr(doc, "year", "") or "").strip()
-        by_any_year.add((ctype, norm))
-        if year:
-            by_exact.add((ctype, norm, year))
-        else:
-            by_unknown_year.add((ctype, norm))
+        key = (ctype, norm)
+        by_title.add(key)
+        if key not in details_by_title:
+            details_by_title[key] = {
+                "id": str(getattr(doc, "id", "") or ""),
+                "title": title,
+                "year": (getattr(doc, "year", "") or "").strip(),
+                "content_type": ctype,
+                "slug": (getattr(doc, "slug", "") or "").strip(),
+            }
     return {
-        "exact": by_exact,
-        "any_year": by_any_year,
-        "unknown_year": by_unknown_year,
+        "title_only": by_title,
+        "details_by_title": details_by_title,
     }
 
 
@@ -1387,14 +1424,102 @@ def _row_exists_in_content_index(title: str, content_type: str, year: str, index
     norm = _norm_title(title)
     if not norm:
         return False
-    clean_year = (year or "").strip()
-    if clean_year and (ctype, norm, clean_year) in index.get("exact", set()):
-        return True
-    if (ctype, norm) in index.get("unknown_year", set()):
-        return True
-    if not clean_year and (ctype, norm) in index.get("any_year", set()):
-        return True
-    return False
+    return (ctype, norm) in index.get("title_only", set())
+
+
+def _existing_detail_from_index(title: str, content_type: str, index: dict[str, set]) -> dict:
+    ctype = _guess_type(title, content_type)
+    norm = _norm_title(title)
+    if not norm:
+        return {}
+    details = index.get("details_by_title", {})
+    if not isinstance(details, dict):
+        return {}
+    payload = details.get((ctype, norm)) or {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+
+async def _upsert_skipped_entry(
+    title: str,
+    content_type: str,
+    year: str,
+    reason: str,
+    existing_content: dict | None = None,
+) -> MassContentState:
+    clean_title = " ".join((title or "").split()).strip()
+    if not clean_title:
+        raise ValueError("Missing title")
+    guessed_type = _guess_type(clean_title, content_type)
+    key = f"skipped:{guessed_type}:{_norm_title(clean_title)}"
+    row = await MassContentState.find_one(MassContentState.key == key)
+    now = datetime.now()
+    payload = dict(existing_content or {})
+
+    if row:
+        row.title = clean_title
+        row.content_type = guessed_type
+        if (year or "").strip():
+            row.year = (year or "").strip()
+        row.panel = "skipped"
+        row.tmdb_status = "pending"
+        row.file_status = "pending"
+        row.upload_ready = False
+        row.uploaded = False
+        row.uploaded_at = None
+        row.upload_state = "idle"
+        row.upload_message = ""
+        row.skip_reason = (reason or "").strip() or "Already exists in content database."
+        row.existing_content = payload
+        row.last_error = None
+        row.updated_at = now
+        await row.save()
+        return row
+
+    row = MassContentState(
+        key=key,
+        title=clean_title,
+        normalized_title=_norm_title(clean_title),
+        content_type=guessed_type,
+        year=(year or "").strip() or None,
+        panel="skipped",
+        tmdb_status="pending",
+        file_status="pending",
+        upload_ready=False,
+        uploaded=False,
+        uploaded_at=None,
+        upload_state="idle",
+        upload_message="",
+        source_inputs=[_to_source_marker("csv_excel"), _to_title_marker(clean_title)],
+        skip_reason=(reason or "").strip() or "Already exists in content database.",
+        existing_content=payload,
+        created_at=now,
+        updated_at=now,
+    )
+    await row.insert()
+    return row
+
+
+async def _cleanup_mass_state_duplicates() -> int:
+    rows = await MassContentState.find_all().sort("-updated_at").limit(50000).to_list()
+    if not rows:
+        return 0
+    picked: dict[str, MassContentState] = {}
+    delete_ids: set[str] = set()
+    for row in rows:
+        identity = _row_identity_key(row)
+        existing = picked.get(identity)
+        if not existing:
+            picked[identity] = row
+            continue
+        if _is_better_row(row, existing):
+            delete_ids.add(str(existing.id))
+            picked[identity] = row
+        else:
+            delete_ids.add(str(row.id))
+    if not delete_ids:
+        return 0
+    await MassContentState.find(In(MassContentState.id, _cast_ids(list(delete_ids)))).delete()
+    return len(delete_ids)
 
 
 async def _process_mass_item(item_id: str, mode: str = "full") -> None:
@@ -1613,13 +1738,16 @@ def _serialize_row(row: MassContentState) -> dict:
                 "source_label": item.get("source_label") or "",
             }
         )
+    panel_key = "uploaded" if bool(row.uploaded) else (row.panel or "processing")
+    skip_reason = str(getattr(row, "skip_reason", "") or "")
+    existing_content = dict(getattr(row, "existing_content", {}) or {})
     return {
         "id": str(row.id),
         "title": row.title,
         "content_type": row.content_type,
         "year": row.year or "",
-        "panel": row.panel,
-        "panel_label": _panel_label(row.panel),
+        "panel": panel_key,
+        "panel_label": _panel_label(panel_key),
         "tmdb_status": row.tmdb_status,
         "file_status": row.file_status,
         "upload_ready": bool(row.upload_ready),
@@ -1639,24 +1767,34 @@ def _serialize_row(row: MassContentState) -> dict:
         "upload_state": str(getattr(row, "upload_state", "") or "idle"),
         "upload_message": str(getattr(row, "upload_message", "") or ""),
         "last_error": row.last_error or "",
+        "skip_reason": skip_reason,
+        "existing_content": existing_content,
         "updated_at": row.updated_at.isoformat() if row.updated_at else "",
     }
 
 
 def _panel_rank(panel: str) -> int:
     order = {
+        "uploaded": 6,
         "complete": 5,
         "incomplete": 4,
         "file_not_found": 3,
         "tmdb_not_found": 2,
         "processing": 1,
+        "skipped": 0,
     }
     return order.get((panel or "").strip().lower(), 0)
 
 
 def _row_identity_key(row: MassContentState) -> str:
+    panel = (getattr(row, "panel", "") or "").strip().lower()
     tmdb_id = int(row.tmdb_id or 0)
     ctype = (row.content_type or "movie").strip().lower()
+    if panel == "skipped":
+        sig = _title_signature(row.title or "")
+        if sig:
+            return f"{ctype}:skipped:{sig}"
+        return f"{ctype}:skipped:id:{row.id}"
     if tmdb_id > 0:
         return f"{ctype}:tmdb:{tmdb_id}"
     sig = _title_signature(row.title or "")
@@ -1703,6 +1841,8 @@ async def _build_snapshot() -> dict:
         "file_not_found": [],
         "incomplete": [],
         "complete": [],
+        "uploaded": [],
+        "skipped": [],
     }
     for row in payload:
         panel = row.get("panel") or "processing"
@@ -1757,6 +1897,7 @@ async def advance_mass_content_adder_page(request: Request):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
+    await _cleanup_mass_state_duplicates()
     base_ctx = await _admin_context_base(user)
     initial_state = await _build_snapshot()
     return templates.TemplateResponse(
@@ -1812,6 +1953,7 @@ async def advance_mass_content_adder_manual_add(
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
+    await _cleanup_mass_state_duplicates()
 
     name = (title or "").strip()
     if not name:
@@ -1819,6 +1961,14 @@ async def advance_mass_content_adder_manual_add(
     allow_existing = (force_add_existing or "").strip().lower() in {"1", "true", "yes", "on"}
     exists, existing_payload = await _content_exists_for_input(name, content_type, (year or "").strip())
     if exists and not allow_existing:
+        await _upsert_skipped_entry(
+            title=name,
+            content_type=content_type,
+            year=(year or "").strip(),
+            reason="Already exists in content database (manual add blocked).",
+            existing_content=existing_payload,
+        )
+        await _mass_broadcast_snapshot()
         return JSONResponse(
             {
                 "ok": False,
@@ -1843,6 +1993,7 @@ async def advance_mass_content_adder_import(request: Request, file: UploadFile =
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
+    await _cleanup_mass_state_duplicates()
 
     filename = (file.filename or "").strip().lower()
     if not filename.endswith(".csv") and not filename.endswith(".xlsx"):
@@ -1872,6 +2023,14 @@ async def advance_mass_content_adder_import(request: Request, file: UploadFile =
         year = (row.get("year") or "").strip()
         if _row_exists_in_content_index(title, ctype, year, existing_index):
             skipped_existing += 1
+            existing_payload = _existing_detail_from_index(title, ctype, existing_index)
+            await _upsert_skipped_entry(
+                title=title,
+                content_type=ctype,
+                year=year,
+                reason="Already exists in content database (matched by title/type; year ignored).",
+                existing_content=existing_payload,
+            )
             continue
         filtered_rows.append(row)
 
@@ -1911,6 +2070,10 @@ async def advance_mass_content_adder_retry_tmdb(request: Request, item_id: str):
     row.panel = "processing"
     row.tmdb_status = "pending"
     row.file_status = "pending"
+    row.uploaded = False
+    row.uploaded_at = None
+    row.upload_state = "idle"
+    row.upload_message = ""
     row.last_error = None
     row.updated_at = datetime.now()
     await row.save()
@@ -1931,12 +2094,43 @@ async def advance_mass_content_adder_retry_files(request: Request, item_id: str)
         return JSONResponse({"ok": False, "error": "TMDB data is missing for this item."}, status_code=400)
     row.panel = "processing"
     row.file_status = "pending"
+    row.uploaded = False
+    row.uploaded_at = None
+    row.upload_state = "idle"
+    row.upload_message = ""
     row.last_error = None
     row.updated_at = datetime.now()
     await row.save()
     _STORAGE_POOL_CACHE["rows"] = []
     _STORAGE_POOL_CACHE["expires_at"] = datetime.min
     _schedule_process(str(row.id), mode="files")
+    await _mass_broadcast_snapshot()
+    return {"ok": True}
+
+
+@router.post("/advance-mass-content-adder/process-skipped/{item_id}")
+async def advance_mass_content_adder_process_skipped(request: Request, item_id: str):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    row = await MassContentState.get(item_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    row.panel = "processing"
+    row.tmdb_status = "pending"
+    row.file_status = "pending"
+    row.upload_ready = False
+    row.uploaded = False
+    row.uploaded_at = None
+    row.upload_state = "idle"
+    row.upload_message = ""
+    row.skip_reason = ""
+    row.existing_content = {}
+    row.last_error = None
+    row.updated_at = datetime.now()
+    await row.save()
+    _schedule_process(str(row.id), mode="full")
     await _mass_broadcast_snapshot()
     return {"ok": True}
 
@@ -2058,6 +2252,10 @@ async def advance_mass_content_adder_attach_file(
 
     row.panel = "processing"
     row.file_status = "pending"
+    row.uploaded = False
+    row.uploaded_at = None
+    row.upload_state = "idle"
+    row.upload_message = ""
     row.last_error = None
     row.updated_at = datetime.now()
     await row.save()
@@ -2107,6 +2305,10 @@ async def advance_mass_content_adder_reassign_quality(
 
     row.panel = "processing"
     row.file_status = "pending"
+    row.uploaded = False
+    row.uploaded_at = None
+    row.upload_state = "idle"
+    row.upload_message = ""
     row.last_error = None
     row.updated_at = datetime.now()
     await row.save()
@@ -2145,6 +2347,10 @@ async def advance_mass_content_adder_select_file(
     row.selected_file_map = selected_map
     row.panel = "processing"
     row.file_status = "pending"
+    row.uploaded = False
+    row.uploaded_at = None
+    row.upload_state = "idle"
+    row.upload_message = ""
     row.last_error = None
     row.updated_at = datetime.now()
     await row.save()
@@ -2200,6 +2406,10 @@ async def advance_mass_content_adder_remove_matched_file(
 
     row.panel = "processing"
     row.file_status = "pending"
+    row.uploaded = False
+    row.uploaded_at = None
+    row.upload_state = "idle"
+    row.upload_message = ""
     row.last_error = None
     row.updated_at = datetime.now()
     await row.save()
@@ -2241,6 +2451,10 @@ async def advance_mass_content_adder_manual_file_hint(
 
     row.panel = "processing"
     row.file_status = "pending"
+    row.uploaded = False
+    row.uploaded_at = None
+    row.upload_state = "idle"
+    row.upload_message = ""
     row.last_error = None
     row.updated_at = datetime.now()
     await row.save()
@@ -2262,6 +2476,61 @@ async def advance_mass_content_adder_delete(request: Request, item_id: str):
     await row.delete()
     await _mass_broadcast_snapshot()
     return {"ok": True}
+
+
+_CLEARABLE_MASS_PANELS = {
+    "processing",
+    "tmdb_not_found",
+    "file_not_found",
+    "incomplete",
+    "complete",
+    "uploaded",
+    "skipped",
+}
+
+
+def _effective_mass_panel(row: MassContentState) -> str:
+    return "uploaded" if bool(getattr(row, "uploaded", False)) else str(getattr(row, "panel", "") or "")
+
+
+@router.post("/advance-mass-content-adder/clear-panel/{panel}")
+async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    key = (panel or "").strip().lower()
+    if key not in _CLEARABLE_MASS_PANELS:
+        return JSONResponse({"ok": False, "error": "Invalid panel key."}, status_code=400)
+
+    rows = await MassContentState.find_all().to_list()
+    target_ids = [row.id for row in rows if _effective_mass_panel(row) == key]
+    if not target_ids:
+        return {"ok": True, "panel": key, "deleted": 0}
+
+    await MassContentState.get_motor_collection().delete_many({"_id": {"$in": target_ids}})
+    await _mass_broadcast_snapshot()
+    return {"ok": True, "panel": key, "deleted": len(target_ids)}
+
+
+@router.post("/advance-mass-content-adder/clear-all")
+async def advance_mass_content_adder_clear_all(request: Request):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+
+    result = await MassContentState.get_motor_collection().delete_many({})
+    deleted = int(getattr(result, "deleted_count", 0) or 0)
+
+    async with _MASS_IMPORT_LOCK:
+        _MASS_IMPORT_QUEUE.clear()
+        _MASS_IMPORT_STATUS["queued"] = 0
+        _MASS_IMPORT_STATUS["running"] = False
+        _MASS_IMPORT_STATUS["message"] = "Cleared by admin."
+        _MASS_IMPORT_STATUS["updated_at"] = datetime.now().isoformat()
+
+    await _mass_broadcast_snapshot()
+    return {"ok": True, "deleted": deleted}
 
 
 def _build_upload_payload(row: MassContentState) -> tuple[list[str], dict[str, dict], str]:
@@ -2293,7 +2562,6 @@ async def _content_exists_for_row(row: MassContentState) -> tuple[bool, dict]:
     ctype = (row.content_type or "movie").strip().lower()
     tmdb_id = int(row.tmdb_id or 0)
     title = (row.title or "").strip()
-    year = (row.year or "").strip()
 
     doc = None
     if tmdb_id > 0:
@@ -2308,22 +2576,16 @@ async def _content_exists_for_row(row: MassContentState) -> tuple[bool, dict]:
             "status": "published",
             "title": {"$regex": f"^{re.escape(title)}$", "$options": "i"},
         }
-        if year:
-            query["year"] = year
         doc = await ContentItem.find_one(query)
     if not doc and title:
-        # Fallback by normalized title when year differs.
+        # Fallback by normalized title (year intentionally ignored).
         candidates = await ContentItem.find(
             ContentItem.content_type == ctype,
             ContentItem.status == "published",
         ).limit(2000).to_list()
         row_norm = _norm_title(title)
-        row_year = (year or "").strip()
         for cand in candidates:
             if _norm_title(getattr(cand, "title", "") or "") != row_norm:
-                continue
-            cand_year = (getattr(cand, "year", "") or "").strip()
-            if row_year and cand_year and row_year != cand_year:
                 continue
             doc = cand
             break
@@ -2417,6 +2679,9 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
 
                 row.uploaded = True
                 row.uploaded_at = datetime.now()
+                row.panel = "uploaded"
+                row.file_status = "complete"
+                row.upload_ready = True
                 row.upload_state = "done"
                 row.upload_message = "Upload completed successfully."
                 row.last_error = None
@@ -2532,10 +2797,15 @@ async def advance_mass_content_adder_upload(
 
 def _rows_for_panel(panel: str, rows: list[MassContentState]) -> list[MassContentState]:
     key = (panel or "").strip().lower()
-    valid = {"processing", "tmdb_not_found", "file_not_found", "incomplete", "complete"}
+    valid = {"processing", "tmdb_not_found", "file_not_found", "incomplete", "complete", "uploaded", "skipped"}
     if key not in valid:
         return []
-    return [row for row in rows if (row.panel or "") == key]
+    out = []
+    for row in rows:
+        row_panel = "uploaded" if bool(getattr(row, "uploaded", False)) else (row.panel or "")
+        if row_panel == key:
+            out.append(row)
+    return out
 
 
 @router.get("/advance-mass-content-adder/export/{panel}")
@@ -2562,10 +2832,17 @@ async def advance_mass_content_adder_export(request: Request, panel: str):
             "uploaded",
             "missing_count",
             "missing_details",
+            "skip_reason",
+            "existing_content_id",
+            "existing_content_title",
+            "existing_content_type",
+            "existing_content_year",
+            "existing_content_slug",
         ]
     )
     for row in filtered:
         missing_details = " | ".join([(x.get("note") or "") for x in (row.missing_items or []) if (x.get("note") or "")])
+        existing_payload = dict(getattr(row, "existing_content", {}) or {})
         writer.writerow(
             [
                 row.title,
@@ -2578,6 +2855,12 @@ async def advance_mass_content_adder_export(request: Request, panel: str):
                 "yes" if row.uploaded else "no",
                 len(row.missing_items or []),
                 missing_details,
+                (getattr(row, "skip_reason", "") or ""),
+                existing_payload.get("id", ""),
+                existing_payload.get("title", ""),
+                existing_payload.get("content_type", ""),
+                existing_payload.get("year", ""),
+                existing_payload.get("slug", ""),
             ]
         )
 
