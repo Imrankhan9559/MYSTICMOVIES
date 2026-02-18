@@ -1,3 +1,4 @@
+import os
 from typing import Optional, List, Dict, Any
 from beanie import Document, init_beanie
 from pydantic import BaseModel, Field, ConfigDict
@@ -376,7 +377,15 @@ class MassContentState(Document):
         name = "mass_content_states"
 
 async def init_db():
-    client = AsyncIOMotorClient(settings.MONGO_URI)
+    client = AsyncIOMotorClient(
+        settings.MONGO_URI,
+        serverSelectionTimeoutMS=int(os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS", "5000")),
+        connectTimeoutMS=int(os.getenv("MONGO_CONNECT_TIMEOUT_MS", "10000")),
+        socketTimeoutMS=int(os.getenv("MONGO_SOCKET_TIMEOUT_MS", "30000")),
+        maxPoolSize=int(os.getenv("MONGO_MAX_POOL_SIZE", "80")),
+        minPoolSize=int(os.getenv("MONGO_MIN_POOL_SIZE", "5")),
+        retryWrites=True,
+    )
     await init_beanie(
         database=client.morgan_db,
         document_models=[

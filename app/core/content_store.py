@@ -26,7 +26,7 @@ SEASON_TAG_RE = re.compile(
 
 _sync_lock = asyncio.Lock()
 _last_sync_ts = 0.0
-_sync_interval_sec = 30.0
+_sync_interval_sec = 120.0
 
 
 def _normalize_phone(phone: str) -> str:

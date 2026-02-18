@@ -726,6 +726,9 @@
         const headerSearchResults = document.getElementById("headerSearchResults");
         let latestSearchItems = [];
         let searchTimer = null;
+        let searchAbortController = null;
+        let searchRequestSeq = 0;
+        const searchCache = new Map();
 
         function esc(value) {
             return String(value || "")
@@ -765,22 +768,44 @@
                 const q = (headerSearchInput.value || "").trim();
                 if (searchTimer) clearTimeout(searchTimer);
                 if (q.length < 2) {
+                    if (searchAbortController) {
+                        try { searchAbortController.abort(); } catch (e) {}
+                        searchAbortController = null;
+                    }
                     latestSearchItems = [];
                     headerSearchResults.innerHTML = "";
                     headerSearchResults.style.display = "none";
                     return;
                 }
                 searchTimer = setTimeout(async () => {
+                    const key = q.toLowerCase();
+                    if (searchCache.has(key)) {
+                        latestSearchItems = searchCache.get(key) || [];
+                    }
+                    const currentSeq = ++searchRequestSeq;
+                    if (searchAbortController) {
+                        try { searchAbortController.abort(); } catch (e) {}
+                    }
+                    searchAbortController = new AbortController();
                     try {
-                        const res = await fetch(`/content/search/suggestions?q=${encodeURIComponent(q)}`, { credentials: "same-origin" });
+                        const res = await fetch(`/content/search/suggestions?q=${encodeURIComponent(q)}`, {
+                            credentials: "same-origin",
+                            signal: searchAbortController.signal,
+                        });
                         if (!res.ok) {
                             headerSearchResults.innerHTML = "";
                             headerSearchResults.style.display = "none";
                             return;
                         }
+                        if (currentSeq !== searchRequestSeq) return;
                         const data = await res.json();
                         const items = data.items || [];
                         latestSearchItems = items;
+                        searchCache.set(key, items);
+                        if (searchCache.size > 40) {
+                            const oldest = searchCache.keys().next().value;
+                            searchCache.delete(oldest);
+                        }
                         if (!items.length) {
                             headerSearchResults.innerHTML = "";
                             headerSearchResults.style.display = "none";
@@ -806,6 +831,7 @@
                         }).join("");
                         headerSearchResults.style.display = "block";
                     } catch (error) {
+                        if (error && error.name === "AbortError") return;
                         headerSearchResults.innerHTML = "";
                         headerSearchResults.style.display = "none";
                     }

@@ -31,6 +31,8 @@ from app.utils.file_utils import format_size
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 CATALOG_ITEMS_PER_PAGE = 24
+_SUGGEST_CACHE: dict[str, dict] = {}
+_SUGGEST_CACHE_TTL_SEC = 25.0
 
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg")
 QUALITY_RE = re.compile(r"(2160p|1440p|1080p|720p|480p|380p|360p)", re.I)
@@ -171,6 +173,33 @@ def _build_search_regex(text: str) -> str:
     if not tokens:
         return ""
     return ".*".join(re.escape(token) for token in tokens)
+
+
+def _suggest_cache_key(user: User | None, is_admin: bool, q: str, mode: str) -> str:
+    scope = "admin" if is_admin else (f"user:{(user.phone_number or '').strip()}" if user else "guest")
+    return f"{mode}:{scope}:{(q or '').strip().lower()}"
+
+
+def _suggest_cache_get(key: str):
+    row = _SUGGEST_CACHE.get(key)
+    if not row:
+        return None
+    try:
+        now = asyncio.get_event_loop().time()
+        if (now - float(row.get("ts") or 0.0)) > _SUGGEST_CACHE_TTL_SEC:
+            _SUGGEST_CACHE.pop(key, None)
+            return None
+        return row.get("items")
+    except Exception:
+        _SUGGEST_CACHE.pop(key, None)
+        return None
+
+
+def _suggest_cache_set(key: str, items: list[dict]):
+    try:
+        _SUGGEST_CACHE[key] = {"ts": asyncio.get_event_loop().time(), "items": list(items or [])}
+    except Exception:
+        pass
 
 
 def _clean_title(name: str) -> str:
@@ -1316,10 +1345,10 @@ async def _render_catalog_page(
         cards = [c for c in cards if _card_matches_query(c, search_query)]
 
     cards = _sort_catalog_cards(cards, sort_mode)
-    cards = _decorate_catalog_cards(cards)
     # Avoid background TMDB warming on every search/list request to keep page latency stable.
 
     paged_cards, total_items, total_pages, current_page = _paginate_cards(cards, page)
+    paged_cards = _decorate_catalog_cards(paged_cards)
     page_start = max(1, current_page - 2)
     page_end = min(total_pages, current_page + 2)
     page_qs_prefix = f"sort={urllib.parse.quote(sort_mode)}&" if sort_mode != "release_new" else ""
@@ -1874,6 +1903,10 @@ async def content_search(request: Request, q: str):
     q = (q or "").strip().lower()
     if not q:
         return {"items": []}
+    cache_key = _suggest_cache_key(user, is_admin, q, "search")
+    cached = _suggest_cache_get(cache_key)
+    if cached is not None:
+        return {"items": cached}
     query: dict = {"status": "published", "search_title": {"$regex": re.escape(q), "$options": "i"}}
     if not is_admin:
         admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
@@ -1897,6 +1930,7 @@ async def content_search(request: Request, q: str):
             "poster": (doc.poster_url or "").strip(),
             "slug": (doc.slug or _group_slug(doc.title or "", doc.year or "")).strip(),
         })
+    _suggest_cache_set(cache_key, items)
     return {"items": items}
 
 
@@ -1907,6 +1941,10 @@ async def content_search_suggestions(request: Request, q: str = ""):
     q = (q or "").strip()
     if len(q) < 2:
         return {"items": []}
+    cache_key = _suggest_cache_key(user, is_admin, q, "suggest")
+    cached = _suggest_cache_get(cache_key)
+    if cached is not None:
+        return {"items": cached}
 
     search_regex = _build_search_regex(q)
     if not search_regex:
@@ -1953,6 +1991,7 @@ async def content_search_suggestions(request: Request, q: str = ""):
         })
         if len(items) >= 10:
             break
+    _suggest_cache_set(cache_key, items)
     return {"items": items}
 
 

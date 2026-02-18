@@ -5,6 +5,7 @@ import uvicorn
 from fastapi import FastAPI, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
 
@@ -106,6 +107,7 @@ async def lifespan(app: FastAPI):
         await _safe_shutdown("Telethon", stop_telethon_client)
 
 app = FastAPI(title="MORGANXMYSTIC", lifespan=lifespan)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # --- FIX: Auto-Create Static Directory ---
 # This prevents the "RuntimeError: Directory 'app/static' does not exist" on Koyeb

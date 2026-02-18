@@ -575,6 +575,9 @@ document.addEventListener("DOMContentLoaded", function () {
     const sortSelect = document.getElementById("sortSelect");
     const filterType = "{{ filter_type or 'all' }}";
     let debounceTimer;
+    let suggestAbortController = null;
+    let suggestSeq = 0;
+    const suggestCache = new Map();
 
     if (sortSelect) {
         sortSelect.addEventListener("change", function () {
@@ -619,6 +622,10 @@ document.addEventListener("DOMContentLoaded", function () {
             updateClearButton();
             if (!dropdown) return;
             if (query.length < 2) {
+                if (suggestAbortController) {
+                    try { suggestAbortController.abort(); } catch (e) {}
+                    suggestAbortController = null;
+                }
                 dropdown.style.display = "none";
                 loadingDots.style.display = "none";
                 return;
@@ -626,14 +633,58 @@ document.addEventListener("DOMContentLoaded", function () {
             loadingDots.style.display = "flex";
 
             debounceTimer = setTimeout(async () => {
+                const key = query.toLowerCase();
+                if (suggestCache.has(key)) {
+                    const cached = suggestCache.get(key) || [];
+                    if (!cached.length) {
+                        dropdown.style.display = "none";
+                        loadingDots.style.display = "none";
+                    } else {
+                        dropdown.innerHTML = cached.map((item) => {
+                            const title = (item.title || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                            const year = (item.year || "-").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                            const type = ((item.type || "").toUpperCase()).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                            const url = `/content/details/${encodeURIComponent(item.slug || "")}`;
+                            const poster = item.poster
+                                ? `<img src="${item.poster}" alt="${title}" loading="lazy">`
+                                : `<div class="search-item-fallback"><i class="fas fa-film"></i></div>`;
+                            return `
+                                <a href="${url}" class="search-item">
+                                    ${poster}
+                                    <div class="min-w-0">
+                                        <div class="text-sm text-white truncate">${title}</div>
+                                        <div class="text-xs text-gray-400">${year} | ${type}</div>
+                                    </div>
+                                </a>
+                            `;
+                        }).join("");
+                        dropdown.style.display = "block";
+                        loadingDots.style.display = "none";
+                    }
+                }
+                const currentSeq = ++suggestSeq;
+                if (suggestAbortController) {
+                    try { suggestAbortController.abort(); } catch (e) {}
+                }
+                suggestAbortController = new AbortController();
                 try {
-                    const res = await fetch(`/content/search/suggestions?q=${encodeURIComponent(query)}`, { credentials: "same-origin" });
+                    const res = await fetch(`/content/search/suggestions?q=${encodeURIComponent(query)}`, {
+                        credentials: "same-origin",
+                        signal: suggestAbortController.signal,
+                    });
                     const data = await res.json();
+                    if (currentSeq !== suggestSeq) return;
                     loadingDots.style.display = "none";
 
                     if (!data.items || data.items.length === 0) {
+                        suggestCache.set(key, []);
                         dropdown.style.display = "none";
                         return;
+                    }
+                    suggestCache.set(key, data.items || []);
+                    if (suggestCache.size > 40) {
+                        const oldest = suggestCache.keys().next().value;
+                        suggestCache.delete(oldest);
                     }
 
                     dropdown.innerHTML = data.items.map((item) => {
@@ -657,6 +708,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
                     dropdown.style.display = "block";
                 } catch (e) {
+                    if (e && e.name === "AbortError") return;
                     loadingDots.style.display = "none";
                     dropdown.style.display = "none";
                 }
