@@ -2578,9 +2578,15 @@ async def _cancel_worker_tasks_for_ids(item_ids: list[str]) -> dict[str, int]:
             upload_tasks.append(task)
 
     if proc_tasks:
-        await asyncio.gather(*proc_tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(asyncio.gather(*proc_tasks, return_exceptions=True), timeout=1.5)
+        except Exception:
+            pass
     if upload_tasks:
-        await asyncio.gather(*upload_tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(asyncio.gather(*upload_tasks, return_exceptions=True), timeout=1.5)
+        except Exception:
+            pass
 
     for key in keys:
         if key in _MASS_TASKS and _MASS_TASKS[key].done():
@@ -2637,6 +2643,7 @@ async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
     if not target_ids:
         return {"ok": True, "panel": key, "deleted": 0}
 
+    deleted_count = 0
     target_id_strs = [str(x) for x in target_ids]
     cancelled = await _cancel_worker_tasks_for_ids(target_id_strs)
     casted_ids = _cast_ids(target_id_strs)
@@ -2644,13 +2651,25 @@ async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
     if casted_ids:
         or_filters.append({"_id": {"$in": casted_ids}})
     or_filters.append({"_id": {"$in": target_id_strs}})
-    await MassContentState.get_motor_collection().delete_many({"$or": or_filters})
+    try:
+        result = await MassContentState.get_motor_collection().delete_many({"$or": or_filters})
+        deleted_count = int(getattr(result, "deleted_count", 0) or 0)
+    except Exception:
+        # Fallback path: delete row-by-row if bulk delete fails on mixed _id formats.
+        for raw_id in target_id_strs:
+            try:
+                row = await MassContentState.get(raw_id)
+                if row:
+                    await row.delete()
+                    deleted_count += 1
+            except Exception:
+                continue
     _invalidate_mass_snapshot_cache()
     await _mass_broadcast_snapshot(force=True)
     return {
         "ok": True,
         "panel": key,
-        "deleted": len(target_ids),
+        "deleted": deleted_count or len(target_ids),
         "cancelled_process": int(cancelled.get("process") or 0),
         "cancelled_upload": int(cancelled.get("upload") or 0),
     }

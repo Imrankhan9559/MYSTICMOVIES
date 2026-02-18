@@ -928,10 +928,14 @@ async function fetchStoragePickerRows(reset = false) {
 }
 
 async function postForm(url, formData) {
-    const res = await fetch(url, { method: "POST", body: formData, credentials: "same-origin" });
-    let data = {};
-    try { data = await res.json(); } catch (e) {}
-    return { ok: res.ok, status: res.status, data };
+    try {
+        const res = await fetch(url, { method: "POST", body: formData, credentials: "same-origin" });
+        let data = {};
+        try { data = await res.json(); } catch (e) {}
+        return { ok: res.ok, status: res.status, data };
+    } catch (e) {
+        return { ok: false, status: 0, data: { error: `Network error: ${e && e.message ? e.message : "request failed"}` } };
+    }
 }
 
 document.getElementById("mass-import-form").addEventListener("submit", async (e) => {
@@ -994,7 +998,7 @@ document.addEventListener("click", async (e) => {
     try {
         const out = await postForm(`/advance-mass-content-adder/clear-panel/${encodeURIComponent(panel)}`, new FormData());
         if (!out.ok) {
-            toast(out.data.error || "Failed to clear panel.", "error", 4200);
+            toast(out.data.error || out.data.detail || `Failed to clear panel (HTTP ${out.status || 0}).`, "error", 4200);
         } else {
             toast(`Cleared ${Number(out.data.deleted || 0)} entries from ${panelTitle}.`, "warn", 3200);
             await fetchState();
@@ -1011,7 +1015,7 @@ document.getElementById("clear-all-panels-btn").addEventListener("click", async 
     try {
         const out = await postForm("/advance-mass-content-adder/clear-all", new FormData());
         if (!out.ok) {
-            toast(out.data.error || "Failed to clear all panels.", "error", 4200);
+            toast(out.data.error || out.data.detail || `Failed to clear all panels (HTTP ${out.status || 0}).`, "error", 4200);
         } else {
             toast(`Cleared ${Number(out.data.deleted || 0)} total entries.`, "warn", 3500);
             await fetchState();
