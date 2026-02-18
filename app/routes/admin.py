@@ -1529,7 +1529,8 @@ async def publish_content_edit(
         "request": request,
         **base_ctx,
         "group": group,
-        "return_to": f"/dashboard/publish-content/edit/{group.get('id')}"
+        "return_to": f"/dashboard/publish-content/edit/{group.get('id')}",
+        "tmdb_configured": bool(getattr(settings, "TMDB_API_KEY", "")),
     })
 
 @router.post("/dashboard/publish-content/save")
@@ -2137,7 +2138,8 @@ async def _publish_items(
     cast_profiles: list | None = None,
     release_date: str = "",
     tmdb_id: int | None = None,
-    overrides: dict | None = None
+    overrides: dict | None = None,
+    sync_force: bool = True,
 ) -> None:
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     if not admin_phone:
@@ -2275,7 +2277,7 @@ async def _publish_items(
         except Exception:
             pass
 
-    await sync_content_catalog(force=True)
+    await sync_content_catalog(force=bool(sync_force))
 
 @router.post("/main-control/publish")
 @router.post("/dashboard/publish")

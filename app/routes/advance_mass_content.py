@@ -26,7 +26,9 @@ _MASS_UPLOAD_TASKS: dict[str, asyncio.Task] = {}
 _MASS_LOCKS: dict[str, asyncio.Lock] = {}
 _MASS_BROADCAST_LOCK = asyncio.Lock()
 _MASS_PROCESS_SEMAPHORE = asyncio.Semaphore(6)
-_MASS_UPLOAD_SEMAPHORE = asyncio.Semaphore(2)
+_MASS_UPLOAD_SEMAPHORE = asyncio.Semaphore(4)
+_MASS_SNAPSHOT_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
+_MASS_SNAPSHOT_MIN_INTERVAL_SEC = 0.8
 _STORAGE_POOL_CACHE: dict[str, Any] = {"rows": [], "expires_at": datetime.min}
 _STORAGE_POOL_TTL_SECONDS = 45
 _IMPORT_CHUNK_SIZE = 120
@@ -371,6 +373,7 @@ def _panel_label(panel: str) -> str:
         "file_not_found": "File Not Found",
         "incomplete": "Incomplete Content",
         "complete": "Complete Content",
+        "uploading": "Uploading",
         "uploaded": "Uploaded Content",
         "skipped": "Skipped Existing",
     }
@@ -450,7 +453,7 @@ async def _run_import_queue_worker() -> None:
                 _MASS_IMPORT_STATUS["updated_at"] = _now_iso()
                 _MASS_IMPORT_STATUS["message"] = "Queued" if _MASS_IMPORT_QUEUE else "Idle"
 
-            await _mass_broadcast_snapshot()
+            await _mass_broadcast_snapshot(force=True)
             await asyncio.sleep(0)
 
         await _mass_broadcast_snapshot()
@@ -1550,7 +1553,7 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                     row.upload_ready = False
                     row.updated_at = datetime.now()
                     await row.save()
-                    await _mass_broadcast_snapshot()
+                    await _mass_broadcast_snapshot(force=True)
                     return
 
                 pick = results[0]
@@ -1560,7 +1563,7 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                     row.panel = "tmdb_not_found"
                     row.updated_at = datetime.now()
                     await row.save()
-                    await _mass_broadcast_snapshot()
+                    await _mass_broadcast_snapshot(force=True)
                     return
 
                 details = await _tmdb_details(int(tmdb_id), row.content_type == "series")
@@ -1569,7 +1572,7 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                     row.panel = "tmdb_not_found"
                     row.updated_at = datetime.now()
                     await row.save()
-                    await _mass_broadcast_snapshot()
+                    await _mass_broadcast_snapshot(force=True)
                     return
 
                 pre_tmdb_title = (row.title or "").strip()
@@ -1738,7 +1741,7 @@ def _serialize_row(row: MassContentState) -> dict:
                 "source_label": item.get("source_label") or "",
             }
         )
-    panel_key = "uploaded" if bool(row.uploaded) else (row.panel or "processing")
+    panel_key = _panel_key_for_row(row)
     skip_reason = str(getattr(row, "skip_reason", "") or "")
     existing_content = dict(getattr(row, "existing_content", {}) or {})
     return {
@@ -1775,7 +1778,8 @@ def _serialize_row(row: MassContentState) -> dict:
 
 def _panel_rank(panel: str) -> int:
     order = {
-        "uploaded": 6,
+        "uploaded": 7,
+        "uploading": 6,
         "complete": 5,
         "incomplete": 4,
         "file_not_found": 3,
@@ -1807,16 +1811,25 @@ def _is_better_row(new_row: MassContentState, current_row: MassContentState) -> 
     new_tuple = (
         1 if new_row.uploaded else 0,
         1 if new_row.upload_ready else 0,
-        _panel_rank(new_row.panel),
+        _panel_rank(_panel_key_for_row(new_row)),
         new_row.updated_at or datetime.min,
     )
     cur_tuple = (
         1 if current_row.uploaded else 0,
         1 if current_row.upload_ready else 0,
-        _panel_rank(current_row.panel),
+        _panel_rank(_panel_key_for_row(current_row)),
         current_row.updated_at or datetime.min,
     )
     return new_tuple > cur_tuple
+
+
+def _panel_key_for_row(row: MassContentState) -> str:
+    if bool(getattr(row, "uploaded", False)):
+        return "uploaded"
+    upload_state = str(getattr(row, "upload_state", "") or "idle").strip().lower()
+    if upload_state in {"queued", "uploading"}:
+        return "uploading"
+    return str(getattr(row, "panel", "") or "processing")
 
 
 def _dedupe_mass_rows(rows: list[MassContentState]) -> list[MassContentState]:
@@ -1841,6 +1854,7 @@ async def _build_snapshot() -> dict:
         "file_not_found": [],
         "incomplete": [],
         "complete": [],
+        "uploading": [],
         "uploaded": [],
         "skipped": [],
     }
@@ -1862,11 +1876,23 @@ async def _build_snapshot() -> dict:
     }
 
 
-async def _mass_broadcast_snapshot() -> None:
+async def _build_snapshot_cached(force: bool = False) -> dict:
+    now = asyncio.get_event_loop().time()
+    cached = _MASS_SNAPSHOT_CACHE.get("data")
+    last_ts = float(_MASS_SNAPSHOT_CACHE.get("ts") or 0.0)
+    if not force and cached is not None and (now - last_ts) <= _MASS_SNAPSHOT_MIN_INTERVAL_SEC:
+        return cached
+    snapshot = await _build_snapshot()
+    _MASS_SNAPSHOT_CACHE["data"] = snapshot
+    _MASS_SNAPSHOT_CACHE["ts"] = now
+    return snapshot
+
+
+async def _mass_broadcast_snapshot(force: bool = False) -> None:
     async with _MASS_BROADCAST_LOCK:
         if not _MASS_WS_CLIENTS:
             return
-        snapshot = await _build_snapshot()
+        snapshot = await _build_snapshot_cached(force=bool(force))
         dead: list[WebSocket] = []
         for ws in list(_MASS_WS_CLIENTS):
             try:
@@ -1899,7 +1925,7 @@ async def advance_mass_content_adder_page(request: Request):
 
     await _cleanup_mass_state_duplicates()
     base_ctx = await _admin_context_base(user)
-    initial_state = await _build_snapshot()
+    initial_state = await _build_snapshot_cached(force=True)
     return templates.TemplateResponse(
         "advance_mass_content_adder.html",
         {
@@ -1916,7 +1942,7 @@ async def advance_mass_content_adder_state(request: Request):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
-    return await _build_snapshot()
+    return await _build_snapshot_cached(force=True)
 
 
 @router.websocket("/advance-mass-content-adder/ws")
@@ -1928,12 +1954,12 @@ async def advance_mass_content_adder_ws(websocket: WebSocket):
     await websocket.accept()
     _MASS_WS_CLIENTS.add(websocket)
     try:
-        await websocket.send_json({"type": "snapshot", "data": await _build_snapshot()})
+        await websocket.send_json({"type": "snapshot", "data": await _build_snapshot_cached(force=True)})
         while True:
             text = await websocket.receive_text()
             cmd = (text or "").strip().lower()
             if cmd in {"refresh", "ping"}:
-                await websocket.send_json({"type": "snapshot", "data": await _build_snapshot()})
+                await websocket.send_json({"type": "snapshot", "data": await _build_snapshot_cached(force=True)})
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -2484,13 +2510,14 @@ _CLEARABLE_MASS_PANELS = {
     "file_not_found",
     "incomplete",
     "complete",
+    "uploading",
     "uploaded",
     "skipped",
 }
 
 
 def _effective_mass_panel(row: MassContentState) -> str:
-    return "uploaded" if bool(getattr(row, "uploaded", False)) else str(getattr(row, "panel", "") or "")
+    return _panel_key_for_row(row)
 
 
 @router.post("/advance-mass-content-adder/clear-panel/{panel}")
@@ -2611,11 +2638,18 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
             if not row:
                 return
 
+            async def _set_upload_stage(message: str) -> None:
+                row.upload_state = "uploading"
+                row.upload_message = message
+                row.updated_at = datetime.now()
+                await row.save()
+                await _mass_broadcast_snapshot(force=True)
+
             row.upload_state = "uploading"
-            row.upload_message = "Uploading content in background..."
+            row.upload_message = "Step 1/5: Preparing upload worker..."
             row.updated_at = datetime.now()
             await row.save()
-            await _mass_broadcast_snapshot()
+            await _mass_broadcast_snapshot(force=True)
 
             try:
                 if row.tmdb_status != "found":
@@ -2624,7 +2658,7 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
                     row.last_error = "TMDB data not found."
                     row.updated_at = datetime.now()
                     await row.save()
-                    await _mass_broadcast_snapshot()
+                    await _mass_broadcast_snapshot(force=True)
                     return
                 if row.panel == "incomplete" and not allow_incomplete:
                     row.upload_state = "failed"
@@ -2632,9 +2666,10 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
                     row.last_error = "Incomplete content requires confirmation."
                     row.updated_at = datetime.now()
                     await row.save()
-                    await _mass_broadcast_snapshot()
+                    await _mass_broadcast_snapshot(force=True)
                     return
 
+                await _set_upload_stage("Step 2/5: Building upload plan...")
                 raw_file_ids, overrides, build_err = _build_upload_payload(row)
                 if build_err:
                     row.upload_state = "failed"
@@ -2642,9 +2677,10 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
                     row.last_error = build_err
                     row.updated_at = datetime.now()
                     await row.save()
-                    await _mass_broadcast_snapshot()
+                    await _mass_broadcast_snapshot(force=True)
                     return
 
+                await _set_upload_stage("Step 3/5: Validating selected files...")
                 items = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(raw_file_ids))).to_list()
                 items = [item for item in items if not item.is_folder]
                 if not items:
@@ -2653,9 +2689,10 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
                     row.last_error = "Selected files are not available anymore."
                     row.updated_at = datetime.now()
                     await row.save()
-                    await _mass_broadcast_snapshot()
+                    await _mass_broadcast_snapshot(force=True)
                     return
 
+                await _set_upload_stage("Step 4/5: Publishing content to database...")
                 await _publish_items(
                     items=items,
                     catalog_type=row.content_type,
@@ -2673,10 +2710,12 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
                     cast_profiles=list(row.cast_profiles or []),
                     tmdb_id=row.tmdb_id,
                     overrides=overrides,
+                    sync_force=False,
                 )
                 _STORAGE_POOL_CACHE["rows"] = []
                 _STORAGE_POOL_CACHE["expires_at"] = datetime.min
 
+                await _set_upload_stage("Step 5/5: Finalizing catalog and cache...")
                 row.uploaded = True
                 row.uploaded_at = datetime.now()
                 row.panel = "uploaded"
@@ -2687,7 +2726,7 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
                 row.last_error = None
                 row.updated_at = datetime.now()
                 await row.save()
-                await _mass_broadcast_snapshot()
+                await _mass_broadcast_snapshot(force=True)
             except Exception as exc:
                 row = await MassContentState.get(item_id)
                 if row:
@@ -2696,7 +2735,7 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
                     row.last_error = str(exc)
                     row.updated_at = datetime.now()
                     await row.save()
-                    await _mass_broadcast_snapshot()
+                    await _mass_broadcast_snapshot(force=True)
 
 
 def _queue_upload_worker(item_id: str, allow_incomplete: bool) -> bool:
@@ -2768,7 +2807,7 @@ async def advance_mass_content_adder_upload(
         row.upload_message = "Upload already running for this content."
         row.updated_at = datetime.now()
         await row.save()
-        await _mass_broadcast_snapshot()
+        await _mass_broadcast_snapshot(force=True)
         return JSONResponse(
             {
                 "ok": True,
@@ -2780,10 +2819,10 @@ async def advance_mass_content_adder_upload(
         )
 
     row.upload_state = "queued"
-    row.upload_message = "Upload queued. You can continue using this page."
+    row.upload_message = "Step 0/5: Queued. Waiting for worker slot..."
     row.updated_at = datetime.now()
     await row.save()
-    await _mass_broadcast_snapshot()
+    await _mass_broadcast_snapshot(force=True)
     return JSONResponse(
         {
             "ok": True,
@@ -2797,12 +2836,12 @@ async def advance_mass_content_adder_upload(
 
 def _rows_for_panel(panel: str, rows: list[MassContentState]) -> list[MassContentState]:
     key = (panel or "").strip().lower()
-    valid = {"processing", "tmdb_not_found", "file_not_found", "incomplete", "complete", "uploaded", "skipped"}
+    valid = {"processing", "tmdb_not_found", "file_not_found", "incomplete", "complete", "uploading", "uploaded", "skipped"}
     if key not in valid:
         return []
     out = []
     for row in rows:
-        row_panel = "uploaded" if bool(getattr(row, "uploaded", False)) else (row.panel or "")
+        row_panel = _panel_key_for_row(row)
         if row_panel == key:
             out.append(row)
     return out
@@ -2848,7 +2887,7 @@ async def advance_mass_content_adder_export(request: Request, panel: str):
                 row.title,
                 row.content_type,
                 row.year or "",
-                row.panel,
+                _panel_key_for_row(row),
                 row.tmdb_status,
                 row.file_status,
                 "yes" if row.upload_ready else "no",

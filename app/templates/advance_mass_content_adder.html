@@ -317,9 +317,23 @@ section.content .card-header {
                 </div>
             </div>
             <div class="col-12 mb-3">
+                <div class="card card-outline card-info">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h3 class="card-title mb-0">Panel 6: Uploading</h3>
+                        <div class="btn-group btn-group-sm">
+                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/uploading">Export CSV</a>
+                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="uploading">Clear All</button>
+                        </div>
+                    </div>
+                    <div class="card-body p-2">
+                        <div id="panel-uploading" class="panel-list"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-12 mb-3">
                 <div class="card card-outline card-secondary">
                     <div class="card-header d-flex justify-content-between align-items-center">
-                        <h3 class="card-title mb-0">Panel 6: Uploaded Content</h3>
+                        <h3 class="card-title mb-0">Panel 7: Uploaded Content</h3>
                         <div class="btn-group btn-group-sm">
                             <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/uploaded">Export CSV</a>
                             <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="uploaded">Clear All</button>
@@ -333,7 +347,7 @@ section.content .card-header {
             <div class="col-12 mb-3">
                 <div class="card card-outline card-warning">
                     <div class="card-header d-flex justify-content-between align-items-center">
-                        <h3 class="card-title mb-0">Panel 7: Skipped Existing</h3>
+                        <h3 class="card-title mb-0">Panel 8: Skipped Existing</h3>
                         <div class="btn-group btn-group-sm">
                             <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/skipped">Export CSV</a>
                             <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="skipped">Clear All</button>
@@ -407,6 +421,7 @@ const panelEls = {
     file_not_found: document.getElementById("panel-file-not-found"),
     incomplete: document.getElementById("panel-incomplete"),
     complete: document.getElementById("panel-complete"),
+    uploading: document.getElementById("panel-uploading"),
     uploaded: document.getElementById("panel-uploaded"),
     skipped: document.getElementById("panel-skipped"),
 };
@@ -653,9 +668,39 @@ function actionsHtml(item, panelKey) {
     if (panelKey === "file_not_found") return retryFiles + del;
     if (panelKey === "incomplete") return retryFiles + uploadIncomplete + del;
     if (panelKey === "complete") return upload + retryFiles + del;
+    if (panelKey === "uploading") return del;
     if (panelKey === "uploaded") return del;
     if (panelKey === "skipped") return processSkipped + del;
     return del;
+}
+
+function uploadStageHtml(item, panelKey) {
+    const uploadState = String(item.upload_state || "idle");
+    const msg = String(item.upload_message || "").trim();
+    const show = panelKey === "uploading" || uploadState === "queued" || uploadState === "uploading";
+    if (!show) return "";
+
+    let pct = 0;
+    const stepMatch = msg.match(/step\s*(\d+)\s*\/\s*(\d+)/i);
+    if (stepMatch) {
+        const cur = Math.max(0, Number(stepMatch[1] || 0));
+        const total = Math.max(1, Number(stepMatch[2] || 1));
+        pct = Math.max(2, Math.min(98, Math.round((cur / total) * 100)));
+    } else if (uploadState === "queued") {
+        pct = 5;
+    } else {
+        pct = 20;
+    }
+    const text = msg || (uploadState === "queued" ? "Queued..." : "Uploading...");
+
+    return `
+        <div class="mt-2 p-2 border border-info rounded bg-black">
+            <div class="text-xs text-info"><i class="fas fa-spinner fa-spin mr-1"></i>${esc(text)}</div>
+            <div style="height:6px;background:#1b2330;border-radius:999px;overflow:hidden;margin-top:6px;">
+                <div style="height:6px;width:${pct}%;background:linear-gradient(90deg,#17a2b8,#28a745);transition:width .25s ease;"></div>
+            </div>
+        </div>
+    `;
 }
 
 function itemHtml(item, panelKey) {
@@ -677,7 +722,8 @@ function itemHtml(item, panelKey) {
     const missing = Number(item.missing_count || 0);
     const meta = `${badge((item.content_type || "movie").toUpperCase(), "dark")}${item.year ? badge(item.year, "secondary") : ""}${readyBadge}${uploadBadge}${uploadedBadge}`;
     const error = item.last_error ? `<div class="text-xs text-danger mt-1">${esc(item.last_error)}</div>` : "";
-    const uploadMsg = item.upload_message ? `<div class="text-xs text-info mt-1">${esc(item.upload_message)}</div>` : "";
+    const uploadStage = uploadStageHtml(item, panelKey);
+    const uploadMsg = (uploadStage || !item.upload_message) ? "" : `<div class="text-xs text-info mt-1">${esc(item.upload_message)}</div>`;
     const missingTxt = missing > 0 ? `<div class="text-xs text-warning mt-1">Missing: ${missing}</div>` : "";
     const existing = (item && typeof item.existing_content === "object" && item.existing_content) ? item.existing_content : {};
     const existingTitle = String(existing.title || "").trim();
@@ -712,6 +758,7 @@ function itemHtml(item, panelKey) {
                     ${matchedFilesHtml(item)}
                     ${missingTxt}
                     ${skippedInfo}
+                    ${uploadStage}
                     ${uploadMsg}
                     ${error}
                     <div class="mt-2">${actionsHtml(item, panelKey)}</div>
@@ -775,7 +822,7 @@ function renderPanels(snapshot) {
         ? ` | Import Queue: ${Number(imp.queued || 0)} queued, ${Number(imp.processed || 0)} processed, ${Number(imp.failed || 0)} failed (batch ${Number(imp.chunk_size || 0)})`
         : "";
     const syncTxt = wsConnected ? "Live" : "Polling";
-    statusBanner.textContent = `Total: ${Number(snapshot.total || 0)} | Processing: ${Number(counts.processing || 0)} | TMDB Not Found: ${Number(counts.tmdb_not_found || 0)} | File Not Found: ${Number(counts.file_not_found || 0)} | Incomplete: ${Number(counts.incomplete || 0)} | Complete: ${Number(counts.complete || 0)} | Uploaded: ${Number(counts.uploaded || 0)} | Skipped: ${Number(counts.skipped || 0)} | Workers: P${Number(workers.process_active || 0)}/U${Number(workers.upload_active || 0)}${importTxt} | Sync: ${syncTxt}`;
+    statusBanner.textContent = `Total: ${Number(snapshot.total || 0)} | Processing: ${Number(counts.processing || 0)} | TMDB Not Found: ${Number(counts.tmdb_not_found || 0)} | File Not Found: ${Number(counts.file_not_found || 0)} | Incomplete: ${Number(counts.incomplete || 0)} | Complete: ${Number(counts.complete || 0)} | Uploading: ${Number(counts.uploading || 0)} | Uploaded: ${Number(counts.uploaded || 0)} | Skipped: ${Number(counts.skipped || 0)} | Workers: P${Number(workers.process_active || 0)}/U${Number(workers.upload_active || 0)}${importTxt} | Sync: ${syncTxt}`;
 }
 
 function scheduleRender(snapshot) {
