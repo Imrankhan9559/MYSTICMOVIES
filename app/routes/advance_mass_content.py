@@ -381,7 +381,35 @@ def _panel_label(panel: str) -> str:
         "uploaded": "Uploaded Content",
         "skipped": "Skipped Existing",
     }
-    return labels.get(panel, panel)
+    key = _normalize_mass_panel_key(panel, fallback="")
+    return labels.get(key, panel)
+
+
+_MASS_PANEL_KEYS = {
+    "processing",
+    "tmdb_not_found",
+    "file_not_found",
+    "incomplete",
+    "complete",
+    "uploading",
+    "uploaded",
+    "skipped",
+}
+
+
+def _normalize_mass_panel_key(panel: str, fallback: str = "processing") -> str:
+    raw = str(panel or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "tmdbnotfound": "tmdb_not_found",
+        "filenotfound": "file_not_found",
+        "not_found_tmdb": "tmdb_not_found",
+        "not_found_file": "file_not_found",
+        "searching": "processing",
+    }
+    raw = aliases.get(raw, raw)
+    if raw in _MASS_PANEL_KEYS:
+        return raw
+    return fallback
 
 
 def _file_note_suffix(row: dict) -> str:
@@ -1797,7 +1825,8 @@ def _panel_rank(panel: str) -> int:
         "processing": 1,
         "skipped": 0,
     }
-    return order.get((panel or "").strip().lower(), 0)
+    key = _normalize_mass_panel_key(panel, fallback="")
+    return order.get(key, 0)
 
 
 def _row_identity_key(row: MassContentState) -> str:
@@ -1839,7 +1868,7 @@ def _panel_key_for_row(row: MassContentState) -> str:
     upload_state = str(getattr(row, "upload_state", "") or "idle").strip().lower()
     if upload_state in {"queued", "uploading"}:
         return "uploading"
-    return str(getattr(row, "panel", "") or "processing")
+    return _normalize_mass_panel_key(getattr(row, "panel", ""), fallback="processing")
 
 
 def _dedupe_mass_rows(rows: list[MassContentState]) -> list[MassContentState]:
@@ -1898,11 +1927,20 @@ async def _build_snapshot_cached(force: bool = False) -> dict:
     return snapshot
 
 
+def _invalidate_mass_snapshot_cache() -> None:
+    _MASS_SNAPSHOT_CACHE["data"] = None
+    _MASS_SNAPSHOT_CACHE["ts"] = 0.0
+
+
 async def _mass_broadcast_snapshot(force: bool = False) -> None:
     async with _MASS_BROADCAST_LOCK:
+        snapshot = None
+        if force or _MASS_SNAPSHOT_CACHE.get("data") is None:
+            snapshot = await _build_snapshot_cached(force=bool(force))
         if not _MASS_WS_CLIENTS:
             return
-        snapshot = await _build_snapshot_cached(force=bool(force))
+        if snapshot is None:
+            snapshot = await _build_snapshot_cached(force=False)
         dead: list[WebSocket] = []
         for ws in list(_MASS_WS_CLIENTS):
             try:
@@ -2514,16 +2552,7 @@ async def advance_mass_content_adder_delete(request: Request, item_id: str):
     return {"ok": True}
 
 
-_CLEARABLE_MASS_PANELS = {
-    "processing",
-    "tmdb_not_found",
-    "file_not_found",
-    "incomplete",
-    "complete",
-    "uploading",
-    "uploaded",
-    "skipped",
-}
+_CLEARABLE_MASS_PANELS = set(_MASS_PANEL_KEYS)
 
 
 def _effective_mass_panel(row: MassContentState) -> str:
@@ -2599,7 +2628,7 @@ async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
-    key = (panel or "").strip().lower()
+    key = _normalize_mass_panel_key(panel, fallback="")
     if key not in _CLEARABLE_MASS_PANELS:
         return JSONResponse({"ok": False, "error": "Invalid panel key."}, status_code=400)
 
@@ -2610,7 +2639,13 @@ async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
 
     target_id_strs = [str(x) for x in target_ids]
     cancelled = await _cancel_worker_tasks_for_ids(target_id_strs)
-    await MassContentState.get_motor_collection().delete_many({"_id": {"$in": _cast_ids(target_id_strs)}})
+    casted_ids = _cast_ids(target_id_strs)
+    or_filters: list[dict[str, Any]] = []
+    if casted_ids:
+        or_filters.append({"_id": {"$in": casted_ids}})
+    or_filters.append({"_id": {"$in": target_id_strs}})
+    await MassContentState.get_motor_collection().delete_many({"$or": or_filters})
+    _invalidate_mass_snapshot_cache()
     await _mass_broadcast_snapshot(force=True)
     return {
         "ok": True,
@@ -2650,6 +2685,7 @@ async def advance_mass_content_adder_clear_all(request: Request):
 
     result = await MassContentState.get_motor_collection().delete_many({})
     deleted = int(getattr(result, "deleted_count", 0) or 0)
+    _invalidate_mass_snapshot_cache()
     await _mass_broadcast_snapshot(force=True)
     return {
         "ok": True,
@@ -2934,8 +2970,8 @@ async def advance_mass_content_adder_upload(
 
 
 def _rows_for_panel(panel: str, rows: list[MassContentState]) -> list[MassContentState]:
-    key = (panel or "").strip().lower()
-    valid = {"processing", "tmdb_not_found", "file_not_found", "incomplete", "complete", "uploading", "uploaded", "skipped"}
+    key = _normalize_mass_panel_key(panel, fallback="")
+    valid = _MASS_PANEL_KEYS
     if key not in valid:
         return []
     out = []
