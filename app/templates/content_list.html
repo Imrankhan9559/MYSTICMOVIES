@@ -530,6 +530,15 @@
                             <div class="meta-row">
                                 <span class="season-line">{{ item.season_text or "Season: 1" }}</span>
                             </div>
+                            <div class="meta-row quality-row">
+                                {% if item.quality_row and item.quality_row|length > 0 %}
+                                    {% for q in item.quality_row %}
+                                    <span class="quality-pill">{{ q }}</span>
+                                    {% endfor %}
+                                {% else %}
+                                    <span class="season-line">Quality: HD</span>
+                                {% endif %}
+                            </div>
                             {% endif %}
                         </div>
                     </div>

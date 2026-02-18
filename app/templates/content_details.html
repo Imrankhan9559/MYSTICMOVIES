@@ -207,45 +207,22 @@
 </section>
 {% endif %}
 
-{% if related_cards and related_cards|length > 0 %}
-<section class="rounded-2xl border border-gray-800 bg-gray-950 p-5 sm:p-8 mb-6">
+<section id="relatedSection" data-endpoint="/content/details/{{ item.slug or item.id }}/related" class="rounded-2xl border border-gray-800 bg-gray-950 p-5 sm:p-8 mb-6">
     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
         <div>
             <h2 class="text-xl font-bold text-white">Related Content</h2>
             <p class="text-xs text-gray-400 mt-1">Matched by shared genres and cast.</p>
         </div>
-        <div class="text-xs text-gray-400">{{ related_cards|length }} recommendations</div>
+        <div id="relatedCount" class="text-xs text-gray-400">Loading...</div>
     </div>
-    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        {% for rel in related_cards %}
-        <a href="/content/details/{{ rel.slug or rel.id }}" class="group rounded-2xl border border-gray-800 bg-black/70 overflow-hidden hover:border-yellow-500/60 transition">
-            <div class="relative aspect-[2/3]">
-                {% if rel.poster %}
-                <img src="{{ rel.poster }}" alt="{{ rel.title }}" class="h-full w-full object-cover">
-                {% else %}
-                <div class="h-full w-full bg-gradient-to-br from-gray-900 via-black to-gray-800 flex items-center justify-center">
-                    <i class="fas fa-film text-yellow-400 text-4xl"></i>
-                </div>
-                {% endif %}
-                <div class="absolute inset-0 bg-gradient-to-t from-black/95 via-black/25 to-transparent"></div>
-                <div class="absolute bottom-0 left-0 right-0 p-3">
-                    <div class="text-[10px] uppercase tracking-widest text-yellow-400">{{ rel.type }}</div>
-                    <div class="text-sm font-semibold text-white line-clamp-2">{{ rel.title }}</div>
-                    <div class="text-[11px] text-gray-400 mt-1">
-                        {% if rel.year %}{{ rel.year }}{% else %}-{% endif %} | {{ "Movie" if rel.type == "movie" else "Web Series" }}
-                    </div>
-                </div>
-            </div>
-            <div class="p-2 space-y-1">
-                {% for tag in rel.match_tags %}
-                <div class="text-[10px] text-gray-400 truncate">{{ tag }}</div>
-                {% endfor %}
-            </div>
-        </a>
-        {% endfor %}
+    <div id="relatedLoading" class="rounded-xl border border-gray-800 bg-black/60 p-4 text-sm text-gray-400">
+        Loading recommendations...
     </div>
+    <div id="relatedEmpty" class="hidden rounded-xl border border-gray-800 bg-black/60 p-4 text-sm text-gray-400">
+        No related recommendations found.
+    </div>
+    <div id="relatedGrid" class="hidden grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4"></div>
 </section>
-{% endif %}
 
 {% if user %}
 <script>
@@ -304,4 +281,123 @@ if (trailerJumpBtn && trailerSection) {
 }
 </script>
 {% endif %}
+<script>
+(() => {
+    const section = document.getElementById("relatedSection");
+    if (!section) return;
+
+    const endpoint = section.dataset.endpoint || "";
+    const loadingEl = document.getElementById("relatedLoading");
+    const emptyEl = document.getElementById("relatedEmpty");
+    const gridEl = document.getElementById("relatedGrid");
+    const countEl = document.getElementById("relatedCount");
+    let loaded = false;
+
+    const esc = (value) => String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#39;");
+
+    const typeLabel = (value) => (String(value || "").toLowerCase() === "series" ? "Web Series" : "Movie");
+
+    const renderBadges = (item) => {
+        const qualityRow = Array.isArray(item.quality_row) ? item.quality_row.filter(Boolean) : [];
+        const isSeries = String(item.type || "").toLowerCase() === "series";
+        let html = "";
+        if (qualityRow.length > 0) {
+            html += `<div class="flex flex-wrap gap-1 mt-2">`;
+            for (const q of qualityRow.slice(0, 5)) {
+                html += `<span class="px-1.5 py-0.5 rounded border border-gray-700 text-[10px] text-yellow-300">${esc(q)}</span>`;
+            }
+            html += `</div>`;
+        }
+        if (isSeries) {
+            const seasonText = item.season_text || "Season: 1";
+            html += `<div class="text-[10px] text-gray-500 mt-1">${esc(seasonText)}</div>`;
+        } else if (qualityRow.length === 0) {
+            html += `<div class="text-[10px] text-gray-500 mt-1">Quality: ${esc(item.quality || "HD")}</div>`;
+        }
+        return html;
+    };
+
+    const renderTags = (tags) => {
+        const list = Array.isArray(tags) ? tags : [];
+        if (!list.length) return `<div class="text-[10px] text-gray-500 truncate">Matched for you</div>`;
+        return list.slice(0, 3).map(tag => `<div class="text-[10px] text-gray-400 truncate">${esc(tag)}</div>`).join("");
+    };
+
+    const renderCard = (item) => {
+        const href = `/content/details/${encodeURIComponent(item.slug || item.id || "")}`;
+        const poster = item.poster
+            ? `<img src="${esc(item.poster)}" alt="${esc(item.title || "")}" class="h-full w-full object-cover" loading="lazy">`
+            : `<div class="h-full w-full bg-gradient-to-br from-gray-900 via-black to-gray-800 flex items-center justify-center"><i class="fas fa-film text-yellow-400 text-4xl"></i></div>`;
+        return `
+            <a href="${href}" class="group rounded-2xl border border-gray-800 bg-black/70 overflow-hidden hover:border-yellow-500/60 transition">
+                <div class="relative aspect-[2/3]">
+                    ${poster}
+                    <div class="absolute inset-0 bg-gradient-to-t from-black/95 via-black/25 to-transparent"></div>
+                    <div class="absolute bottom-0 left-0 right-0 p-3">
+                        <div class="text-[10px] uppercase tracking-widest text-yellow-400">${esc(item.type || "")}</div>
+                        <div class="text-sm font-semibold text-white line-clamp-2">${esc(item.title || "")}</div>
+                        <div class="text-[11px] text-gray-400 mt-1">${esc(item.year || "-")} | ${typeLabel(item.type)}</div>
+                        ${renderBadges(item)}
+                    </div>
+                </div>
+                <div class="p-2 space-y-1">${renderTags(item.match_tags)}</div>
+            </a>
+        `;
+    };
+
+    const showEmpty = () => {
+        if (loadingEl) loadingEl.classList.add("hidden");
+        if (gridEl) {
+            gridEl.classList.add("hidden");
+            gridEl.innerHTML = "";
+        }
+        if (emptyEl) emptyEl.classList.remove("hidden");
+        if (countEl) countEl.textContent = "0 recommendations";
+    };
+
+    const loadRelated = async () => {
+        if (loaded || !endpoint) return;
+        loaded = true;
+        try {
+            const res = await fetch(endpoint, { credentials: "same-origin" });
+            if (!res.ok) throw new Error("Request failed");
+            const data = await res.json();
+            const items = Array.isArray(data.items) ? data.items : [];
+            if (!items.length) {
+                showEmpty();
+                return;
+            }
+            if (gridEl) {
+                gridEl.innerHTML = items.map(renderCard).join("");
+                gridEl.classList.remove("hidden");
+            }
+            if (loadingEl) loadingEl.classList.add("hidden");
+            if (emptyEl) emptyEl.classList.add("hidden");
+            if (countEl) countEl.textContent = `${items.length} recommendation${items.length === 1 ? "" : "s"}`;
+        } catch (_) {
+            showEmpty();
+        }
+    };
+
+    if ("IntersectionObserver" in window) {
+        const observer = new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                if (entry.isIntersecting) {
+                    observer.disconnect();
+                    loadRelated();
+                    break;
+                }
+            }
+        }, { rootMargin: "220px 0px" });
+        observer.observe(section);
+    } else {
+        loadRelated();
+    }
+})();
+</script>
 {% endblock %}

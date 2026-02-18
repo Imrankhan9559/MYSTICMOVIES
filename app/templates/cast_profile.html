@@ -101,7 +101,26 @@
                 </div>
             </div>
             <div class="p-3">
-                <div class="text-xs text-gray-500">{{ item.quality or "HD" }}</div>
+                {% if item.type == "movie" %}
+                    {% if item.quality_row and item.quality_row|length > 0 %}
+                    <div class="flex flex-wrap gap-1">
+                        {% for q in item.quality_row[:5] %}
+                        <span class="px-1.5 py-0.5 rounded border border-gray-700 text-[10px] text-yellow-300">{{ q }}</span>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <div class="text-xs text-gray-500">Quality: {{ item.quality or "HD" }}</div>
+                    {% endif %}
+                {% else %}
+                    <div class="text-xs text-gray-500">{{ item.season_text or "Season: 1" }}</div>
+                    {% if item.quality_row and item.quality_row|length > 0 %}
+                    <div class="flex flex-wrap gap-1 mt-1">
+                        {% for q in item.quality_row[:5] %}
+                        <span class="px-1.5 py-0.5 rounded border border-gray-700 text-[10px] text-yellow-300">{{ q }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                {% endif %}
             </div>
         </a>
         {% endfor %}
