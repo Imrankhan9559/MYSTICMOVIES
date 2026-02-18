@@ -55,6 +55,17 @@ _SERIES_SE_RE = re.compile(r"[Ss](\d{1,2})\s*[Ee](\d{1,3})")
 _SERIES_SE_ALT_RE = re.compile(r"\b(\d{1,2})x(\d{1,3})\b", re.I)
 _SERIES_WORD_RE = re.compile(r"\bSeason\s*(\d{1,2})\b.*?\bEpisode\s*(\d{1,3})\b", re.I)
 _YEAR_TOKEN_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
+_TMDB_SEASON_EPISODE_NOISE_RE = re.compile(
+    r"\b(?:s\d{1,2}e\d{1,3}|season\s*\d{1,2}|episode\s*\d{1,3}|ep\s*\d{1,3}|\d{1,2}x\d{1,3})\b",
+    re.I,
+)
+_TMDB_QUALITY_NOISE_RE = re.compile(r"\b(?:2160|1440|1080|720|480|380|360)p?\b|\b(?:4k|uhd|fhd|hd)\b", re.I)
+_TMDB_FILE_NOISE_RE = re.compile(
+    r"\b(?:webrip|web[-\s]?dl|webdl|bluray|brrip|hdrip|dvdrip|cam|hdcam|hdts|hdtc|proper|repack|internal|"
+    r"remux|extended|uncut|multi|audio|dual|dub|dubbed|subs?|esub|x264|x265|h264|h265|hevc|aac|ac3|ddp|"
+    r"atmos|10bit|8bit|mkv|mp4|avi|webm|m4v|pack|complete)\b",
+    re.I,
+)
 
 _TITLE_STOP_TOKENS = {
     "the", "a", "an", "and", "or", "to", "of", "for", "with", "in", "on", "at", "by", "from",
@@ -110,6 +121,260 @@ def _norm_title(text: str) -> str:
 
 def _tokens(text: str) -> list[str]:
     return [x for x in re.split(r"[^a-z0-9]+", (text or "").lower()) if x]
+
+
+def _clean_tmdb_query_base(text: str, *, drop_year: bool) -> str:
+    raw = " ".join((text or "").replace("_", " ").replace(".", " ").split()).strip()
+    if not raw:
+        return ""
+    clean = _TMDB_SEASON_EPISODE_NOISE_RE.sub(" ", raw)
+    clean = _TMDB_QUALITY_NOISE_RE.sub(" ", clean)
+    clean = _TMDB_FILE_NOISE_RE.sub(" ", clean)
+    if drop_year:
+        clean = _YEAR_TOKEN_RE.sub(" ", clean)
+    clean = re.sub(r"[\[\]\(\)\{\}|]+", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip(" -_:,")
+    return clean
+
+
+def _ordered_tmdb_tokens(text: str, *, drop_year: bool = True) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in _tokens(text):
+        tok = (token or "").strip().lower()
+        if not tok:
+            continue
+        if tok in _TITLE_STOP_TOKENS or tok in _FILE_NOISE_TOKENS:
+            continue
+        if re.fullmatch(r"s\d{1,2}", tok) or re.fullmatch(r"e\d{1,3}", tok):
+            continue
+        if re.fullmatch(r"\d{1,2}x\d{1,3}", tok):
+            continue
+        if re.fullmatch(r"\d{3,4}p", tok):
+            continue
+        if re.fullmatch(r"[xh]\d{3,4}", tok):
+            continue
+        if re.fullmatch(r"\d{1,2}bit", tok):
+            continue
+        if drop_year and re.fullmatch(r"(19|20)\d{2}", tok):
+            continue
+        if len(tok) == 1 and not tok.isdigit():
+            continue
+        if tok in seen:
+            continue
+        seen.add(tok)
+        out.append(tok)
+    return out
+
+
+def _tmdb_query_variants(raw_title: str) -> list[str]:
+    clean = " ".join((raw_title or "").split()).strip()
+    if not clean:
+        return []
+
+    variants: list[str] = [clean]
+
+    parsed = _parse_name(clean)
+    parsed_title = " ".join((parsed.get("title") or "").split()).strip()
+    if parsed_title:
+        variants.append(parsed_title)
+
+    stripped_keep_year = _clean_tmdb_query_base(clean, drop_year=False)
+    stripped_no_year = _clean_tmdb_query_base(clean, drop_year=True)
+    if stripped_keep_year:
+        variants.append(stripped_keep_year)
+    if stripped_no_year:
+        variants.append(stripped_no_year)
+
+    for base in [stripped_no_year, stripped_keep_year, parsed_title, clean]:
+        if not base:
+            continue
+        ordered_tokens = _ordered_tmdb_tokens(base, drop_year=True)
+        if ordered_tokens:
+            variants.append(" ".join(ordered_tokens))
+
+    expanded: list[str] = []
+    for v in variants:
+        expanded.extend(_expand_title_variants(v))
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in expanded:
+        text = " ".join((value or "").split()).strip()
+        if not text:
+            continue
+        key = _norm_title(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out[:8]
+
+
+def _tmdb_result_title(result: dict, is_series: bool) -> str:
+    if is_series:
+        return " ".join(str(result.get("name") or result.get("title") or "").split()).strip()
+    return " ".join(str(result.get("title") or result.get("name") or "").split()).strip()
+
+
+def _tmdb_result_year(result: dict, is_series: bool) -> int | None:
+    date_value = (
+        result.get("first_air_date")
+        if is_series
+        else result.get("release_date")
+    ) or result.get("release_date") or result.get("first_air_date") or ""
+    return _extract_primary_year(str(date_value))
+
+
+def _tmdb_score_result(
+    result: dict,
+    intent_tokens: set[str],
+    intent_norm: str,
+    intent_year: int | None,
+    is_series: bool,
+) -> float:
+    title = _tmdb_result_title(result, is_series)
+    if not title:
+        return -999.0
+
+    result_norm = _norm_title(title)
+    result_tokens = _clean_match_tokens(title, for_file_name=False)
+    if not result_tokens:
+        return -998.0
+
+    overlap = len(intent_tokens & result_tokens) if intent_tokens else 0
+    if intent_tokens and overlap == 0 and intent_norm != result_norm:
+        return -50.0
+
+    coverage = (overlap / len(intent_tokens)) if intent_tokens else 0.0
+    precision = (overlap / len(result_tokens)) if result_tokens else 0.0
+    exact = 1.0 if intent_norm and result_norm == intent_norm else 0.0
+    contains = 1.0 if intent_norm and (intent_norm in result_norm or result_norm in intent_norm) else 0.0
+
+    year_bonus = 0.0
+    result_year = _tmdb_result_year(result, is_series)
+    if intent_year and result_year:
+        year_bonus = 8.0 if int(intent_year) == int(result_year) else -2.0
+
+    try:
+        popularity_bonus = min(float(result.get("popularity") or 0.0), 100.0) / 25.0
+    except Exception:
+        popularity_bonus = 0.0
+
+    return (
+        (exact * 120.0)
+        + (contains * 25.0)
+        + (coverage * 70.0)
+        + (precision * 20.0)
+        + (overlap * 8.0)
+        + year_bonus
+        + popularity_bonus
+    )
+
+
+def _pick_best_tmdb_result(
+    results: list[dict],
+    query_variants: list[str],
+    year: str,
+    is_series: bool,
+) -> tuple[dict | None, float]:
+    if not results:
+        return None, -999.0
+
+    intents: list[tuple[set[str], str]] = []
+    for query in query_variants:
+        tokens = _clean_match_tokens(query, for_file_name=False)
+        if not tokens:
+            continue
+        intents.append((tokens, _norm_title(query)))
+    if not intents:
+        return None, -998.0
+
+    intent_year = _extract_primary_year(str(year or ""))
+    best: dict | None = None
+    best_score = -999.0
+
+    for row in results:
+        row_score = max(
+            _tmdb_score_result(row, tokens, norm, intent_year, is_series)
+            for tokens, norm in intents
+        )
+        if row_score > best_score:
+            best_score = row_score
+            best = row
+
+    # Guardrail: avoid random weak matches.
+    if best is None or best_score < 35.0:
+        return None, best_score
+    return best, best_score
+
+
+async def _tmdb_search_best_for_type(raw_title: str, year: str, is_series: bool) -> dict[str, Any]:
+    query_variants = _tmdb_query_variants(raw_title)
+    if not query_variants:
+        return {"pick": None, "results": [], "is_series": is_series, "score": -999.0}
+
+    year_value = str(_extract_primary_year(str(year or "")) or "").strip()
+    attempts: list[tuple[str, str]] = []
+    for query in query_variants:
+        if year_value:
+            attempts.append((query, year_value))
+        attempts.append((query, ""))
+
+    seen_attempts: set[tuple[str, str]] = set()
+    unique_attempts: list[tuple[str, str]] = []
+    for query, year_hint in attempts:
+        key = (_norm_title(query), year_hint)
+        if not key[0] or key in seen_attempts:
+            continue
+        seen_attempts.add(key)
+        unique_attempts.append((query, year_hint))
+
+    seen_result_ids: set[str] = set()
+    merged_results: list[dict] = []
+
+    for query, year_hint in unique_attempts[:10]:
+        search = await _tmdb_search(query, year_hint, is_series)
+        rows = (search or {}).get("results") or []
+        for result in rows:
+            rid = result.get("id")
+            if not rid:
+                continue
+            key = str(rid)
+            if key in seen_result_ids:
+                continue
+            seen_result_ids.add(key)
+            merged_results.append(result)
+
+        pick, score = _pick_best_tmdb_result(merged_results, query_variants, year, is_series)
+        if pick and score >= 95.0:
+            return {"pick": pick, "results": merged_results, "is_series": is_series, "score": score}
+
+    pick, score = _pick_best_tmdb_result(merged_results, query_variants, year, is_series)
+    return {"pick": pick, "results": merged_results, "is_series": is_series, "score": score}
+
+
+async def _tmdb_search_best(raw_title: str, year: str, is_series: bool) -> dict[str, Any]:
+    primary = await _tmdb_search_best_for_type(raw_title, year, is_series)
+    primary_pick = primary.get("pick")
+    primary_score = float(primary.get("score") or -999.0)
+
+    # Fast path: keep current inferred type when confidence is already strong.
+    if primary_pick and primary_score >= 70.0:
+        return primary
+
+    alternate = await _tmdb_search_best_for_type(raw_title, year, not is_series)
+    alternate_pick = alternate.get("pick")
+    alternate_score = float(alternate.get("score") or -999.0)
+
+    if primary_pick and alternate_pick:
+        # Keep inferred type unless alternate is significantly stronger.
+        return alternate if alternate_score >= (primary_score + 15.0) else primary
+    if primary_pick:
+        return primary
+    if alternate_pick:
+        return alternate
+    return primary if primary_score >= alternate_score else alternate
 
 
 def _to_title_marker(title: str) -> str:
@@ -1582,9 +1847,11 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
 
         try:
             if mode in {"full", "tmdb"}:
-                search = await _tmdb_search(row.title, row.year or "", row.content_type == "series")
-                results = (search or {}).get("results") or []
-                if not results:
+                search_payload = await _tmdb_search_best(row.title, row.year or "", row.content_type == "series")
+                results = list(search_payload.get("results") or [])
+                pick = search_payload.get("pick")
+                resolved_is_series = bool(search_payload.get("is_series"))
+                if not results or not pick:
                     row.tmdb_status = "not_found"
                     row.panel = "tmdb_not_found"
                     row.file_status = "pending"
@@ -1594,7 +1861,6 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                     await _mass_broadcast_snapshot(force=True)
                     return
 
-                pick = results[0]
                 tmdb_id = pick.get("id")
                 if not tmdb_id:
                     row.tmdb_status = "not_found"
@@ -1604,7 +1870,8 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                     await _mass_broadcast_snapshot(force=True)
                     return
 
-                details = await _tmdb_details(int(tmdb_id), row.content_type == "series")
+                row.content_type = "series" if resolved_is_series else "movie"
+                details = await _tmdb_details(int(tmdb_id), resolved_is_series)
                 if not details:
                     row.tmdb_status = "not_found"
                     row.panel = "tmdb_not_found"
@@ -1614,7 +1881,7 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                     return
 
                 pre_tmdb_title = (row.title or "").strip()
-                tmdb_title = details.get("name") if row.content_type == "series" else details.get("title")
+                tmdb_title = details.get("name") if resolved_is_series else details.get("title")
                 if tmdb_title:
                     marker = _to_title_marker(pre_tmdb_title)
                     if marker and marker not in (row.source_inputs or []):
@@ -1659,7 +1926,7 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                     if c.get("job") == "Director":
                         director = c.get("name") or ""
                         break
-                if not director and row.content_type == "series":
+                if not director and resolved_is_series:
                     for c in credits.get("crew") or []:
                         if c.get("job") in {"Creator", "Executive Producer"}:
                             director = c.get("name") or ""
@@ -1678,7 +1945,7 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                 row.trailer_url = trailer_url
 
                 seasons: list[dict] = []
-                if row.content_type == "series":
+                if resolved_is_series:
                     for season in details.get("seasons") or []:
                         season_no = int(season.get("season_number") or 0)
                         if season_no <= 0:
