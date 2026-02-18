@@ -260,7 +260,10 @@ async def google_callback(request: Request, response: Response, code: str = "", 
             existing.requested_name = name
             existing.email = email
             existing.auth_provider = "google"
-            existing.role = "user"
+            # Keep elevated role if user was promoted (e.g., admin from panel).
+            current_role = str(getattr(existing, "role", "") or "").strip().lower()
+            if current_role != "admin":
+                existing.role = "user"
             await existing.save()
         else:
             await User(
