@@ -993,7 +993,131 @@ async def _fetch_cards(user: User | None, is_admin: bool, limit: int = 300) -> l
 
 
 async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -> list[dict]:
-    return await build_content_groups(user, is_admin, limit=limit, ensure_sync=True)
+    # Fast path: build catalog from ContentItem + embedded file refs only.
+    # Avoid expensive filesystem joins on every content/search request.
+    await sync_content_catalog(force=False, limit=max(limit * 2, 2000))
+    query: dict = {"status": "published"}
+    if not is_admin:
+        admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
+        if user:
+            query["$or"] = [
+                {"owner_phone": admin_phone},
+                {"owner_phone": user.phone_number},
+                {"collaborators": user.phone_number},
+                {"owner_phone": ""},
+            ]
+        elif admin_phone:
+            query["$or"] = [{"owner_phone": admin_phone}, {"owner_phone": ""}]
+
+    docs = await ContentItem.find(query).sort("-updated_at").limit(limit).to_list()
+    groups: list[dict] = []
+    for doc in docs:
+        group = {
+            "id": str(doc.id),
+            "title": (doc.title or "").strip(),
+            "year": (doc.year or "").strip(),
+            "slug": (doc.slug or _group_slug(doc.title or "", doc.year or "")).strip(),
+            "release_date": (doc.release_date or "").strip(),
+            "type": (doc.content_type or "movie").strip().lower(),
+            "poster": (doc.poster_url or "").strip(),
+            "backdrop": (doc.backdrop_url or "").strip(),
+            "description": (doc.description or "").strip(),
+            "genres": list(doc.genres or []),
+            "actors": list(doc.actors or []),
+            "director": (doc.director or "").strip(),
+            "trailer_url": (doc.trailer_url or "").strip(),
+            "trailer_key": (doc.trailer_key or "").strip(),
+            "cast_profiles": list(doc.cast_profiles or []),
+            "tmdb_id": getattr(doc, "tmdb_id", None),
+            "qualities": {},
+            "seasons": {},
+            "episode_titles": {},
+            "items": [],
+            "updated_at": getattr(doc, "updated_at", None),
+        }
+
+        refs = list(getattr(doc, "files", []) or [])
+        if not refs:
+            refs = [{"file_id": str(raw)} for raw in (getattr(doc, "file_ids", []) or [])]
+
+        for ref in refs:
+            file_id = str(getattr(ref, "file_id", "") or (ref.get("file_id") if isinstance(ref, dict) else "") or "").strip()
+            if not file_id:
+                continue
+            name = str(getattr(ref, "name", "") or (ref.get("name") if isinstance(ref, dict) else "") or "")
+            quality = str(getattr(ref, "quality", "") or (ref.get("quality") if isinstance(ref, dict) else "") or "HD").upper()
+            season = getattr(ref, "season", None) if not isinstance(ref, dict) else ref.get("season")
+            episode = getattr(ref, "episode", None) if not isinstance(ref, dict) else ref.get("episode")
+            size = int(getattr(ref, "size", 0) or (ref.get("size") if isinstance(ref, dict) else 0) or 0)
+            episode_title = str(getattr(ref, "episode_title", "") or (ref.get("episode_title") if isinstance(ref, dict) else "") or "")
+
+            if group["type"] == "series":
+                season = int(season) if season else 1
+                episode = int(episode) if episode else 1
+            else:
+                season = None
+                episode = None
+
+            card = {
+                "id": file_id,
+                "name": name,
+                "title": group["title"],
+                "type": group["type"],
+                "quality": quality,
+                "season": season,
+                "episode": episode,
+                "episode_title": episode_title,
+                "series_key": (group["title"] or "").strip().lower(),
+                "poster": group["poster"],
+                "backdrop": group["backdrop"],
+                "description": group["description"],
+                "year": group["year"],
+                "release_date": group["release_date"],
+                "genres": group["genres"],
+                "actors": group["actors"],
+                "director": group["director"],
+                "trailer_url": group["trailer_url"],
+                "trailer_key": group["trailer_key"],
+                "cast_profiles": group["cast_profiles"],
+                "size": size,
+            }
+            group["items"].append(card)
+
+            if group["type"] == "movie":
+                prev = group["qualities"].get(quality)
+                if not prev or int(prev.get("size") or 0) <= size:
+                    group["qualities"][quality] = {"file_id": file_id, "size": size}
+            else:
+                season_bucket = group["seasons"].setdefault(season, {})
+                episode_bucket = season_bucket.setdefault(episode, {})
+                episode_bucket[quality] = {"file_id": file_id, "size": size}
+                if episode_title:
+                    title_map = group["episode_titles"].setdefault(season, {})
+                    title_map[episode] = episode_title
+
+        if not group["items"] and not refs:
+            continue
+
+        total_size = sum(int(row.get("size") or 0) for row in group["items"])
+        group["file_count"] = len(group["items"])
+        group["total_size"] = total_size
+        if group["type"] == "movie":
+            movie_qualities = sorted(group["qualities"].keys(), key=_quality_rank, reverse=True)
+            group["primary_quality"] = movie_qualities[0] if movie_qualities else "HD"
+            group["quality"] = group["primary_quality"]
+            group["card_labels"] = movie_qualities[:3] if movie_qualities else ["HD"]
+        else:
+            season_numbers = sorted(int(s) for s in group["seasons"].keys()) if group["seasons"] else [1]
+            group["season_count"] = len(season_numbers)
+            group["primary_quality"] = f"S{season_numbers[0]:02d}" if season_numbers else "Series"
+            group["quality"] = group["primary_quality"]
+            labels = [f"Season {s}" for s in season_numbers[:3]]
+            if group["season_count"] > 3:
+                labels.append(f"+{group['season_count'] - 3} more")
+            group["card_labels"] = labels or ["Series"]
+        groups.append(group)
+
+    return groups
 
 async def _build_file_links(items: list[dict], link_token: str, viewer_name: str, limit: int = 3) -> list[dict]:
     if not items:
@@ -1183,7 +1307,7 @@ async def _render_catalog_page(
     search_mode = bool(search_query)
     sort_mode = _normalize_sort_type(sort_by)
 
-    cards = cards_override[:] if cards_override is not None else await _build_catalog(user, is_admin, limit=4000)
+    cards = cards_override[:] if cards_override is not None else await _build_catalog(user, is_admin, limit=1800)
     if normalized_filter == "movies":
         cards = [c for c in cards if (c.get("type") or "").lower() == "movie"]
     elif normalized_filter == "series":
@@ -1193,7 +1317,7 @@ async def _render_catalog_page(
 
     cards = _sort_catalog_cards(cards, sort_mode)
     cards = _decorate_catalog_cards(cards)
-    asyncio.create_task(_warm_group_assets(cards[:24], limit=8))
+    # Avoid background TMDB warming on every search/list request to keep page latency stable.
 
     paged_cards, total_items, total_pages, current_page = _paginate_cards(cards, page)
     page_start = max(1, current_page - 2)
@@ -1750,9 +1874,30 @@ async def content_search(request: Request, q: str):
     q = (q or "").strip().lower()
     if not q:
         return {"items": []}
-    cards = await _build_catalog(user, is_admin, limit=1200)
-    items = [c for c in cards if q in c["title"].lower()]
-    return {"items": items[:25]}
+    query: dict = {"status": "published", "search_title": {"$regex": re.escape(q), "$options": "i"}}
+    if not is_admin:
+        admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
+        if user:
+            query["$or"] = [
+                {"owner_phone": admin_phone},
+                {"owner_phone": user.phone_number},
+                {"collaborators": user.phone_number},
+                {"owner_phone": ""},
+            ]
+        elif admin_phone:
+            query["$or"] = [{"owner_phone": admin_phone}, {"owner_phone": ""}]
+    docs = await ContentItem.find(query).sort("-updated_at").limit(25).to_list()
+    items = []
+    for doc in docs:
+        items.append({
+            "id": str(doc.id),
+            "title": (doc.title or "").strip(),
+            "year": (doc.year or "").strip(),
+            "type": (doc.content_type or "movie").strip().lower(),
+            "poster": (doc.poster_url or "").strip(),
+            "slug": (doc.slug or _group_slug(doc.title or "", doc.year or "")).strip(),
+        })
+    return {"items": items}
 
 
 @router.get("/content/search/suggestions")
@@ -1766,37 +1911,49 @@ async def content_search_suggestions(request: Request, q: str = ""):
     search_regex = _build_search_regex(q)
     if not search_regex:
         return {"items": []}
+    query: dict = {
+        "status": "published",
+        "$or": [
+            {"search_title": {"$regex": search_regex, "$options": "i"}},
+            {"title": {"$regex": search_regex, "$options": "i"}},
+            {"year": {"$regex": re.escape(q), "$options": "i"}},
+        ],
+    }
+    if not is_admin:
+        admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
+        if user:
+            query["$and"] = [{
+                "$or": [
+                    {"owner_phone": admin_phone},
+                    {"owner_phone": user.phone_number},
+                    {"collaborators": user.phone_number},
+                    {"owner_phone": ""},
+                ]
+            }]
+        elif admin_phone:
+            query["$and"] = [{"$or": [{"owner_phone": admin_phone}, {"owner_phone": ""}]}]
 
-    pattern = re.compile(search_regex, re.I)
-    catalog = await _build_catalog(user, is_admin, limit=1600)
-    grouped: dict[tuple[str, str, str], dict] = {}
-    for group in catalog:
-        searchable = [
-            group.get("title", ""),
-            group.get("year", ""),
-            group.get("type", ""),
-            " ".join((itm.get("name") or "") for itm in (group.get("items") or [])[:12]),
-        ]
-        if not any(pattern.search(text or "") for text in searchable):
+    docs = await ContentItem.find(query).sort("-updated_at").limit(12).to_list()
+    items = []
+    seen: set[tuple[str, str, str]] = set()
+    for doc in docs:
+        title = (doc.title or "").strip()
+        year = (doc.year or "").strip()
+        ctype = (doc.content_type or "movie").strip().lower()
+        key = (title.lower(), year, ctype)
+        if not title or key in seen:
             continue
-        key = (
-            (group.get("title") or "").lower(),
-            group.get("year", ""),
-            group.get("type", ""),
-        )
-        if key in grouped:
-            continue
-        grouped[key] = {
-            "title": group.get("title", ""),
-            "year": group.get("year", ""),
-            "type": group.get("type", ""),
-            "poster": group.get("poster", ""),
-            "slug": group.get("slug", "") or _group_slug(group.get("title", ""), group.get("year", "")),
-        }
-        if len(grouped) >= 12:
+        seen.add(key)
+        items.append({
+            "title": title,
+            "year": year,
+            "type": ctype,
+            "poster": (doc.poster_url or "").strip(),
+            "slug": (doc.slug or _group_slug(doc.title or "", doc.year or "")).strip(),
+        })
+        if len(items) >= 10:
             break
-    items = sorted(grouped.values(), key=lambda x: (x.get("title") or "").lower())
-    return {"items": items[:10]}
+    return {"items": items}
 
 
 @router.post("/content/watchlist/toggle/{item_id}")

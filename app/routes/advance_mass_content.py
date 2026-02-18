@@ -25,16 +25,20 @@ _MASS_TASKS: dict[str, asyncio.Task] = {}
 _MASS_UPLOAD_TASKS: dict[str, asyncio.Task] = {}
 _MASS_LOCKS: dict[str, asyncio.Lock] = {}
 _MASS_BROADCAST_LOCK = asyncio.Lock()
-_MASS_PROCESS_SEMAPHORE = asyncio.Semaphore(6)
-_MASS_UPLOAD_SEMAPHORE = asyncio.Semaphore(4)
+_MASS_PROCESS_SEMAPHORE = asyncio.Semaphore(2)
+_MASS_UPLOAD_SEMAPHORE = asyncio.Semaphore(2)
 _MASS_SNAPSHOT_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
 _MASS_SNAPSHOT_MIN_INTERVAL_SEC = 0.8
 _STORAGE_POOL_CACHE: dict[str, Any] = {"rows": [], "expires_at": datetime.min}
 _STORAGE_POOL_TTL_SECONDS = 45
-_IMPORT_CHUNK_SIZE = 120
+_IMPORT_CHUNK_SIZE = 30
 _MASS_IMPORT_LOCK = asyncio.Lock()
 _MASS_IMPORT_TASK: asyncio.Task | None = None
 _MASS_IMPORT_QUEUE: list[dict[str, str]] = []
+_MASS_MAX_PENDING_PROCESS_TASKS = 120
+_MASS_SNAPSHOT_ROW_LIMIT = 1800
+_MASS_DEDUPE_COOLDOWN_SEC = 180
+_MASS_DEDUPE_LAST_RUN_TS = 0.0
 _MASS_IMPORT_STATUS: dict[str, Any] = {
     "running": False,
     "queued": 0,
@@ -431,7 +435,7 @@ async def _run_import_queue_worker() -> None:
             failed = 0
             for row in batch:
                 # Keep queue pressure bounded so huge imports do not freeze the app.
-                while _active_process_tasks() > 900:
+                while _active_process_tasks() > _MASS_MAX_PENDING_PROCESS_TASKS:
                     await asyncio.sleep(0.08)
                 try:
                     state = await _upsert_mass_entry(
@@ -1503,6 +1507,12 @@ async def _upsert_skipped_entry(
 
 
 async def _cleanup_mass_state_duplicates() -> int:
+    global _MASS_DEDUPE_LAST_RUN_TS
+    now_ts = asyncio.get_event_loop().time()
+    if (now_ts - float(_MASS_DEDUPE_LAST_RUN_TS or 0.0)) < _MASS_DEDUPE_COOLDOWN_SEC:
+        return 0
+    _MASS_DEDUPE_LAST_RUN_TS = now_ts
+
     rows = await MassContentState.find_all().sort("-updated_at").limit(50000).to_list()
     if not rows:
         return 0
@@ -1845,7 +1855,7 @@ def _dedupe_mass_rows(rows: list[MassContentState]) -> list[MassContentState]:
 
 
 async def _build_snapshot() -> dict:
-    rows = await MassContentState.find_all().sort("-updated_at").to_list()
+    rows = await MassContentState.find_all().sort("-updated_at").limit(_MASS_SNAPSHOT_ROW_LIMIT).to_list()
     rows = _dedupe_mass_rows(rows)
     payload = [_serialize_row(row) for row in rows]
     panels = {
@@ -1942,7 +1952,7 @@ async def advance_mass_content_adder_state(request: Request):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
-    return await _build_snapshot_cached(force=True)
+    return await _build_snapshot_cached(force=False)
 
 
 @router.websocket("/advance-mass-content-adder/ws")
@@ -1954,12 +1964,12 @@ async def advance_mass_content_adder_ws(websocket: WebSocket):
     await websocket.accept()
     _MASS_WS_CLIENTS.add(websocket)
     try:
-        await websocket.send_json({"type": "snapshot", "data": await _build_snapshot_cached(force=True)})
+        await websocket.send_json({"type": "snapshot", "data": await _build_snapshot_cached(force=False)})
         while True:
             text = await websocket.receive_text()
             cmd = (text or "").strip().lower()
             if cmd in {"refresh", "ping"}:
-                await websocket.send_json({"type": "snapshot", "data": await _build_snapshot_cached(force=True)})
+                await websocket.send_json({"type": "snapshot", "data": await _build_snapshot_cached(force=(cmd == "refresh"))})
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -2520,6 +2530,69 @@ def _effective_mass_panel(row: MassContentState) -> str:
     return _panel_key_for_row(row)
 
 
+async def _cancel_worker_tasks_for_ids(item_ids: list[str]) -> dict[str, int]:
+    keys = {str(x).strip() for x in (item_ids or []) if str(x).strip()}
+    if not keys:
+        return {"process": 0, "upload": 0}
+
+    proc_tasks: list[asyncio.Task] = []
+    upload_tasks: list[asyncio.Task] = []
+
+    for key in keys:
+        task = _MASS_TASKS.get(key)
+        if task and not task.done():
+            task.cancel()
+            proc_tasks.append(task)
+        task = _MASS_UPLOAD_TASKS.get(key)
+        if task and not task.done():
+            task.cancel()
+            upload_tasks.append(task)
+
+    if proc_tasks:
+        await asyncio.gather(*proc_tasks, return_exceptions=True)
+    if upload_tasks:
+        await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+    for key in keys:
+        if key in _MASS_TASKS and _MASS_TASKS[key].done():
+            _MASS_TASKS.pop(key, None)
+        if key in _MASS_UPLOAD_TASKS and _MASS_UPLOAD_TASKS[key].done():
+            _MASS_UPLOAD_TASKS.pop(key, None)
+        _MASS_LOCKS.pop(key, None)
+        _MASS_LOCKS.pop(f"upload:{key}", None)
+
+    return {"process": len(proc_tasks), "upload": len(upload_tasks)}
+
+
+async def _cancel_import_worker(reason: str = "Cleared by admin.") -> bool:
+    global _MASS_IMPORT_TASK
+    task: asyncio.Task | None = None
+    async with _MASS_IMPORT_LOCK:
+        task = _MASS_IMPORT_TASK
+        _MASS_IMPORT_QUEUE.clear()
+        _MASS_IMPORT_STATUS["queued"] = 0
+        _MASS_IMPORT_STATUS["running"] = False
+        _MASS_IMPORT_STATUS["message"] = reason
+        _MASS_IMPORT_STATUS["updated_at"] = _now_iso()
+
+    was_running = bool(task and not task.done())
+    if was_running and task is not None:
+        task.cancel()
+        try:
+            await task
+        except BaseException:
+            pass
+
+    async with _MASS_IMPORT_LOCK:
+        _MASS_IMPORT_TASK = None
+        _MASS_IMPORT_STATUS["queued"] = 0
+        _MASS_IMPORT_STATUS["running"] = False
+        _MASS_IMPORT_STATUS["message"] = reason
+        _MASS_IMPORT_STATUS["updated_at"] = _now_iso()
+
+    return was_running
+
+
 @router.post("/advance-mass-content-adder/clear-panel/{panel}")
 async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
     user = await get_current_user(request)
@@ -2535,9 +2608,17 @@ async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
     if not target_ids:
         return {"ok": True, "panel": key, "deleted": 0}
 
-    await MassContentState.get_motor_collection().delete_many({"_id": {"$in": target_ids}})
-    await _mass_broadcast_snapshot()
-    return {"ok": True, "panel": key, "deleted": len(target_ids)}
+    target_id_strs = [str(x) for x in target_ids]
+    cancelled = await _cancel_worker_tasks_for_ids(target_id_strs)
+    await MassContentState.get_motor_collection().delete_many({"_id": {"$in": _cast_ids(target_id_strs)}})
+    await _mass_broadcast_snapshot(force=True)
+    return {
+        "ok": True,
+        "panel": key,
+        "deleted": len(target_ids),
+        "cancelled_process": int(cancelled.get("process") or 0),
+        "cancelled_upload": int(cancelled.get("upload") or 0),
+    }
 
 
 @router.post("/advance-mass-content-adder/clear-all")
@@ -2546,18 +2627,36 @@ async def advance_mass_content_adder_clear_all(request: Request):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
+    proc_cancel = 0
+    upload_cancel = 0
+    if _MASS_TASKS:
+        proc_tasks = [task for task in _MASS_TASKS.values() if task and not task.done()]
+        proc_cancel = len(proc_tasks)
+        for task in proc_tasks:
+            task.cancel()
+        if proc_tasks:
+            await asyncio.gather(*proc_tasks, return_exceptions=True)
+    if _MASS_UPLOAD_TASKS:
+        upload_tasks = [task for task in _MASS_UPLOAD_TASKS.values() if task and not task.done()]
+        upload_cancel = len(upload_tasks)
+        for task in upload_tasks:
+            task.cancel()
+        if upload_tasks:
+            await asyncio.gather(*upload_tasks, return_exceptions=True)
+    _MASS_TASKS.clear()
+    _MASS_UPLOAD_TASKS.clear()
+    _MASS_LOCKS.clear()
+    await _cancel_import_worker(reason="Cleared by admin.")
+
     result = await MassContentState.get_motor_collection().delete_many({})
     deleted = int(getattr(result, "deleted_count", 0) or 0)
-
-    async with _MASS_IMPORT_LOCK:
-        _MASS_IMPORT_QUEUE.clear()
-        _MASS_IMPORT_STATUS["queued"] = 0
-        _MASS_IMPORT_STATUS["running"] = False
-        _MASS_IMPORT_STATUS["message"] = "Cleared by admin."
-        _MASS_IMPORT_STATUS["updated_at"] = datetime.now().isoformat()
-
-    await _mass_broadcast_snapshot()
-    return {"ok": True, "deleted": deleted}
+    await _mass_broadcast_snapshot(force=True)
+    return {
+        "ok": True,
+        "deleted": deleted,
+        "cancelled_process": proc_cancel,
+        "cancelled_upload": upload_cancel,
+    }
 
 
 def _build_upload_payload(row: MassContentState) -> tuple[list[str], dict[str, dict], str]:

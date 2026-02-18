@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from beanie.operators import In, Or
+from pymongo import UpdateOne
 from app.core.content_store import build_content_groups, sync_content_catalog
 from app.db.models import (
     User,
@@ -175,15 +176,83 @@ async def _site_settings() -> SiteSettings:
 
 
 async def _catalog_counts(groups: list[dict] | None = None) -> dict:
-    all_groups = groups if groups is not None else await _group_published_catalog()
-    movie_groups = [g for g in all_groups if g.get("type") == "movie"]
-    series_groups = [g for g in all_groups if g.get("type") == "series"]
+    # Fast path for most admin pages:
+    # avoid full catalog grouping unless groups are already provided by caller.
+    if groups is None:
+        movie_groups = 0
+        series_groups = 0
+        movie_files = 0
+        series_files = 0
+        try:
+            coll = ContentItem.get_motor_collection()
+            pipeline = [
+                {"$match": {"status": "published"}},
+                {
+                    "$project": {
+                        "content_type": 1,
+                        "file_count": {
+                            "$let": {
+                                "vars": {
+                                    "files_len": {"$size": {"$ifNull": ["$files", []]}},
+                                    "ids_len": {"$size": {"$ifNull": ["$file_ids", []]}},
+                                },
+                                "in": {
+                                    "$cond": [
+                                        {"$gt": ["$$files_len", 0]},
+                                        "$$files_len",
+                                        "$$ids_len",
+                                    ]
+                                },
+                            }
+                        },
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": "$content_type",
+                        "groups": {"$sum": 1},
+                        "files": {"$sum": "$file_count"},
+                    }
+                },
+            ]
+            rows = await coll.aggregate(pipeline).to_list(length=10)
+            for row in rows:
+                ctype = str(row.get("_id") or "").strip().lower()
+                groups_count = int(row.get("groups") or 0)
+                files_count = int(row.get("files") or 0)
+                if ctype == "series":
+                    series_groups += groups_count
+                    series_files += files_count
+                else:
+                    movie_groups += groups_count
+                    movie_files += files_count
+        except Exception:
+            movie_groups = await ContentItem.find(
+                ContentItem.status == "published",
+                ContentItem.content_type == "movie",
+            ).count()
+            series_groups = await ContentItem.find(
+                ContentItem.status == "published",
+                ContentItem.content_type == "series",
+            ).count()
+
+        return {
+            "published_groups": [],
+            "published_movies": movie_groups,
+            "published_series": series_groups,
+            "published_movie_files": movie_files,
+            "published_series_files": series_files,
+        }
+
+    all_groups = groups
+    movie_rows = [g for g in all_groups if g.get("type") == "movie"]
+    series_rows = [g for g in all_groups if g.get("type") == "series"]
     return {
         "published_groups": all_groups,
-        "published_movies": len(movie_groups),
-        "published_series": len(series_groups),
-        "published_movie_files": sum(int(g.get("file_count") or 0) for g in movie_groups),
-        "published_series_files": sum(int(g.get("file_count") or 0) for g in series_groups),
+        "published_movies": len(movie_rows),
+        "published_series": len(series_rows),
+        "published_movie_files": sum(int(g.get("file_count") or 0) for g in movie_rows),
+        "published_series_files": sum(int(g.get("file_count") or 0) for g in series_rows),
     }
 
 
@@ -2150,22 +2219,48 @@ async def _publish_items(
     cast_profiles = cast_profiles or []
     release_date = (release_date or "").strip()
 
+    def _file_sig(name: str, size: int) -> str:
+        return f"{(name or '').strip().lower()}::{int(size or 0)}"
+
+    folder_cache: dict[tuple[str, str], FileSystemItem] = {}
+    existing_sig_cache: dict[str, set[str]] = {}
+
+    async def _ensure_folder_cached(name: str, parent_id: str | None) -> FileSystemItem:
+        key = (str(parent_id or ""), str(name or ""))
+        cached = folder_cache.get(key)
+        if cached:
+            return cached
+        row = await _ensure_folder(admin_phone, name, parent_id)
+        folder_cache[key] = row
+        return row
+
+    async def _folder_existing_sigs(parent_id: str) -> set[str]:
+        pid = str(parent_id or "")
+        cached = existing_sig_cache.get(pid)
+        if cached is not None:
+            return cached
+        rows = await FileSystemItem.find(
+            FileSystemItem.parent_id == pid,
+            FileSystemItem.is_folder == False,
+        ).to_list()
+        sigs = {_file_sig((row.name or ""), int(row.size or 0)) for row in rows}
+        existing_sig_cache[pid] = sigs
+        return sigs
+
+    new_files: list[FileSystemItem] = []
+
     if catalog_type == "movie":
-        root = await _ensure_folder(admin_phone, "Movies", None)
-        movie_folder = await _ensure_folder(admin_phone, title, str(root.id))
+        root = await _ensure_folder_cached("Movies", None)
+        movie_folder = await _ensure_folder_cached(title, str(root.id))
+        folder_sigs = await _folder_existing_sigs(str(movie_folder.id))
         for item in items:
-            existing = await FileSystemItem.find_one(
-                FileSystemItem.parent_id == str(movie_folder.id),
-                FileSystemItem.is_folder == False,
-                FileSystemItem.name == item.name,
-                FileSystemItem.size == item.size
-            )
-            if existing:
+            sig = _file_sig((item.name or ""), int(item.size or 0))
+            if sig in folder_sigs:
                 continue
             info = _parse_name(item.name or "")
             override = overrides.get(str(item.id), {}) or {}
             quality = (override.get("quality") or getattr(item, "quality", "") or info["quality"] or "HD").strip()
-            new_file = FileSystemItem(
+            new_files.append(FileSystemItem(
                 name=item.name,
                 is_folder=False,
                 parent_id=str(movie_folder.id),
@@ -2190,11 +2285,11 @@ async def _publish_items(
                 cast_profiles=cast_profiles,
                 tmdb_id=tmdb_id,
                 parts=_clone_parts(item.parts)
-            )
-            await new_file.insert()
+            ))
+            folder_sigs.add(sig)
     else:
-        root = await _ensure_folder(admin_phone, "Web Series", None)
-        series_folder = await _ensure_folder(admin_phone, title, str(root.id))
+        root = await _ensure_folder_cached("Web Series", None)
+        series_folder = await _ensure_folder_cached(title, str(root.id))
         for item in items:
             info = _parse_name(item.name or "")
             override = overrides.get(str(item.id), {}) or {}
@@ -2210,17 +2305,13 @@ async def _publish_items(
             except Exception:
                 episode = 1
             quality = (override.get("quality") or getattr(item, "quality", "") or info["quality"] or "HD").strip()
-            season_folder = await _ensure_folder(admin_phone, f"Season {season}", str(series_folder.id))
-            quality_folder = await _ensure_folder(admin_phone, quality, str(season_folder.id))
-            existing = await FileSystemItem.find_one(
-                FileSystemItem.parent_id == str(quality_folder.id),
-                FileSystemItem.is_folder == False,
-                FileSystemItem.name == item.name,
-                FileSystemItem.size == item.size
-            )
-            if existing:
+            season_folder = await _ensure_folder_cached(f"Season {season}", str(series_folder.id))
+            quality_folder = await _ensure_folder_cached(quality, str(season_folder.id))
+            folder_sigs = await _folder_existing_sigs(str(quality_folder.id))
+            sig = _file_sig((item.name or ""), int(item.size or 0))
+            if sig in folder_sigs:
                 continue
-            new_file = FileSystemItem(
+            new_files.append(FileSystemItem(
                 name=item.name,
                 is_folder=False,
                 parent_id=str(quality_folder.id),
@@ -2249,35 +2340,80 @@ async def _publish_items(
                 cast_profiles=cast_profiles,
                 tmdb_id=tmdb_id,
                 parts=_clone_parts(item.parts)
-            )
-            await new_file.insert()
+            ))
+            folder_sigs.add(sig)
 
+    # Insert file rows in small concurrent batches to reduce total publish latency.
+    if new_files:
+        batch_size = 20
+        for idx in range(0, len(new_files), batch_size):
+            batch = new_files[idx:idx + batch_size]
+            await asyncio.gather(*[row.insert() for row in batch])
+
+    # Mark source storage files as consumed in one bulk write.
+    update_ops: list[UpdateOne] = []
     for item in items:
         try:
-            # Only consume storage rows; never change existing published catalog files to `used`.
             if (getattr(item, "source", "") or "").strip().lower() != "storage":
                 continue
             override = overrides.get(str(item.id), {}) or {}
+            set_payload: dict = {"catalog_status": "used"}
             if override.get("quality"):
-                item.quality = override.get("quality")
+                set_payload["quality"] = str(override.get("quality")).strip()
             if override.get("season"):
                 try:
-                    item.season = int(override.get("season"))
+                    set_payload["season"] = int(override.get("season"))
                 except Exception:
                     pass
             if override.get("episode"):
                 try:
-                    item.episode = int(override.get("episode"))
+                    set_payload["episode"] = int(override.get("episode"))
                 except Exception:
                     pass
-            item.catalog_status = "used"
             if override.get("episode_title"):
-                item.episode_title = override.get("episode_title")
-            await item.save()
+                set_payload["episode_title"] = str(override.get("episode_title")).strip()
+            update_ops.append(UpdateOne({"_id": item.id}, {"$set": set_payload}))
+        except Exception:
+            continue
+    if update_ops:
+        try:
+            await FileSystemItem.get_motor_collection().bulk_write(update_ops, ordered=False)
+        except Exception:
+            # Fallback path keeps behavior safe.
+            for item in items:
+                try:
+                    if (getattr(item, "source", "") or "").strip().lower() != "storage":
+                        continue
+                    override = overrides.get(str(item.id), {}) or {}
+                    if override.get("quality"):
+                        item.quality = override.get("quality")
+                    if override.get("season"):
+                        try:
+                            item.season = int(override.get("season"))
+                        except Exception:
+                            pass
+                    if override.get("episode"):
+                        try:
+                            item.episode = int(override.get("episode"))
+                        except Exception:
+                            pass
+                    item.catalog_status = "used"
+                    if override.get("episode_title"):
+                        item.episode_title = override.get("episode_title")
+                    await item.save()
+                except Exception:
+                    pass
+
+    # Sync strategy:
+    # - sync_force=True: keep strict synchronous consistency.
+    # - sync_force=False: run sync in background so publish path returns faster.
+    if sync_force:
+        await sync_content_catalog(force=True)
+    else:
+        try:
+            asyncio.create_task(sync_content_catalog(force=False))
         except Exception:
             pass
-
-    await sync_content_catalog(force=bool(sync_force))
 
 @router.post("/main-control/publish")
 @router.post("/dashboard/publish")

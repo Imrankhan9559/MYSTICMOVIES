@@ -110,6 +110,12 @@ class ContentItem(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "content"
+        indexes = [
+            [("status", 1), ("updated_at", -1)],
+            [("status", 1), ("search_title", 1)],
+            [("slug", 1), ("content_type", 1)],
+            [("owner_phone", 1), ("status", 1)],
+        ]
 
 
 class SharedCollection(Document):
