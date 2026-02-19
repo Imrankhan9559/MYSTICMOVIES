@@ -618,6 +618,8 @@ const fullState = {
     panel: "",
     itemId: "",
 };
+const noteExpandedState = new Map();
+let fullscreenRenderFingerprint = "";
 
 function toast(message, type = "info", timeout = 2600) {
     const el = document.createElement("div");
@@ -668,9 +670,118 @@ function normalizeQuality(value) {
     return map[raw] || raw;
 }
 
-function notesHtml(item) {
+function seasonEpisodeTextFromRaw(raw) {
+    const text = String(raw || "").trim();
+    if (!text) return "";
+    const m = text.match(/[sS](\d{1,2})\s*[._-]?\s*[eE](\d{1,3})/);
+    if (!m) return text;
+    const s = Number(m[1] || 0);
+    const e = Number(m[2] || 0);
+    if (s > 0 && e > 0) return `Season ${s} Episode ${e}`;
+    return text;
+}
+
+function itemFingerprint(item) {
+    const notesCount = Array.isArray(item && item.live_notes) ? item.live_notes.length : 0;
+    const choicesCount = Array.isArray(item && item.file_choice_groups) ? item.file_choice_groups.length : 0;
+    return [
+        String(item && item.id || ""),
+        String(item && item.updated_at || ""),
+        String(item && item.upload_state || "idle"),
+        String(item && item.upload_message || ""),
+        String(item && item.missing_count || 0),
+        String(item && item.matched_files_count || 0),
+        String(notesCount),
+        String(choicesCount),
+    ].join("|");
+}
+
+function seriesCoverageHtml(item) {
+    if (String(item.content_type || "").toLowerCase() !== "series") return "";
+    const files = Array.isArray(item.matched_files) ? item.matched_files : [];
+    const missing = Array.isArray(item.missing_items) ? item.missing_items : [];
+    const seasonMap = new Map();
+    const ensureSeason = (seasonNo) => {
+        const key = Number(seasonNo || 0);
+        if (key <= 0) return null;
+        if (!seasonMap.has(key)) {
+            seasonMap.set(key, { expected: new Set(), byQuality: new Map() });
+        }
+        return seasonMap.get(key);
+    };
+    const ensureQuality = (seasonObj, q) => {
+        const quality = normalizeQuality(q || "HD");
+        if (!seasonObj.byQuality.has(quality)) seasonObj.byQuality.set(quality, new Set());
+        return seasonObj.byQuality.get(quality);
+    };
+
+    for (const row of files) {
+        const season = Number(row && row.season ? row.season : 0);
+        const episode = Number(row && row.episode ? row.episode : 0);
+        const seasonObj = ensureSeason(season);
+        if (!seasonObj || episode <= 0) continue;
+        seasonObj.expected.add(episode);
+        ensureQuality(seasonObj, row.quality).add(episode);
+    }
+    for (const row of missing) {
+        const season = Number(row && row.season ? row.season : 0);
+        const episode = Number(row && row.episode ? row.episode : 0);
+        const seasonObj = ensureSeason(season);
+        if (!seasonObj || episode <= 0) continue;
+        seasonObj.expected.add(episode);
+        ensureQuality(seasonObj, row.quality);
+    }
+    if (!seasonMap.size) return "";
+
+    const sortedSeasons = Array.from(seasonMap.keys()).sort((a, b) => a - b);
+    const rows = sortedSeasons.map((seasonNo) => {
+        const data = seasonMap.get(seasonNo);
+        const expected = data ? data.expected.size : 0;
+        const keys = data ? Array.from(data.byQuality.keys()) : [];
+        for (const baseQ of ["1080P", "720P", "480P"]) {
+            if (!keys.includes(baseQ)) keys.push(baseQ);
+            if (data && !data.byQuality.has(baseQ)) data.byQuality.set(baseQ, new Set());
+        }
+        const sortedQ = keys.sort((a, b) => {
+            const ai = qualityOrder.indexOf(a);
+            const bi = qualityOrder.indexOf(b);
+            const av = ai === -1 ? 999 : ai;
+            const bv = bi === -1 ? 999 : bi;
+            return av - bv;
+        });
+        const chips = sortedQ.map((quality) => {
+            const found = (data && data.byQuality.get(quality)) ? data.byQuality.get(quality).size : 0;
+            const isComplete = expected > 0 && found >= expected;
+            const isPartial = found > 0 && found < expected;
+            const cls = isComplete ? "state-ok" : (isPartial ? "state-warn" : "state-miss");
+            return `<span class="note-pill ${cls}">${esc(quality)} ${found}/${expected || 0}</span>`;
+        }).join("");
+        return `
+            <div class="note-row">
+                <div class="note-meta">
+                    <span class="note-pill">Season ${seasonNo}</span>
+                    ${chips || `<span class="note-pill state-miss">No qualities</span>`}
+                </div>
+            </div>
+        `;
+    }).join("");
+    return `
+        <div class="mt-1 mb-2">
+            <div class="text-xs text-info mb-1">Season Quality Coverage</div>
+            <div class="notes-list">${rows}</div>
+        </div>
+    `;
+}
+
+function notesHtml(item, panelKey, options = {}) {
     const notes = Array.isArray(item.live_notes) ? item.live_notes : [];
     if (!notes.length) return `<div class="text-xs text-muted">No note rows yet.</div>`;
+    const itemId = String(item && item.id ? item.id : "");
+    const showLimit = Math.max(1, Number(options.showLimit || 16));
+    const forceExpanded = Boolean(options.forceExpanded);
+    const expanded = forceExpanded || Boolean(noteExpandedState.get(itemId));
+    const shown = expanded ? notes : notes.slice(0, showLimit);
+    const hiddenCount = Math.max(0, notes.length - shown.length);
     const rowHtml = (n) => {
         const state = String(n && n.state ? n.state : "").toLowerCase();
         const rowCls = state === "missing" ? "note-miss" : (state === "found_partial" ? "note-warn" : "note-ok");
@@ -683,8 +794,8 @@ function notesHtml(item) {
         const episode = Number(n && n.episode ? n.episode : 0);
         const quality = normalizeQuality(n && n.quality ? n.quality : "");
         const meta = [];
-        if (season > 0) meta.push(`<span class="note-pill">S${String(season).padStart(2, "0")}</span>`);
-        if (episode > 0) meta.push(`<span class="note-pill">E${String(episode).padStart(2, "0")}</span>`);
+        if (season > 0) meta.push(`<span class="note-pill">Season ${season}</span>`);
+        if (episode > 0) meta.push(`<span class="note-pill">Episode ${episode}</span>`);
         if (quality && quality !== "HD") meta.push(`<span class="note-pill">${esc(quality)}</span>`);
         meta.push(statePill);
         const text = String((n && (n.text || n.note)) || "").trim();
@@ -695,15 +806,16 @@ function notesHtml(item) {
             </div>
         `;
     };
-    const preview = notes.slice(0, 16);
-    const extra = notes.slice(16);
-    const previewHtml = `<div class="notes-list">${preview.map(rowHtml).join("")}</div>`;
-    if (!extra.length) return previewHtml;
-    return `${previewHtml}
-        <details class="mt-1">
-            <summary class="text-xs text-muted">Show ${extra.length} more notes</summary>
-            <div class="notes-list mt-2">${extra.map(rowHtml).join("")}</div>
-        </details>`;
+    const rowsHtml = `<div class="notes-list">${shown.map(rowHtml).join("")}</div>`;
+    if (forceExpanded || notes.length <= showLimit) return rowsHtml;
+    const toggleLabel = expanded ? "Show less" : `Show ${hiddenCount} more notes`;
+    return `${rowsHtml}
+        <button class="btn btn-xs btn-outline-info mt-2 action-btn"
+            data-action="toggle-notes"
+            data-id="${esc(itemId)}"
+            data-panel="${esc(panelKey || '')}">
+            ${esc(toggleLabel)}
+        </button>`;
 }
 
 function matchedFilesHtml(item) {
@@ -718,7 +830,8 @@ function matchedFilesHtml(item) {
             <summary class="text-xs text-info">Matched files: ${Number(item.matched_files_count || files.length)} (show)</summary>
             <ul class="mb-0 pl-3 mt-1">
                 ${list.map(f => {
-                    const se = f.se ? `${esc(f.se)} ` : "";
+                    const seText = seasonEpisodeTextFromRaw(f.se || "");
+                    const se = seText ? `${esc(seText)} ` : "";
                     const q = f.quality ? `${esc(f.quality)} ` : "";
                     const src = f.source_label ? ` | ${esc(f.source_label)}` : "";
                     const size = f.size_label ? ` (${esc(f.size_label)})` : "";
@@ -797,7 +910,7 @@ function qualityBoardHtml(item, panelKey) {
                 </div>
                 ${rows.length ? rows.map((f) => {
                     const se = (Number(f.season || 0) > 0 && Number(f.episode || 0) > 0)
-                        ? `S${String(Number(f.season)).padStart(2, "0")}E${String(Number(f.episode)).padStart(2, "0")}`
+                        ? `Season ${Number(f.season)} Episode ${Number(f.episode)}`
                         : "";
                     return `
                         <div class="quality-chip"
@@ -950,8 +1063,17 @@ function itemHtml(item, panelKey) {
                 </div>
             </div>
             <div class="mt-2 p-2 border border-secondary rounded bg-black live-notes-box">
-                <div class="text-xs mb-1 live-notes-title">Live Notes</div>
-                ${notesHtml(item)}
+                <div class="d-flex align-items-center justify-content-between mb-1">
+                    <div class="text-xs live-notes-title">Live Notes</div>
+                    <button class="btn btn-xs btn-outline-info action-btn"
+                        data-action="notes-fullscreen"
+                        data-id="${id}"
+                        data-panel="${esc(panelKey)}">
+                        <i class="fas fa-expand mr-1"></i>Notes Fullscreen
+                    </button>
+                </div>
+                ${seriesCoverageHtml(item)}
+                ${notesHtml(item, panelKey)}
             </div>
         </div>
     `;
@@ -975,6 +1097,7 @@ function closeFullscreen() {
     fullState.mode = "";
     fullState.panel = "";
     fullState.itemId = "";
+    fullscreenRenderFingerprint = "";
     if (fullLayer) fullLayer.classList.remove("active");
 }
 
@@ -983,10 +1106,11 @@ function openFullscreenPanel(panelKey) {
     fullState.mode = "panel";
     fullState.panel = String(panelKey || "").trim();
     fullState.itemId = "";
+    fullscreenRenderFingerprint = "";
     if (fullLayer) {
         fullLayer.classList.add("active");
     }
-    renderFullscreen();
+    renderFullscreen(true);
 }
 
 function openFullscreenItem(itemId, panelKey = "") {
@@ -994,35 +1118,89 @@ function openFullscreenItem(itemId, panelKey = "") {
     fullState.mode = "item";
     fullState.itemId = String(itemId || "").trim();
     fullState.panel = String(panelKey || "").trim();
+    fullscreenRenderFingerprint = "";
+    if (fullState.itemId) {
+        noteExpandedState.set(fullState.itemId, true);
+    }
+    if (fullBody) fullBody.scrollTop = 0;
     if (fullLayer) {
         fullLayer.classList.add("active");
     }
-    renderFullscreen();
+    renderFullscreen(true);
 }
 
-function renderFullscreen() {
+function openFullscreenNotes(itemId, panelKey = "") {
+    fullState.open = true;
+    fullState.mode = "notes";
+    fullState.itemId = String(itemId || "").trim();
+    fullState.panel = String(panelKey || "").trim();
+    fullscreenRenderFingerprint = "";
+    if (fullState.itemId) {
+        noteExpandedState.set(fullState.itemId, true);
+    }
+    if (fullBody) fullBody.scrollTop = 0;
+    if (fullLayer) {
+        fullLayer.classList.add("active");
+    }
+    renderFullscreen(true);
+}
+
+function renderFullscreen(force = false) {
     if (!fullState.open || !fullBody || !fullTitle || !fullSub) return;
     const panels = latestState && latestState.panels ? latestState.panels : {};
     if (fullState.mode === "panel") {
         const panelKey = fullState.panel;
         const list = Array.isArray(panels[panelKey]) ? panels[panelKey] : [];
+        const notesSig = Array.from(noteExpandedState.entries())
+            .filter((x) => Boolean(x[1]))
+            .map((x) => x[0])
+            .sort()
+            .join(",");
+        const fp = `panel:${panelKey}:${panelFingerprints[panelKey] || ""}:notes:${notesSig}`;
+        if (!force && fullscreenRenderFingerprint === fp) return;
+        const prevScroll = Number(fullBody.scrollTop || 0);
         fullTitle.textContent = panelNames[panelKey] || panelKey || "Panel";
         fullSub.textContent = `${list.length} item(s)`;
         const view = list.slice(0, 220);
         fullBody.innerHTML = `<div class="fullscreen-list">${view.length ? view.map(row => itemHtml(row, panelKey)).join("") : `<div class="text-muted p-3">No entries.</div>`}</div>`;
+        fullBody.scrollTop = prevScroll;
+        fullscreenRenderFingerprint = fp;
         return;
     }
-    if (fullState.mode === "item") {
+    if (fullState.mode === "item" || fullState.mode === "notes") {
         const found = findItemById(fullState.itemId);
         if (!found || !found.item) {
             fullTitle.textContent = "Content Focus";
             fullSub.textContent = "Item no longer available in panels.";
             fullBody.innerHTML = `<div class="text-warning p-3">This item moved or no longer exists in live panels.</div>`;
+            fullscreenRenderFingerprint = `missing:${fullState.itemId}`;
             return;
         }
-        fullTitle.textContent = found.item.title || "Content Focus";
-        fullSub.textContent = panelNames[found.panel] || found.panel || "Panel";
-        fullBody.innerHTML = `<div class="fullscreen-list">${itemHtml(found.item, found.panel)}</div>`;
+        const expanded = Boolean(noteExpandedState.get(String(found.item.id || "")));
+        const modeTag = fullState.mode === "notes" ? "notes" : "item";
+        const fp = `${modeTag}:${itemFingerprint(found.item)}:exp:${expanded ? 1 : 0}`;
+        if (!force && fullscreenRenderFingerprint === fp) return;
+        const prevScroll = Number(fullBody.scrollTop || 0);
+        if (fullState.mode === "notes") {
+            fullTitle.textContent = `${found.item.title || "Content"} - Live Notes`;
+            fullSub.textContent = `${panelNames[found.panel] || found.panel || "Panel"} | ${Array.isArray(found.item.live_notes) ? found.item.live_notes.length : 0} notes`;
+            fullBody.innerHTML = `
+                <div class="fullscreen-list">
+                    <div class="border border-secondary rounded p-2 bg-dark mass-card">
+                        ${seriesCoverageHtml(found.item)}
+                        <div class="live-notes-box" style="max-height:none;">
+                            ${notesHtml(found.item, found.panel, { forceExpanded: true, showLimit: 9999 })}
+                        </div>
+                    </div>
+                </div>
+            `;
+        } else {
+            fullTitle.textContent = found.item.title || "Content Focus";
+            fullSub.textContent = panelNames[found.panel] || found.panel || "Panel";
+            fullBody.innerHTML = `<div class="fullscreen-list">${itemHtml(found.item, found.panel)}</div>`;
+        }
+        fullBody.scrollTop = prevScroll;
+        fullscreenRenderFingerprint = fp;
     }
 }
 
@@ -1306,6 +1484,24 @@ document.addEventListener("click", async (e) => {
     const fileId = btn.dataset.file || "";
     const bucketKey = btn.dataset.bucket || "";
     if (!action || !id) return;
+    if (action === "focus-item") {
+        openFullscreenItem(id, btn.dataset.panel || "");
+        return;
+    }
+    if (action === "notes-fullscreen") {
+        openFullscreenNotes(id, btn.dataset.panel || "");
+        return;
+    }
+    if (action === "toggle-notes") {
+        const current = Boolean(noteExpandedState.get(String(id)));
+        noteExpandedState.set(String(id), !current);
+        // Re-render current view without mutating backend state.
+        scheduleRender(latestState);
+        if (fullState.open) {
+            renderFullscreen(true);
+        }
+        return;
+    }
     const lockKey = `${action}:${id}`;
     if (actionInFlight.has(lockKey)) return;
     actionInFlight.add(lockKey);
@@ -1317,10 +1513,6 @@ document.addEventListener("click", async (e) => {
             if (!out.ok) toast(out.data.error || "Delete failed.", "error");
             else toast("Item deleted.", "warn");
             await fetchState();
-            return;
-        }
-        if (action === "focus-item") {
-            openFullscreenItem(id, btn.dataset.panel || "");
             return;
         }
         if (action === "retry-tmdb") {
