@@ -38,8 +38,8 @@ TRASH_RE = re.compile(
     r"yts|rarbg|evo|hdhub4u|hdhub|v1|v2|v3|mkv|mp4|avi)",
     re.I,
 )
-SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
-SEASON_TAG_RE = re.compile(r"\bS\d{1,2}E\d{1,3}\b|\bS\d{1,2}\b|\bE\d{1,3}\b|\bSeason\s?\d{1,2}\b|\bEpisode\s?\d{1,3}\b", re.I)
+SE_RE = re.compile(r"[Ss](\d{1,2})[\s._-]*[Ee](\d{1,3})")
+SEASON_TAG_RE = re.compile(r"\bS\d{1,2}\s*[._-]?\s*E\d{1,3}\b|\bS\d{1,2}\b|\bE\d{1,3}\b|\bSeason\s?\d{1,2}\b|\bEpisode\s?\d{1,3}\b", re.I)
 
 # --- IN-MEMORY JOB TRACKER ---
 upload_jobs: Dict[str, dict] = {}

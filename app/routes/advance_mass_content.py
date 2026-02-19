@@ -65,12 +65,12 @@ _MASS_IMPORT_STATUS: dict[str, Any] = {
     "message": "Idle",
 }
 
-_SERIES_SE_RE = re.compile(r"[Ss](\d{1,2})\s*[Ee](\d{1,3})")
+_SERIES_SE_RE = re.compile(r"[Ss](\d{1,2})[\s._-]*[Ee](\d{1,3})")
 _SERIES_SE_ALT_RE = re.compile(r"\b(\d{1,2})x(\d{1,3})\b", re.I)
 _SERIES_WORD_RE = re.compile(r"\bSeason\s*(\d{1,2})\b.*?\bEpisode\s*(\d{1,3})\b", re.I)
 _YEAR_TOKEN_RE = re.compile(r"(?<!\d)((?:19|20)\d{2})(?!\d)")
 _TMDB_SEASON_EPISODE_NOISE_RE = re.compile(
-    r"\b(?:s\d{1,2}e\d{1,3}|season\s*\d{1,2}|episode\s*\d{1,3}|ep\s*\d{1,3}|\d{1,2}x\d{1,3})\b",
+    r"\b(?:s\d{1,2}[\s._-]*e\d{1,3}|s\d{1,2}|e\d{1,3}|season\s*\d{1,2}|episode\s*\d{1,3}|ep\s*\d{1,3}|\d{1,2}x\d{1,3})\b",
     re.I,
 )
 _TMDB_QUALITY_NOISE_RE = re.compile(r"\b(?:2160|1440|1080|720|480|380|360)p?\b|\b(?:4k|uhd|fhd|hd)\b", re.I)
@@ -103,10 +103,28 @@ def _clean_match_tokens(text: str, *, for_file_name: bool = False) -> set[str]:
             continue
         if tok in _TITLE_STOP_TOKENS:
             continue
+        # Ignore common season/episode marker tokens on both sides
+        # (e.g., season2, episode08, s02, e08, 2x08), so noisy titles still match.
+        if re.fullmatch(r"s\d{1,2}", tok):
+            continue
+        if re.fullmatch(r"e\d{1,3}", tok):
+            continue
+        if re.fullmatch(r"season\d{1,2}", tok):
+            continue
+        if re.fullmatch(r"episode\d{1,3}", tok):
+            continue
+        if re.fullmatch(r"ep\d{1,3}", tok):
+            continue
+        if re.fullmatch(r"\d{1,2}x\d{1,3}", tok):
+            continue
+        # Ignore quality/format marker tokens on both sides so "title + 480p"
+        # can still match files even if candidate-side token filtering removes quality tokens.
+        if re.fullmatch(r"\d{3,4}p", tok):
+            continue
+        if tok in {"4k", "2k", "8k", "uhd", "fhd", "hd"}:
+            continue
         if for_file_name:
             if tok in _FILE_NOISE_TOKENS:
-                continue
-            if re.fullmatch(r"\d{3,4}p", tok):
                 continue
             if re.fullmatch(r"[xh]\d{3,4}", tok):
                 continue
@@ -468,7 +486,7 @@ def _guess_type(raw_title: str, hint: str) -> str:
     if value in {"movie", "series"}:
         return value
     name = (raw_title or "").lower()
-    if re.search(r"\b(series|web\s*series|tv|season|episode|s\d{1,2}e\d{1,3})\b", name):
+    if re.search(r"\b(series|web\s*series|tv|season|episode|s\d{1,2}[\s._-]*e\d{1,3}|s\d{1,2}\b.*\be\d{1,3})\b", name):
         return "series"
     return "movie"
 
@@ -502,6 +520,14 @@ def _movie_quality_from_size(size: int) -> str:
     if total >= 1 * gb:
         return "720P"
     return "480P"
+
+
+def _movie_quality_from_name_or_size(name: str, size: int) -> str:
+    # Prefer explicit quality tags in filename for movies; fallback to size heuristic.
+    by_name = _series_quality_from_name(name or "")
+    if by_name and by_name != "HD":
+        return by_name
+    return _movie_quality_from_size(size)
 
 
 def _normalize_quality_label(value: str) -> str:
@@ -1173,7 +1199,10 @@ async def _scan_files_for_state(
                     }
                 )
             else:
-                quality = quality_overrides.get(file_id) or _movie_quality_from_size(int(row.size or 0))
+                quality = quality_overrides.get(file_id) or _movie_quality_from_name_or_size(
+                    file_name,
+                    int(row.size or 0),
+                )
                 found_rows.append(
                     {
                         "file_id": file_id,
@@ -1238,7 +1267,10 @@ async def _scan_files_for_state(
                     }
                 )
             else:
-                quality = quality_overrides.get(file_id) or _normalize_quality_label(row.get("quality") or "") or _movie_quality_from_size(file_size)
+                quality = quality_overrides.get(file_id) or _normalize_quality_label(row.get("quality") or "") or _movie_quality_from_name_or_size(
+                    file_name,
+                    file_size,
+                )
                 found_rows.append(
                     {
                         "file_id": file_id,
@@ -2787,9 +2819,7 @@ async def advance_mass_content_storage_search(
         if not _is_video_row(row):
             continue
         season_guess, episode_guess = _series_season_episode(row.name or "")
-        quality_guess = _series_quality_from_name(row.name or "")
-        if quality_guess == "HD":
-            quality_guess = _movie_quality_from_size(int(row.size or 0))
+        quality_guess = _movie_quality_from_name_or_size(row.name or "", int(row.size or 0))
         payload.append(
             {
                 "id": str(row.id),
@@ -2866,7 +2896,7 @@ async def advance_mass_content_adder_attach_file(
     guessed_quality = _normalize_quality_label(raw_quality) if raw_quality else (
         _series_quality_from_name(storage_row.name or "")
         if row.content_type == "series"
-        else _movie_quality_from_size(int(storage_row.size or 0))
+        else _movie_quality_from_name_or_size(storage_row.name or "", int(storage_row.size or 0))
     )
     season_guess, episode_guess = _series_season_episode(storage_row.name or "")
     seed_rows.append(
