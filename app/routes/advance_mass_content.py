@@ -37,9 +37,10 @@ _STORAGE_POOL_TTL_SECONDS = 45
 _IMPORT_CHUNK_SIZE = 30
 _MASS_IMPORT_LOCK = asyncio.Lock()
 _MASS_IMPORT_TASK: asyncio.Task | None = None
+_MASS_BG_DEDUPE_TASK: asyncio.Task | None = None
 _MASS_IMPORT_QUEUE: list[dict[str, str]] = []
 _MASS_MAX_PENDING_PROCESS_TASKS = 120
-_MASS_SNAPSHOT_ROW_LIMIT = max(120, min(int(os.getenv("MASS_SNAPSHOT_ROW_LIMIT", "700")), 3000))
+_MASS_SNAPSHOT_ROW_LIMIT = max(120, min(int(os.getenv("MASS_SNAPSHOT_ROW_LIMIT", "320")), 3000))
 _MASS_DEDUPE_SCAN_LIMIT = max(500, min(int(os.getenv("MASS_DEDUPE_SCAN_LIMIT", "12000")), 50000))
 _MASS_DEDUPE_MAX_RUNTIME_SEC = max(0.5, float(os.getenv("MASS_DEDUPE_MAX_RUNTIME_SEC", "3.0")))
 _MASS_EXPORT_ROW_LIMIT = max(500, min(int(os.getenv("MASS_EXPORT_ROW_LIMIT", "20000")), 50000))
@@ -1764,6 +1765,10 @@ async def _content_exists_for_input(title: str, content_type: str, year: str = "
     if not clean_title:
         return False, {}
     ctype = _guess_type(clean_title, content_type)
+    norm_title = _norm_title(clean_title)
+    if not norm_title:
+        return False, {}
+
     query: dict[str, Any] = {
         "content_type": ctype,
         "status": "published",
@@ -1771,17 +1776,21 @@ async def _content_exists_for_input(title: str, content_type: str, year: str = "
     }
     doc = await ContentItem.find_one(query)
     if not doc:
-        row_norm = _norm_title(clean_title)
-        candidates = await ContentItem.find(
-            ContentItem.content_type == ctype,
-            ContentItem.status == "published",
-        ).limit(3000).to_list()
-        for cand in candidates:
-            cand_title = (getattr(cand, "title", "") or "").strip()
-            if _norm_title(cand_title) != row_norm:
-                continue
-            doc = cand
-            break
+        # Fast path on indexed normalized title (search_title).
+        doc = await ContentItem.find_one({
+            "content_type": ctype,
+            "status": "published",
+            "search_title": norm_title,
+        })
+    if not doc:
+        # Fallback: fuzzy regex over indexed search_title.
+        token_regex = _build_title_regex(clean_title)
+        if token_regex:
+            doc = await ContentItem.find_one({
+                "content_type": ctype,
+                "status": "published",
+                "search_title": {"$regex": token_regex, "$options": "i"},
+            })
     if not doc:
         return False, {}
     return True, {
@@ -1794,12 +1803,13 @@ async def _content_exists_for_input(title: str, content_type: str, year: str = "
 
 
 async def _build_existing_content_index() -> dict[str, set]:
-    docs = await ContentItem.find(ContentItem.status == "published").limit(50000).to_list()
     by_title: set[tuple[str, str]] = set()
     details_by_title: dict[tuple[str, str], dict[str, str]] = {}
-    for doc in docs:
-        ctype = (getattr(doc, "content_type", "") or "movie").strip().lower()
-        title = (getattr(doc, "title", "") or "").strip()
+    projection = {"title": 1, "content_type": 1, "year": 1, "slug": 1}
+    cursor = ContentItem.get_motor_collection().find({"status": "published"}, projection).limit(50000)
+    async for doc in cursor:
+        ctype = (str(doc.get("content_type") or "movie")).strip().lower()
+        title = (str(doc.get("title") or "")).strip()
         norm = _norm_title(title)
         if not norm:
             continue
@@ -1807,11 +1817,11 @@ async def _build_existing_content_index() -> dict[str, set]:
         by_title.add(key)
         if key not in details_by_title:
             details_by_title[key] = {
-                "id": str(getattr(doc, "id", "") or ""),
+                "id": str(doc.get("_id") or ""),
                 "title": title,
-                "year": (getattr(doc, "year", "") or "").strip(),
+                "year": (str(doc.get("year") or "")).strip(),
                 "content_type": ctype,
-                "slug": (getattr(doc, "slug", "") or "").strip(),
+                "slug": (str(doc.get("slug") or "")).strip(),
             }
     return {
         "title_only": by_title,
@@ -1933,6 +1943,26 @@ async def _cleanup_mass_state_duplicates() -> int:
         return 0
     await MassContentState.find(In(MassContentState.id, _cast_ids(list(delete_ids)))).delete()
     return len(delete_ids)
+
+
+def _schedule_mass_dedupe() -> None:
+    global _MASS_BG_DEDUPE_TASK
+    try:
+        if _MASS_BG_DEDUPE_TASK is not None and not _MASS_BG_DEDUPE_TASK.done():
+            return
+    except Exception:
+        pass
+
+    async def _runner():
+        try:
+            await _cleanup_mass_state_duplicates()
+        except Exception:
+            pass
+
+    try:
+        _MASS_BG_DEDUPE_TASK = asyncio.create_task(_runner())
+    except Exception:
+        _MASS_BG_DEDUPE_TASK = None
 
 
 async def _process_mass_item(item_id: str, mode: str = "full") -> None:
@@ -2258,10 +2288,7 @@ def _dedupe_mass_rows(rows: list[MassContentState]) -> list[MassContentState]:
 
 
 async def _build_snapshot() -> dict:
-    rows = await asyncio.wait_for(
-        MassContentState.find_all().sort("-updated_at").limit(_MASS_SNAPSHOT_ROW_LIMIT).to_list(),
-        timeout=max(1.0, min(_MASS_DEDUPE_MAX_RUNTIME_SEC, 4.0)),
-    )
+    rows = await MassContentState.find_all().sort("-updated_at").limit(_MASS_SNAPSHOT_ROW_LIMIT).to_list()
     rows = _dedupe_mass_rows(rows)
     payload = [_serialize_row(row) for row in rows]
     panels = {
@@ -2301,7 +2328,7 @@ async def _build_snapshot_cached(force: bool = False) -> dict:
     try:
         snapshot = await _build_snapshot()
     except Exception as exc:
-        logger.warning("Mass snapshot build failed, using cached/empty snapshot: %s", exc)
+        logger.warning("Mass snapshot build failed, using cached snapshot if available: %s", exc)
         if isinstance(cached, dict):
             return cached
         return {
@@ -2332,7 +2359,7 @@ async def _build_snapshot_cached(force: bool = False) -> dict:
                 "upload_active": sum(1 for task in _MASS_UPLOAD_TASKS.values() if not task.done()),
             },
             "server_time": datetime.now().isoformat(),
-            "warning": "Snapshot unavailable due to database timeout.",
+            "warning": "Snapshot temporarily unavailable.",
         }
     _MASS_SNAPSHOT_CACHE["data"] = snapshot
     _MASS_SNAPSHOT_CACHE["ts"] = now
@@ -2346,13 +2373,9 @@ def _invalidate_mass_snapshot_cache() -> None:
 
 async def _mass_broadcast_snapshot(force: bool = False) -> None:
     async with _MASS_BROADCAST_LOCK:
-        snapshot = None
-        if force or _MASS_SNAPSHOT_CACHE.get("data") is None:
-            snapshot = await _build_snapshot_cached(force=bool(force))
+        snapshot = await _build_snapshot_cached(force=bool(force))
         if not _MASS_WS_CLIENTS:
             return
-        if snapshot is None:
-            snapshot = await _build_snapshot_cached(force=False)
         dead: list[WebSocket] = []
         for ws in list(_MASS_WS_CLIENTS):
             try:
@@ -2383,7 +2406,7 @@ async def advance_mass_content_adder_page(request: Request):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
-    await _cleanup_mass_state_duplicates()
+    _schedule_mass_dedupe()
     base_ctx = await _admin_context_base(user)
     initial_state = await _build_snapshot_cached(force=True)
     return templates.TemplateResponse(
@@ -2439,7 +2462,6 @@ async def advance_mass_content_adder_manual_add(
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
-    await _cleanup_mass_state_duplicates()
 
     name = (title or "").strip()
     if not name:
@@ -2454,7 +2476,7 @@ async def advance_mass_content_adder_manual_add(
             reason="Already exists in content database (manual add blocked).",
             existing_content=existing_payload,
         )
-        await _mass_broadcast_snapshot()
+        asyncio.create_task(_mass_broadcast_snapshot())
         return JSONResponse(
             {
                 "ok": False,
@@ -2470,7 +2492,8 @@ async def advance_mass_content_adder_manual_add(
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     _schedule_process(str(row.id), mode="full")
-    await _mass_broadcast_snapshot()
+    _schedule_mass_dedupe()
+    asyncio.create_task(_mass_broadcast_snapshot())
     return {"ok": True, "id": str(row.id)}
 
 
@@ -2479,7 +2502,6 @@ async def advance_mass_content_adder_import(request: Request, file: UploadFile =
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
-    await _cleanup_mass_state_duplicates()
 
     filename = (file.filename or "").strip().lower()
     if not filename.endswith(".csv") and not filename.endswith(".xlsx"):
@@ -2532,8 +2554,8 @@ async def advance_mass_content_adder_import(request: Request, file: UploadFile =
         )
 
     queued_count = await _enqueue_import_rows(rows)
-
-    await _mass_broadcast_snapshot()
+    _schedule_mass_dedupe()
+    asyncio.create_task(_mass_broadcast_snapshot())
     return {
         "ok": True,
         "count": len(rows),
@@ -3030,24 +3052,34 @@ async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
     if key not in _CLEARABLE_MASS_PANELS:
         return JSONResponse({"ok": False, "error": "Invalid panel key."}, status_code=400)
 
-    rows = await MassContentState.find_all().to_list()
-    target_ids = [row.id for row in rows if _effective_mass_panel(row) == key]
-    if not target_ids:
-        return {"ok": True, "panel": key, "deleted": 0}
+    # Fast server-side filter instead of loading all rows in memory.
+    if key == "uploaded":
+        panel_filter: dict[str, Any] = {"uploaded": True}
+    elif key == "uploading":
+        panel_filter = {"uploaded": {"$ne": True}, "upload_state": {"$in": ["queued", "uploading"]}}
+    else:
+        panel_filter = {
+            "uploaded": {"$ne": True},
+            "upload_state": {"$nin": ["queued", "uploading"]},
+            "panel": key,
+        }
 
     deleted_count = 0
-    target_id_strs = [str(x) for x in target_ids]
+    target_id_strs: list[str] = []
+    cursor = MassContentState.get_motor_collection().find(panel_filter, {"_id": 1}).limit(6000)
+    async for row in cursor:
+        raw_id = row.get("_id")
+        if raw_id is not None:
+            target_id_strs.append(str(raw_id))
+    if not target_id_strs:
+        return {"ok": True, "panel": key, "deleted": 0, "cancelled_process": 0, "cancelled_upload": 0}
+
     cancelled = await _cancel_worker_tasks_for_ids(target_id_strs)
-    casted_ids = _cast_ids(target_id_strs)
-    or_filters: list[dict[str, Any]] = []
-    if casted_ids:
-        or_filters.append({"_id": {"$in": casted_ids}})
-    or_filters.append({"_id": {"$in": target_id_strs}})
     try:
-        result = await MassContentState.get_motor_collection().delete_many({"$or": or_filters})
+        result = await MassContentState.get_motor_collection().delete_many(panel_filter)
         deleted_count = int(getattr(result, "deleted_count", 0) or 0)
     except Exception:
-        # Fallback path: delete row-by-row if bulk delete fails on mixed _id formats.
+        # Fallback path: delete row-by-row if bulk delete fails.
         for raw_id in target_id_strs:
             try:
                 row = await MassContentState.get(raw_id)
@@ -3061,7 +3093,7 @@ async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
     return {
         "ok": True,
         "panel": key,
-        "deleted": deleted_count or len(target_ids),
+        "deleted": deleted_count or len(target_id_strs),
         "cancelled_process": int(cancelled.get("process") or 0),
         "cancelled_upload": int(cancelled.get("upload") or 0),
     }

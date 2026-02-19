@@ -36,7 +36,15 @@ CATALOG_ITEMS_PER_PAGE = 24
 _SUGGEST_CACHE: dict[str, dict] = {}
 _SUGGEST_CACHE_TTL_SEC = 25.0
 _CATALOG_CACHE: dict[str, dict] = {}
-_CATALOG_CACHE_TTL_SEC = 18.0
+_CATALOG_CACHE_TTL_SEC = max(20.0, float(os.getenv("CONTENT_CATALOG_CACHE_TTL_SEC", "120")))
+_CATALOG_QUERY_TIMEOUT_SEC = max(2.0, float(os.getenv("CONTENT_CATALOG_QUERY_TIMEOUT_SEC", "8")))
+_RELATED_CACHE: dict[str, dict] = {}
+_RELATED_CACHE_TTL_SEC = max(20.0, float(os.getenv("CONTENT_RELATED_CACHE_TTL_SEC", "120")))
+_RELATED_QUERY_TIMEOUT_SEC = max(2.0, float(os.getenv("CONTENT_RELATED_QUERY_TIMEOUT_SEC", "6")))
+_RELATED_QUERY_LIMIT = max(40, min(int(os.getenv("CONTENT_RELATED_QUERY_LIMIT", "220")), 600))
+_CATALOG_SYNC_TASK: asyncio.Task | None = None
+_CATALOG_SYNC_LAST_TS: float = 0.0
+_CATALOG_SYNC_MIN_INTERVAL_SEC = 180.0
 _HOME_WARM_TASK: asyncio.Task | None = None
 _HOME_WARM_LAST_TS: float = 0.0
 _SITE_SETTINGS_CACHE: dict[str, object] = {"ts": 0.0, "row": None}
@@ -248,13 +256,14 @@ def _catalog_scope_key(user: User | None, is_admin: bool) -> str:
     return f"guest:{admin_key}"
 
 
-def _catalog_cache_get(scope_key: str, limit: int) -> list[dict] | None:
+def _catalog_cache_get(scope_key: str, limit: int, allow_stale: bool = False) -> list[dict] | None:
     row = _CATALOG_CACHE.get(scope_key)
     if not row:
         return None
     try:
         now = asyncio.get_event_loop().time()
-        if (now - float(row.get("ts") or 0.0)) > _CATALOG_CACHE_TTL_SEC:
+        age = now - float(row.get("ts") or 0.0)
+        if age > _CATALOG_CACHE_TTL_SEC and not allow_stale:
             _CATALOG_CACHE.pop(scope_key, None)
             return None
         items = list(row.get("items") or [])
@@ -279,6 +288,35 @@ def _catalog_cache_set(scope_key: str, items: list[dict], limit: int) -> None:
             ordered = sorted(_CATALOG_CACHE.items(), key=lambda kv: float((kv[1] or {}).get("ts") or 0.0))
             for key, _value in ordered[:-12]:
                 _CATALOG_CACHE.pop(key, None)
+    except Exception:
+        pass
+
+
+def _related_cache_get(key: str) -> list[dict] | None:
+    row = _RELATED_CACHE.get(key)
+    if not row:
+        return None
+    try:
+        now = asyncio.get_event_loop().time()
+        if (now - float(row.get("ts") or 0.0)) > _RELATED_CACHE_TTL_SEC:
+            _RELATED_CACHE.pop(key, None)
+            return None
+        return list(row.get("items") or [])
+    except Exception:
+        _RELATED_CACHE.pop(key, None)
+        return None
+
+
+def _related_cache_set(key: str, items: list[dict]) -> None:
+    try:
+        _RELATED_CACHE[key] = {
+            "ts": asyncio.get_event_loop().time(),
+            "items": list(items or []),
+        }
+        if len(_RELATED_CACHE) > 64:
+            ordered = sorted(_RELATED_CACHE.items(), key=lambda kv: float((kv[1] or {}).get("ts") or 0.0))
+            for stale_key, _value in ordered[:-48]:
+                _RELATED_CACHE.pop(stale_key, None)
     except Exception:
         pass
 
@@ -1196,10 +1234,8 @@ def _content_query(user: User | None, is_admin: bool):
             {"collaborators": {"$in": collab_values}} if collab_values else {"owner_phone": ""},
         ]
         return base
-    if admin_variants:
-        base["owner_phone"] = {"$in": admin_variants}
-    else:
-        base["owner_phone"] = ""
+    # Public catalog should remain visible even if ADMIN_PHONE changes format.
+    # Restricting guest view by owner_phone can hide all content unexpectedly.
     return base
 
 
@@ -1218,8 +1254,8 @@ def _content_scope_query(user: User | None, is_admin: bool) -> dict:
     query: dict = {"status": "published"}
     if is_admin:
         return query
-    admin_variants = _phone_variants(getattr(settings, "ADMIN_PHONE", "") or "")
     if user:
+        admin_variants = _phone_variants(getattr(settings, "ADMIN_PHONE", "") or "")
         user_variants = _phone_variants(user.phone_number or "")
         owner_values = sorted(set(admin_variants + user_variants + [""]))
         collab_values = user_variants or [user.phone_number]
@@ -1227,8 +1263,7 @@ def _content_scope_query(user: User | None, is_admin: bool) -> dict:
             {"owner_phone": {"$in": owner_values}},
             {"collaborators": {"$in": collab_values}} if collab_values else {"owner_phone": ""},
         ]
-    elif admin_variants:
-        query["$or"] = [{"owner_phone": {"$in": admin_variants + [""]}}]
+    # Guests: return all published catalog items.
     return query
 
 
@@ -1433,12 +1468,52 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
     cached = _catalog_cache_get(scope_key, limit)
     if cached is not None:
         return cached
+    stale_cached = _catalog_cache_get(scope_key, limit, allow_stale=True)
 
     # Fast path: build catalog from ContentItem + embedded file refs only.
-    # Avoid expensive filesystem joins on every content/search request.
-    await sync_content_catalog(force=False, limit=max(limit * 2, 2000))
+    # Avoid expensive filesystem sync blocking the request thread.
+    # Keep sync in background and only force it when catalog is genuinely empty.
+    global _CATALOG_SYNC_TASK, _CATALOG_SYNC_LAST_TS
+    try:
+        now = asyncio.get_event_loop().time()
+        if (
+            (_CATALOG_SYNC_TASK is None or _CATALOG_SYNC_TASK.done())
+            and (now - float(_CATALOG_SYNC_LAST_TS or 0.0)) >= _CATALOG_SYNC_MIN_INTERVAL_SEC
+        ):
+            _CATALOG_SYNC_LAST_TS = now
+            async def _sync_runner():
+                try:
+                    await sync_content_catalog(force=False, limit=max(limit * 2, 2000))
+                except Exception:
+                    pass
+            _CATALOG_SYNC_TASK = asyncio.create_task(_sync_runner())
+    except Exception:
+        pass
+
     query = _content_scope_query(user, is_admin)
-    docs = await ContentItem.find(query).sort("-updated_at").limit(limit).to_list()
+    docs: list[ContentItem] = []
+    try:
+        docs = await asyncio.wait_for(
+            ContentItem.find(query).sort("-updated_at").limit(limit).to_list(),
+            timeout=_CATALOG_QUERY_TIMEOUT_SEC,
+        )
+    except Exception:
+        if stale_cached is not None:
+            return stale_cached
+    if not docs:
+        # One-time fallback: if no catalog docs exist, force sync and retry.
+        try:
+            await asyncio.wait_for(
+                sync_content_catalog(force=True, limit=max(limit * 2, 2000)),
+                timeout=max(_CATALOG_QUERY_TIMEOUT_SEC * 2.0, 10.0),
+            )
+            docs = await asyncio.wait_for(
+                ContentItem.find(query).sort("-updated_at").limit(limit).to_list(),
+                timeout=_CATALOG_QUERY_TIMEOUT_SEC,
+            )
+        except Exception:
+            if stale_cached is not None:
+                return stale_cached
     groups: list[dict] = []
     for doc in docs:
         group = _group_from_content_doc(doc)
@@ -1625,7 +1700,9 @@ async def _render_catalog_page(
     search_mode = bool(search_query)
     sort_mode = _normalize_sort_type(sort_by)
 
-    cards = cards_override[:] if cards_override is not None else await _build_catalog(user, is_admin, limit=1800)
+    # Keep request-time DB load bounded; pagination operates on this cached set.
+    catalog_limit = max(600, min(2400, (max(1, int(page or 1)) * CATALOG_ITEMS_PER_PAGE) + 900))
+    cards = cards_override[:] if cards_override is not None else await _build_catalog(user, is_admin, limit=catalog_limit)
     if normalized_filter == "movies":
         cards = [c for c in cards if (c.get("type") or "").lower() == "movie"]
     elif normalized_filter == "series":
@@ -2055,18 +2132,63 @@ async def content_details_related(request: Request, content_key: str, limit: int
     is_admin = _is_admin(user)
     content_key = (content_key or "").strip()
     max_limit = max(1, min(int(limit or 12), 24))
+    cache_key = f"{_catalog_scope_key(user, is_admin)}::{content_key.lower()}::{max_limit}"
+    cached = _related_cache_get(cache_key)
+    if cached is not None:
+        return JSONResponse({"ok": True, "items": cached, "cached": True})
 
     target_doc = await _content_doc_from_key(content_key, user, is_admin)
     target_group = _group_from_content_doc(target_doc) if target_doc else None
+    try:
+        candidate_groups: list[dict] = []
+        if target_group and target_doc:
+            scope_query = _content_scope_query(user, is_admin)
+            and_filters: list[dict] = [scope_query, {"_id": {"$ne": target_doc.id}}]
+            target_genres = _clean_values(target_group.get("genres") or [])
+            target_cast = _group_cast_names(target_group)
+            match_or: list[dict] = []
+            if target_genres:
+                match_or.append({"genres": {"$in": target_genres[:12]}})
+            if target_cast:
+                match_or.append({"actors": {"$in": target_cast[:16]}})
+            if match_or:
+                and_filters.append({"$or": match_or})
+                query = {"$and": and_filters}
+                docs = await asyncio.wait_for(
+                    ContentItem.find(query).sort("-updated_at").limit(_RELATED_QUERY_LIMIT).to_list(),
+                    timeout=_RELATED_QUERY_TIMEOUT_SEC,
+                )
+                for doc in docs:
+                    row = _group_from_content_doc(doc)
+                    if row:
+                        candidate_groups.append(row)
+        else:
+            candidate_groups = []
 
-    catalog = await _build_catalog(user, is_admin, limit=1400)
-    if not target_group:
-        target_group = _find_group_in_catalog(catalog, content_key)
-    if not target_group:
-        raise HTTPException(status_code=404, detail="Content not found")
+        if not target_group:
+            # Fallback for rare slug/key mismatch cases.
+            fallback_catalog = await _build_catalog(user, is_admin, limit=600)
+            target_group = _find_group_in_catalog(fallback_catalog, content_key)
+            if not target_group:
+                raise HTTPException(status_code=404, detail="Content not found")
+            if not candidate_groups:
+                candidate_groups = fallback_catalog
 
-    cards = _related_content_cards(target_group, catalog, limit=max_limit)
-    return JSONResponse({"ok": True, "items": cards})
+        cards = _related_content_cards(target_group, candidate_groups, limit=max_limit)
+        _related_cache_set(cache_key, cards)
+        return JSONResponse({"ok": True, "items": cards})
+    except HTTPException:
+        raise
+    except Exception:
+        # Safety fallback if DB is under pressure.
+        fallback_catalog = await _build_catalog(user, is_admin, limit=700)
+        if not target_group:
+            target_group = _find_group_in_catalog(fallback_catalog, content_key)
+        if not target_group:
+            raise HTTPException(status_code=404, detail="Content not found")
+        cards = _related_content_cards(target_group, fallback_catalog, limit=max_limit)
+        _related_cache_set(cache_key, cards)
+        return JSONResponse({"ok": True, "items": cards})
 
 
 @router.get("/content/cast")

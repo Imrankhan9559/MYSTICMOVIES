@@ -130,6 +130,8 @@ class ContentItem(Document):
             [("status", 1), ("search_title", 1)],
             [("slug", 1), ("content_type", 1)],
             [("owner_phone", 1), ("status", 1)],
+            [("status", 1), ("owner_phone", 1), ("updated_at", -1)],
+            [("status", 1), ("collaborators", 1), ("updated_at", -1)],
             [("status", 1), ("content_type", 1), ("release_date", -1)],
             [("status", 1), ("title", 1)],
             [("tmdb_id", 1)],
