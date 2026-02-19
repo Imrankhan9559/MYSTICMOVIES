@@ -4,7 +4,7 @@ import io
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from beanie.operators import In
@@ -28,8 +28,10 @@ _MASS_TASKS: dict[str, asyncio.Task] = {}
 _MASS_UPLOAD_TASKS: dict[str, asyncio.Task] = {}
 _MASS_LOCKS: dict[str, asyncio.Lock] = {}
 _MASS_BROADCAST_LOCK = asyncio.Lock()
-_MASS_PROCESS_SEMAPHORE = asyncio.Semaphore(2)
-_MASS_UPLOAD_SEMAPHORE = asyncio.Semaphore(2)
+_MASS_PROCESS_WORKERS = max(1, min(int(os.getenv("MASS_PROCESS_WORKERS", "3")), 8))
+_MASS_UPLOAD_WORKERS = max(1, min(int(os.getenv("MASS_UPLOAD_WORKERS", "3")), 8))
+_MASS_PROCESS_SEMAPHORE = asyncio.Semaphore(_MASS_PROCESS_WORKERS)
+_MASS_UPLOAD_SEMAPHORE = asyncio.Semaphore(_MASS_UPLOAD_WORKERS)
 _MASS_SNAPSHOT_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
 _MASS_SNAPSHOT_MIN_INTERVAL_SEC = 0.8
 _STORAGE_POOL_CACHE: dict[str, Any] = {"rows": [], "expires_at": datetime.min}
@@ -38,6 +40,7 @@ _IMPORT_CHUNK_SIZE = 30
 _MASS_IMPORT_LOCK = asyncio.Lock()
 _MASS_IMPORT_TASK: asyncio.Task | None = None
 _MASS_BG_DEDUPE_TASK: asyncio.Task | None = None
+_MASS_BG_UPLOAD_RECOVERY_TASK: asyncio.Task | None = None
 _MASS_IMPORT_QUEUE: list[dict[str, str]] = []
 _MASS_MAX_PENDING_PROCESS_TASKS = 120
 _MASS_SNAPSHOT_ROW_LIMIT = max(120, min(int(os.getenv("MASS_SNAPSHOT_ROW_LIMIT", "320")), 3000))
@@ -46,6 +49,10 @@ _MASS_DEDUPE_MAX_RUNTIME_SEC = max(0.5, float(os.getenv("MASS_DEDUPE_MAX_RUNTIME
 _MASS_EXPORT_ROW_LIMIT = max(500, min(int(os.getenv("MASS_EXPORT_ROW_LIMIT", "20000")), 50000))
 _MASS_DEDUPE_COOLDOWN_SEC = 180
 _MASS_DEDUPE_LAST_RUN_TS = 0.0
+_MASS_UPLOAD_STALE_SEC = max(60, int(os.getenv("MASS_UPLOAD_STALE_SEC", "900")))
+_MASS_UPLOAD_RECOVERY_COOLDOWN_SEC = max(10, int(os.getenv("MASS_UPLOAD_RECOVERY_COOLDOWN_SEC", "60")))
+_MASS_UPLOAD_RECOVERY_LIMIT = max(10, min(int(os.getenv("MASS_UPLOAD_RECOVERY_LIMIT", "200")), 2000))
+_MASS_UPLOAD_RECOVERY_LAST_RUN_TS = 0.0
 _MASS_IMPORT_STATUS: dict[str, Any] = {
     "running": False,
     "queued": 0,
@@ -1965,6 +1972,73 @@ def _schedule_mass_dedupe() -> None:
         _MASS_BG_DEDUPE_TASK = None
 
 
+async def _recover_stale_upload_rows() -> int:
+    global _MASS_UPLOAD_RECOVERY_LAST_RUN_TS
+    now_ts = asyncio.get_event_loop().time()
+    if (now_ts - float(_MASS_UPLOAD_RECOVERY_LAST_RUN_TS or 0.0)) < _MASS_UPLOAD_RECOVERY_COOLDOWN_SEC:
+        return 0
+    _MASS_UPLOAD_RECOVERY_LAST_RUN_TS = now_ts
+
+    cutoff = datetime.now() - timedelta(seconds=_MASS_UPLOAD_STALE_SEC)
+    query = {
+        "uploaded": {"$ne": True},
+        "upload_state": {"$in": ["queued", "uploading"]},
+        "updated_at": {"$lt": cutoff},
+    }
+    rows = await MassContentState.find(query).sort("-updated_at").limit(_MASS_UPLOAD_RECOVERY_LIMIT).to_list()
+    if not rows:
+        return 0
+
+    changed = 0
+    for row in rows:
+        row_id = str(getattr(row, "id", "") or "")
+        task = _MASS_UPLOAD_TASKS.get(row_id)
+        if task and not task.done():
+            continue
+        row.upload_state = "failed"
+        row.upload_message = "Upload worker interrupted. Click Upload again."
+        if not (row.last_error or "").strip():
+            row.last_error = "Upload worker interrupted."
+        normalized_panel = _normalize_mass_panel_key(getattr(row, "panel", ""), fallback="")
+        if normalized_panel in {"", "uploading"}:
+            if row.tmdb_status != "found":
+                row.panel = "processing"
+            else:
+                row.panel = "complete" if bool(getattr(row, "upload_ready", False)) else "incomplete"
+        row.updated_at = datetime.now()
+        try:
+            await row.save()
+            changed += 1
+        except Exception:
+            continue
+
+    if changed > 0:
+        _invalidate_mass_snapshot_cache()
+    return changed
+
+
+def _schedule_mass_upload_recovery() -> None:
+    global _MASS_BG_UPLOAD_RECOVERY_TASK
+    try:
+        if _MASS_BG_UPLOAD_RECOVERY_TASK is not None and not _MASS_BG_UPLOAD_RECOVERY_TASK.done():
+            return
+    except Exception:
+        pass
+
+    async def _runner():
+        try:
+            repaired = await _recover_stale_upload_rows()
+            if repaired > 0:
+                await _mass_broadcast_snapshot(force=True)
+        except Exception:
+            pass
+
+    try:
+        _MASS_BG_UPLOAD_RECOVERY_TASK = asyncio.create_task(_runner())
+    except Exception:
+        _MASS_BG_UPLOAD_RECOVERY_TASK = None
+
+
 async def _process_mass_item(item_id: str, mode: str = "full") -> None:
     lock = _MASS_LOCKS.setdefault(item_id, asyncio.Lock())
     async with lock:
@@ -2269,9 +2343,20 @@ def _is_better_row(new_row: MassContentState, current_row: MassContentState) -> 
 def _panel_key_for_row(row: MassContentState) -> str:
     if bool(getattr(row, "uploaded", False)):
         return "uploaded"
+    row_id = str(getattr(row, "id", "") or "")
     upload_state = str(getattr(row, "upload_state", "") or "idle").strip().lower()
     if upload_state in {"queued", "uploading"}:
-        return "uploading"
+        task = _MASS_UPLOAD_TASKS.get(row_id)
+        if task and not task.done():
+            return "uploading"
+        # Stale/non-running upload state should fall back to actual panel.
+        fallback_panel = _normalize_mass_panel_key(
+            getattr(row, "panel", ""),
+            fallback=("complete" if bool(getattr(row, "upload_ready", False)) else "incomplete"),
+        )
+        if fallback_panel == "uploading":
+            fallback_panel = "complete" if bool(getattr(row, "upload_ready", False)) else "incomplete"
+        return fallback_panel
     return _normalize_mass_panel_key(getattr(row, "panel", ""), fallback="processing")
 
 
@@ -2407,6 +2492,7 @@ async def advance_mass_content_adder_page(request: Request):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
     _schedule_mass_dedupe()
+    _schedule_mass_upload_recovery()
     base_ctx = await _admin_context_base(user)
     initial_state = await _build_snapshot_cached(force=True)
     return templates.TemplateResponse(
@@ -2425,6 +2511,7 @@ async def advance_mass_content_adder_state(request: Request):
     user = await get_current_user(request)
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
+    _schedule_mass_upload_recovery()
     return await _build_snapshot_cached(force=False)
 
 
@@ -3216,18 +3303,18 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
             if not row:
                 return
 
-            async def _set_upload_stage(message: str) -> None:
+            async def _set_upload_stage(message: str, *, force_snapshot: bool = False) -> None:
                 row.upload_state = "uploading"
                 row.upload_message = message
                 row.updated_at = datetime.now()
                 await row.save()
-                await _mass_broadcast_snapshot(force=True)
+                await _mass_broadcast_snapshot(force=force_snapshot)
 
             row.upload_state = "uploading"
             row.upload_message = "Step 1/5: Preparing upload worker..."
             row.updated_at = datetime.now()
             await row.save()
-            await _mass_broadcast_snapshot(force=True)
+            await _mass_broadcast_snapshot()
 
             try:
                 if row.tmdb_status != "found":
@@ -3305,6 +3392,16 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
                 row.updated_at = datetime.now()
                 await row.save()
                 await _mass_broadcast_snapshot(force=True)
+            except asyncio.CancelledError:
+                row = await MassContentState.get(item_id)
+                if row:
+                    row.upload_state = "failed"
+                    row.upload_message = "Upload worker interrupted. Click Upload again."
+                    row.last_error = "Upload worker interrupted."
+                    row.updated_at = datetime.now()
+                    await row.save()
+                    await _mass_broadcast_snapshot(force=True)
+                raise
             except Exception as exc:
                 row = await MassContentState.get(item_id)
                 if row:
@@ -3385,7 +3482,7 @@ async def advance_mass_content_adder_upload(
         row.upload_message = "Upload already running for this content."
         row.updated_at = datetime.now()
         await row.save()
-        await _mass_broadcast_snapshot(force=True)
+        await _mass_broadcast_snapshot()
         return JSONResponse(
             {
                 "ok": True,
@@ -3400,7 +3497,7 @@ async def advance_mass_content_adder_upload(
     row.upload_message = "Step 0/5: Queued. Waiting for worker slot..."
     row.updated_at = datetime.now()
     await row.save()
-    await _mass_broadcast_snapshot(force=True)
+    await _mass_broadcast_snapshot()
     return JSONResponse(
         {
             "ok": True,

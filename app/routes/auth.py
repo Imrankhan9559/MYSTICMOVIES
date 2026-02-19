@@ -1,6 +1,8 @@
 import traceback
 import json
 import time
+import asyncio
+import os
 import urllib.parse
 import urllib.request
 import base64
@@ -14,7 +16,6 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import JSONResponse, RedirectResponse
 from pyrogram import Client, errors
 from app.core.config import settings
-from app.core.content_store import sync_content_catalog
 from app.db.models import User, ContentItem, SiteSettings, TokenSetting
 from app.routes.dashboard import get_current_user
 
@@ -24,6 +25,11 @@ templates = Jinja2Templates(directory="app/templates")
 # In-memory storage for temporary login steps (Production apps should use Redis)
 temp_auth_data = {} 
 oauth_states = {}
+_LOGIN_CARDS_CACHE: dict[str, object] = {"ts": 0.0, "items": []}
+_LOGIN_CARDS_CACHE_TTL_SEC = max(20.0, float(os.getenv("LOGIN_CARDS_CACHE_TTL_SEC", "180")))
+_LOGIN_QUERY_TIMEOUT_SEC = max(1.0, float(os.getenv("LOGIN_QUERY_TIMEOUT_SEC", "4")))
+_SITE_SETTINGS_CACHE: dict[str, object] = {"ts": 0.0, "row": None}
+_SITE_SETTINGS_CACHE_TTL_SEC = max(20.0, float(os.getenv("LOGIN_SITE_SETTINGS_CACHE_TTL_SEC", "120")))
 
 
 def _now_ts() -> int:
@@ -123,37 +129,64 @@ async def _check_login_allowed(phone: str):
 
 
 async def _latest_login_cards(limit: int = 20) -> list[dict]:
+    limit = max(1, min(int(limit or 20), 40))
+    now = time.monotonic()
+    cached_items = list(_LOGIN_CARDS_CACHE.get("items") or [])
+    cached_ts = float(_LOGIN_CARDS_CACHE.get("ts") or 0.0)
+    if cached_items and (now - cached_ts) <= _LOGIN_CARDS_CACHE_TTL_SEC:
+        return cached_items[:limit]
+
     cards: list[dict] = []
     try:
-        await sync_content_catalog(force=False, limit=max(limit * 5, 1000))
-        rows = await ContentItem.find(ContentItem.status == "published").sort("-updated_at").limit(limit * 4).to_list()
+        query_limit = max(limit * 3, 60)
+        rows = await asyncio.wait_for(
+            ContentItem.get_motor_collection()
+            .find(
+                {"status": "published"},
+                {"slug": 1, "title": 1, "poster_url": 1, "updated_at": 1},
+            )
+            .sort("updated_at", -1)
+            .limit(query_limit)
+            .to_list(length=query_limit),
+            timeout=_LOGIN_QUERY_TIMEOUT_SEC,
+        )
     except Exception:
-        rows = []
+        return cached_items[:limit] if cached_items else []
 
     seen_slugs: set[str] = set()
     rank = 1
     for row in rows:
-        slug = (getattr(row, "slug", "") or "").strip()
+        slug = (str(row.get("slug") or "")).strip()
         if not slug or slug in seen_slugs:
             continue
         seen_slugs.add(slug)
         cards.append({
             "slug": slug,
-            "title": (getattr(row, "title", "") or "Content").strip() or "Content",
-            "poster": (getattr(row, "poster_url", "") or "").strip(),
+            "title": (str(row.get("title") or "Content")).strip() or "Content",
+            "poster": (str(row.get("poster_url") or "")).strip(),
             "rank": rank,
         })
         rank += 1
         if len(cards) >= limit:
             break
+    _LOGIN_CARDS_CACHE["ts"] = now
+    _LOGIN_CARDS_CACHE["items"] = list(cards)
     return cards
 
 
 async def _site_settings() -> SiteSettings:
+    now = time.monotonic()
+    cached = _SITE_SETTINGS_CACHE.get("row")
+    cached_ts = float(_SITE_SETTINGS_CACHE.get("ts") or 0.0)
+    if cached is not None and (now - cached_ts) <= _SITE_SETTINGS_CACHE_TTL_SEC:
+        return cached  # type: ignore[return-value]
+
     row = await SiteSettings.find_one(SiteSettings.key == "main")
     if not row:
         row = SiteSettings(key="main")
         await row.insert()
+    _SITE_SETTINGS_CACHE["row"] = row
+    _SITE_SETTINGS_CACHE["ts"] = now
     return row
 
 @router.get("/login")
@@ -164,7 +197,7 @@ async def login_page(request: Request):
     if user:
         return RedirectResponse(return_url if return_url else "/content")
     site = await _site_settings()
-    latest_uploads = await _latest_login_cards(limit=20)
+    latest_uploads = await _latest_login_cards(limit=14)
     return templates.TemplateResponse("login.html", {
         "request": request,
         "user": user,
