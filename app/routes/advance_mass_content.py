@@ -1071,29 +1071,9 @@ def _movie_choice_bucket(quality: str) -> str:
 
 async def _scan_files_for_state(
     state: MassContentState,
+    prebuilt_found_rows: list[dict] | None = None,
 ) -> tuple[list[dict], list[dict], list[dict], list[dict], list[dict], str, str, bool]:
-    search_titles = _search_titles_for_state(state)
-    candidates = await _fetch_storage_candidates_multi(search_titles or [state.title])
     content_year = _content_release_year(state)
-
-    # Manual include pool: admin can attach specific storage files even if title matching misses them.
-    include_ids = {
-        str(x).strip()
-        for x in (getattr(state, "included_file_ids", []) or [])
-        if str(x).strip()
-    }
-    if include_ids:
-        include_rows = await FileSystemItem.find(
-            In(FileSystemItem.id, _cast_ids(list(include_ids)))
-        ).to_list()
-        merged_candidates: dict[str, FileSystemItem] = {
-            str(row.id): row for row in candidates
-        }
-        for row in include_rows:
-            if not _is_video_row(row):
-                continue
-            merged_candidates[str(row.id)] = row
-        candidates = list(merged_candidates.values())
 
     quality_overrides: dict[str, str] = {}
     for file_id, value in dict(getattr(state, "file_quality_overrides", {}) or {}).items():
@@ -1114,52 +1094,140 @@ async def _scan_files_for_state(
             series_overrides[key] = {"season": season_val, "episode": episode_val}
 
     found_rows: list[dict] = []
-    for row in candidates:
-        file_name = row.name or ""
-        # Year rule:
-        # - If filename has no year token -> allow.
-        # - If filename has year token(s) and content year known -> must include content year.
-        file_years = _extract_years_from_text(file_name)
-        if content_year and file_years and content_year not in file_years:
-            continue
+    if prebuilt_found_rows is None:
+        search_titles = _search_titles_for_state(state)
+        candidates = await _fetch_storage_candidates_multi(search_titles or [state.title])
 
-        file_id = str(row.id)
-        if state.content_type == "series":
-            season, episode = _series_season_episode(file_name)
-            override_se = series_overrides.get(file_id) or {}
-            season = int(override_se.get("season") or season or 0)
-            episode = int(override_se.get("episode") or episode or 0)
-            if season <= 0 or episode <= 0:
+        # Manual include pool: admin can attach specific storage files even if title matching misses them.
+        include_ids = {
+            str(x).strip()
+            for x in (getattr(state, "included_file_ids", []) or [])
+            if str(x).strip()
+        }
+        if include_ids:
+            include_rows = await FileSystemItem.find(
+                In(FileSystemItem.id, _cast_ids(list(include_ids)))
+            ).to_list()
+            merged_candidates: dict[str, FileSystemItem] = {
+                str(row.id): row for row in candidates
+            }
+            for row in include_rows:
+                if not _is_video_row(row):
+                    continue
+                merged_candidates[str(row.id)] = row
+            candidates = list(merged_candidates.values())
+
+        for row in candidates:
+            file_name = row.name or ""
+            # Year rule:
+            # - If filename has no year token -> allow.
+            # - If filename has year token(s) and content year known -> must include content year.
+            file_years = _extract_years_from_text(file_name)
+            if content_year and file_years and content_year not in file_years:
                 continue
-            quality = quality_overrides.get(file_id) or _series_quality_from_name(file_name)
-            found_rows.append(
-                {
-                    "file_id": file_id,
-                    "name": file_name,
-                    "size": int(row.size or 0),
-                    "quality": quality,
-                    "season": int(season),
-                    "episode": int(episode),
-                    "source": row.source or "",
-                    "source_label": _source_label(row),
-                    "upload_label": _source_upload_label(row),
-                }
-            )
-        else:
-            quality = quality_overrides.get(file_id) or _movie_quality_from_size(int(row.size or 0))
-            found_rows.append(
-                {
-                    "file_id": file_id,
-                    "name": file_name,
-                    "size": int(row.size or 0),
-                    "quality": quality,
-                    "season": None,
-                    "episode": None,
-                    "source": row.source or "",
-                    "source_label": _source_label(row),
-                    "upload_label": _source_upload_label(row),
-                }
-            )
+
+            file_id = str(row.id)
+            if state.content_type == "series":
+                season, episode = _series_season_episode(file_name)
+                override_se = series_overrides.get(file_id) or {}
+                season = int(override_se.get("season") or season or 0)
+                episode = int(override_se.get("episode") or episode or 0)
+                if season <= 0 or episode <= 0:
+                    continue
+                quality = quality_overrides.get(file_id) or _series_quality_from_name(file_name)
+                found_rows.append(
+                    {
+                        "file_id": file_id,
+                        "name": file_name,
+                        "size": int(row.size or 0),
+                        "quality": quality,
+                        "season": int(season),
+                        "episode": int(episode),
+                        "source": row.source or "",
+                        "source_label": _source_label(row),
+                        "upload_label": _source_upload_label(row),
+                    }
+                )
+            else:
+                quality = quality_overrides.get(file_id) or _movie_quality_from_size(int(row.size or 0))
+                found_rows.append(
+                    {
+                        "file_id": file_id,
+                        "name": file_name,
+                        "size": int(row.size or 0),
+                        "quality": quality,
+                        "season": None,
+                        "episode": None,
+                        "source": row.source or "",
+                        "source_label": _source_label(row),
+                        "upload_label": _source_upload_label(row),
+                    }
+                )
+    else:
+        for row in list(prebuilt_found_rows or []):
+            if not isinstance(row, dict):
+                continue
+            file_id = str(row.get("file_id") or "").strip()
+            if not file_id:
+                continue
+            file_name = str(row.get("name") or "").strip()
+            file_size = int(row.get("size") or 0)
+            src = str(row.get("source") or "").strip().lower()
+            source_label = str(row.get("source_label") or "").strip()
+            upload_label = str(row.get("upload_label") or "").strip()
+            if not source_label:
+                source_label = "Telegram Storage" if src == "storage" else ("Bot Listening" if src == "bot" else "Storage")
+            if not upload_label:
+                upload_label = "Uploaded from Telegram Storage" if src == "storage" else ("Found by Bot Listener" if src == "bot" else "Matched")
+
+            # Year rule:
+            # - If filename has no year token -> allow.
+            # - If filename has year token(s) and content year known -> must include content year.
+            file_years = _extract_years_from_text(file_name)
+            if content_year and file_years and content_year not in file_years:
+                continue
+
+            if state.content_type == "series":
+                base_season = _int_or_none(row.get("season"))
+                base_episode = _int_or_none(row.get("episode"))
+                if not base_season or not base_episode:
+                    guessed_season, guessed_episode = _series_season_episode(file_name)
+                    base_season = base_season or guessed_season
+                    base_episode = base_episode or guessed_episode
+                override_se = series_overrides.get(file_id) or {}
+                season = int(override_se.get("season") or base_season or 0)
+                episode = int(override_se.get("episode") or base_episode or 0)
+                if season <= 0 or episode <= 0:
+                    continue
+                quality = quality_overrides.get(file_id) or _normalize_quality_label(row.get("quality") or "") or _series_quality_from_name(file_name)
+                found_rows.append(
+                    {
+                        "file_id": file_id,
+                        "name": file_name,
+                        "size": file_size,
+                        "quality": quality,
+                        "season": int(season),
+                        "episode": int(episode),
+                        "source": src,
+                        "source_label": source_label,
+                        "upload_label": upload_label,
+                    }
+                )
+            else:
+                quality = quality_overrides.get(file_id) or _normalize_quality_label(row.get("quality") or "") or _movie_quality_from_size(file_size)
+                found_rows.append(
+                    {
+                        "file_id": file_id,
+                        "name": file_name,
+                        "size": file_size,
+                        "quality": quality,
+                        "season": None,
+                        "episode": None,
+                        "source": src,
+                        "source_label": source_label,
+                        "upload_label": upload_label,
+                    }
+                )
 
     # Deduplicate rows by file id.
     uniq: dict[str, dict] = {}
@@ -1592,6 +1660,32 @@ async def _scan_files_for_state(
         upload_ready = False
 
     return found_rows, notes, missing, upload_plan, file_choice_groups, panel, file_status, upload_ready
+
+
+async def _recompute_mass_item_files_fast(
+    row: MassContentState,
+    base_found_rows: list[dict] | None = None,
+) -> None:
+    found_rows, notes, missing, upload_plan, file_choice_groups, panel, file_status, upload_ready = await _scan_files_for_state(
+        row,
+        prebuilt_found_rows=list(base_found_rows or []),
+    )
+    row.matched_files = found_rows
+    row.live_notes = notes
+    row.missing_items = missing
+    row.upload_plan = upload_plan
+    row.file_choice_groups = file_choice_groups
+    row.panel = panel
+    row.file_status = file_status
+    row.upload_ready = bool(upload_ready)
+    row.uploaded = False
+    row.uploaded_at = None
+    row.upload_state = "idle"
+    row.upload_message = ""
+    row.last_error = None
+    row.updated_at = datetime.now()
+    await row.save()
+    await _mass_broadcast_snapshot()
 
 
 async def _upsert_mass_entry(title: str, content_type: str, year: str, source_note: str) -> MassContentState:
@@ -2591,17 +2685,27 @@ async def advance_mass_content_adder_attach_file(
             se_map[file_id] = {"season": int(season_no), "episode": int(episode_no)}
             row.file_season_episode_overrides = se_map
 
-    row.panel = "processing"
-    row.file_status = "pending"
-    row.uploaded = False
-    row.uploaded_at = None
-    row.upload_state = "idle"
-    row.upload_message = ""
-    row.last_error = None
-    row.updated_at = datetime.now()
-    await row.save()
-    _schedule_process(str(row.id), mode="files")
-    await _mass_broadcast_snapshot()
+    seed_rows = list(row.matched_files or [])
+    guessed_quality = _normalize_quality_label(raw_quality) if raw_quality else (
+        _series_quality_from_name(storage_row.name or "")
+        if row.content_type == "series"
+        else _movie_quality_from_size(int(storage_row.size or 0))
+    )
+    season_guess, episode_guess = _series_season_episode(storage_row.name or "")
+    seed_rows.append(
+        {
+            "file_id": file_id,
+            "name": storage_row.name or "",
+            "size": int(storage_row.size or 0),
+            "quality": guessed_quality,
+            "season": int(season_no) if row.content_type == "series" and season_no else (int(season_guess) if row.content_type == "series" and season_guess else None),
+            "episode": int(episode_no) if row.content_type == "series" and episode_no else (int(episode_guess) if row.content_type == "series" and episode_guess else None),
+            "source": (storage_row.source or "").strip().lower(),
+            "source_label": _source_label(storage_row),
+            "upload_label": _source_upload_label(storage_row),
+        }
+    )
+    await _recompute_mass_item_files_fast(row, base_found_rows=seed_rows)
     return {"ok": True}
 
 
@@ -2644,17 +2748,7 @@ async def advance_mass_content_adder_reassign_quality(
             selected_map.pop(key, None)
     row.selected_file_map = selected_map
 
-    row.panel = "processing"
-    row.file_status = "pending"
-    row.uploaded = False
-    row.uploaded_at = None
-    row.upload_state = "idle"
-    row.upload_message = ""
-    row.last_error = None
-    row.updated_at = datetime.now()
-    await row.save()
-    _schedule_process(str(row.id), mode="files")
-    await _mass_broadcast_snapshot()
+    await _recompute_mass_item_files_fast(row, base_found_rows=list(row.matched_files or []))
     return {"ok": True}
 
 
@@ -2686,17 +2780,7 @@ async def advance_mass_content_adder_select_file(
     selected_map = dict(getattr(row, "selected_file_map", {}) or {})
     selected_map[bucket_key] = file_id
     row.selected_file_map = selected_map
-    row.panel = "processing"
-    row.file_status = "pending"
-    row.uploaded = False
-    row.uploaded_at = None
-    row.upload_state = "idle"
-    row.upload_message = ""
-    row.last_error = None
-    row.updated_at = datetime.now()
-    await row.save()
-    _schedule_process(str(row.id), mode="files")
-    await _mass_broadcast_snapshot()
+    await _recompute_mass_item_files_fast(row, base_found_rows=list(row.matched_files or []))
     return {"ok": True}
 
 
@@ -2745,17 +2829,7 @@ async def advance_mass_content_adder_remove_matched_file(
             selected_map.pop(key, None)
     row.selected_file_map = selected_map
 
-    row.panel = "processing"
-    row.file_status = "pending"
-    row.uploaded = False
-    row.uploaded_at = None
-    row.upload_state = "idle"
-    row.upload_message = ""
-    row.last_error = None
-    row.updated_at = datetime.now()
-    await row.save()
-    _schedule_process(str(row.id), mode="files")
-    await _mass_broadcast_snapshot()
+    await _recompute_mass_item_files_fast(row, base_found_rows=list(row.matched_files or []))
     return {"ok": True}
 
 

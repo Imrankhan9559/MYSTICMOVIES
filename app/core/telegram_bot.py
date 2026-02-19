@@ -28,18 +28,10 @@ from app.core.telethon_storage import (
     iter_download as tl_iter_download
 )
 
-# Prefer uvloop before any Pyrogram clients are created
-try:
-    import uvloop
-    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-except Exception:
-    pass
-
-# Ensure a loop exists before Pyrogram Client construction (uvloop can require this)
-try:
-    asyncio.get_event_loop()
-except RuntimeError:
-    asyncio.set_event_loop(asyncio.new_event_loop())
+# NOTE:
+# Event-loop policy is owned by `main.py`/uvicorn lifespan.
+# Do not create/set event loops in this module; doing so can bind Pyrogram tasks
+# to a different loop and cause shutdown warnings on Render restarts.
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -744,7 +736,19 @@ async def _safe_stop_client(client: Client | None, label: str, timeout_sec: floa
     except asyncio.TimeoutError:
         logger.warning("Timed out stopping %s after %.1fs", label, timeout_sec)
     except Exception as e:
-        logger.warning("Failed to stop %s: %s", label, e)
+        err = str(e or "")
+        logger.warning("Failed to stop %s: %s", label, err)
+        # Best-effort fallback for loop mismatch on process recycle.
+        if "different loop" in err.lower():
+            try:
+                session = getattr(client, "session", None)
+                stopper = getattr(session, "stop", None) if session else None
+                if callable(stopper):
+                    maybe = stopper()
+                    if asyncio.iscoroutine(maybe) or isinstance(maybe, asyncio.Future):
+                        await asyncio.wait_for(maybe, timeout=3.0)
+            except Exception:
+                pass
 
 async def _stop_bot_api_task(timeout_sec: float = 5.0) -> None:
     global _bot_api_task
@@ -2110,5 +2114,7 @@ async def stop_telegram():
         _forget_bot_handlers(tg_client)
         _bot_handler_clients.clear()
         _telegram_started = False
+        # Allow pending cancel callbacks to drain before process exit.
+        await asyncio.sleep(0.05)
 
 

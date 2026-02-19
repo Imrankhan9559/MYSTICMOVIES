@@ -1077,7 +1077,7 @@ document.addEventListener("click", async (e) => {
             fd.append("file_id", fileId);
             const out = await postForm(`/advance-mass-content-adder/select-file/${encodeURIComponent(id)}`, fd);
             if (!out.ok) toast(out.data.error || "Failed to save file choice.", "error");
-            else toast("File choice saved. Re-scanning content.", "success");
+            else toast("File choice saved instantly.", "success");
             await fetchState();
             return;
         }
@@ -1091,7 +1091,7 @@ document.addEventListener("click", async (e) => {
             fd.append("file_id", fileId);
             const out = await postForm(`/advance-mass-content-adder/remove-matched-file/${encodeURIComponent(id)}`, fd);
             if (!out.ok) toast(out.data.error || "Failed to remove file.", "error");
-            else toast("File removed from this content. Re-scanning.", "warn");
+            else toast("File removed from this content.", "warn");
             await fetchState();
             return;
         }
@@ -1135,7 +1135,7 @@ document.addEventListener("click", async (e) => {
             }
             const out = await postForm(`/advance-mass-content-adder/attach-file/${encodeURIComponent(id)}`, fd);
             if (!out.ok) toast(out.data.error || "Attach failed.", "error");
-            else toast("File attached. Re-scanning.", "success");
+            else toast("File attached instantly.", "success");
             await fetchState();
             await fetchStoragePickerRows(true);
             return;

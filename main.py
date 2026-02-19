@@ -251,6 +251,12 @@ async def favicon():
         return FileResponse(icon_path)
     return Response(status_code=204)
 
+
+@app.head("/", include_in_schema=False)
+async def root_head_ok():
+    # Some uptime probes/scanners use HEAD; keep it cheap and avoid noisy 405 logs.
+    return Response(status_code=200)
+
 # Include all Routes
 app.include_router(auth.router)
 app.include_router(content.router)
