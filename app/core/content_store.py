@@ -26,7 +26,7 @@ SEASON_TAG_RE = re.compile(
 
 _sync_lock = asyncio.Lock()
 _last_sync_ts = 0.0
-_sync_interval_sec = 120.0
+_sync_interval_sec = float(getattr(settings, "CATALOG_SYNC_INTERVAL_SEC", 240.0) or 240.0)
 
 
 def _normalize_phone(phone: str) -> str:
@@ -495,16 +495,34 @@ async def build_content_groups(
     ensure_sync: bool = True,
 ) -> list[dict]:
     docs = await fetch_content_docs(user, is_admin, limit=limit, ensure_sync=ensure_sync)
-    file_ids: list[str] = []
-    seen_file_ids: set[str] = set()
+    # Fast path: most ContentItem docs already carry full file metadata in `files`.
+    # Avoid large filesystem joins unless a ref lacks basic fields.
+    lookup_ids: list[str] = []
+    seen_lookup_ids: set[str] = set()
     for doc in docs:
-        for file_id in _doc_file_ids(doc):
-            if file_id and file_id not in seen_file_ids:
-                seen_file_ids.add(file_id)
-                file_ids.append(file_id)
+        refs = list(getattr(doc, "files", []) or [])
+        if not refs:
+            for file_id in _doc_file_ids(doc):
+                if file_id and file_id not in seen_lookup_ids:
+                    seen_lookup_ids.add(file_id)
+                    lookup_ids.append(file_id)
+            continue
+        for ref in refs:
+            file_id = str(getattr(ref, "file_id", "") or "").strip()
+            if not file_id:
+                continue
+            has_name = bool((getattr(ref, "name", "") or "").strip())
+            has_size = int(getattr(ref, "size", 0) or 0) > 0
+            has_mime = bool((getattr(ref, "mime_type", "") or "").strip())
+            # Only lookup missing refs.
+            if has_name and (has_size or has_mime):
+                continue
+            if file_id not in seen_lookup_ids:
+                seen_lookup_ids.add(file_id)
+                lookup_ids.append(file_id)
 
     file_map: dict[str, FileSystemItem] = {}
-    cast_ids = _cast_object_ids(file_ids)
+    cast_ids = _cast_object_ids(lookup_ids)
     if cast_ids:
         rows = await FileSystemItem.find(In(FileSystemItem.id, cast_ids)).to_list()
         file_map = {str(row.id): row for row in rows}

@@ -1,8 +1,10 @@
 import os
 import asyncio
 import logging
+import time
+import re
 import uvicorn
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.gzip import GZipMiddleware
@@ -44,6 +46,89 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except Exception:
         return default
+
+
+_REQUEST_TIMING_ENABLED = _env_flag("REQUEST_TIMING_ENABLED", True)
+_REQUEST_TIMING_SLOW_MS = max(1.0, _env_float("REQUEST_TIMING_SLOW_MS", 1200.0))
+_REQUEST_TIMING_LOG_ALL = _env_flag("REQUEST_TIMING_LOG_ALL", False)
+_REQUEST_TIMING_FLUSH_SEC = max(5.0, _env_float("REQUEST_TIMING_FLUSH_SEC", 60.0))
+_REQUEST_TIMING_TOP_N = max(1, _env_int("REQUEST_TIMING_TOP_N", 8))
+_REQUEST_TIMING_EXCLUDE_PATHS = {
+    p.strip() for p in (os.getenv("REQUEST_TIMING_EXCLUDE_PATHS", "/favicon.ico,/static,/healthz").split(",")) if p.strip()
+}
+_REQUEST_TIMING_METRICS: dict[str, dict[str, float | int]] = {}
+_REQUEST_TIMING_LAST_FLUSH_TS = 0.0
+
+
+def _path_timing_excluded(path: str) -> bool:
+    path = (path or "").strip()
+    if not path:
+        return True
+    for prefix in _REQUEST_TIMING_EXCLUDE_PATHS:
+        if path == prefix or path.startswith(prefix):
+            return True
+    return False
+
+
+def _normalize_path_for_metrics(path: str) -> str:
+    cleaned = (path or "").strip() or "/"
+    # Collapse high-cardinality identifiers in routes for useful aggregation.
+    cleaned = re.sub(r"/[0-9a-fA-F]{24}(?=/|$)", "/:oid", cleaned)
+    cleaned = re.sub(
+        r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}(?=/|$)",
+        "/:uuid",
+        cleaned,
+    )
+    cleaned = re.sub(r"/\d+(?=/|$)", "/:n", cleaned)
+    return cleaned
+
+
+def _record_request_metric(path: str, elapsed_ms: float, is_slow: bool) -> None:
+    key = _normalize_path_for_metrics(path)
+    row = _REQUEST_TIMING_METRICS.setdefault(
+        key,
+        {"count": 0, "total_ms": 0.0, "max_ms": 0.0, "slow_count": 0},
+    )
+    row["count"] = int(row["count"]) + 1
+    row["total_ms"] = float(row["total_ms"]) + float(elapsed_ms)
+    if elapsed_ms > float(row["max_ms"]):
+        row["max_ms"] = float(elapsed_ms)
+    if is_slow:
+        row["slow_count"] = int(row["slow_count"]) + 1
+
+
+def _flush_request_metrics_if_due() -> None:
+    global _REQUEST_TIMING_LAST_FLUSH_TS
+    if not _REQUEST_TIMING_ENABLED:
+        return
+    now = time.monotonic()
+    if (now - _REQUEST_TIMING_LAST_FLUSH_TS) < _REQUEST_TIMING_FLUSH_SEC:
+        return
+    _REQUEST_TIMING_LAST_FLUSH_TS = now
+    if not _REQUEST_TIMING_METRICS:
+        return
+
+    rows = []
+    for path, info in _REQUEST_TIMING_METRICS.items():
+        count = int(info.get("count") or 0)
+        if count <= 0:
+            continue
+        total_ms = float(info.get("total_ms") or 0.0)
+        max_ms = float(info.get("max_ms") or 0.0)
+        slow_count = int(info.get("slow_count") or 0)
+        avg_ms = (total_ms / count) if count else 0.0
+        rows.append((path, count, avg_ms, max_ms, slow_count))
+    if not rows:
+        return
+
+    rows.sort(key=lambda item: (item[2], item[3], item[1]), reverse=True)
+    top = rows[:_REQUEST_TIMING_TOP_N]
+    summary = " | ".join(
+        f"{path} count={count} avg={avg_ms:.1f}ms max={max_ms:.1f}ms slow={slow_count}"
+        for path, count, avg_ms, max_ms, slow_count in top
+    )
+    logger.info("HTTP timing top endpoints: %s", summary)
+    _REQUEST_TIMING_METRICS.clear()
 
 
 async def _init_db_with_retry() -> None:
@@ -108,6 +193,45 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MORGANXMYSTIC", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+
+
+@app.middleware("http")
+async def request_timing_middleware(request: Request, call_next):
+    if not _REQUEST_TIMING_ENABLED:
+        return await call_next(request)
+
+    method = (request.method or "").upper()
+    path = request.url.path or "/"
+    if _path_timing_excluded(path):
+        return await call_next(request)
+
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        is_slow = elapsed_ms >= _REQUEST_TIMING_SLOW_MS
+        _record_request_metric(path, elapsed_ms, is_slow=True)
+        logger.exception("HTTP %s %s failed after %.1fms", method, path, elapsed_ms)
+        _flush_request_metrics_if_due()
+        raise
+
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    is_slow = elapsed_ms >= _REQUEST_TIMING_SLOW_MS
+    _record_request_metric(path, elapsed_ms, is_slow=is_slow)
+    response.headers["X-Response-Time"] = f"{elapsed_ms:.1f}ms"
+
+    if _REQUEST_TIMING_LOG_ALL or is_slow or int(response.status_code) >= 500:
+        logger.warning(
+            "HTTP %s %s -> %s in %.1fms",
+            method,
+            path,
+            int(response.status_code),
+            elapsed_ms,
+        )
+
+    _flush_request_metrics_if_due()
+    return response
 
 # --- FIX: Auto-Create Static Directory ---
 # This prevents the "RuntimeError: Directory 'app/static' does not exist" on Koyeb

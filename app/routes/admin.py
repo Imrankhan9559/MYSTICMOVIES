@@ -3,6 +3,8 @@ import re
 import asyncio
 import uuid
 import json
+import time
+import copy
 from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -32,6 +34,29 @@ from app.utils.file_utils import format_size
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+
+_ADMIN_SITE_CACHE: dict[str, object] = {"ts": 0.0, "row": None}
+_ADMIN_BADGES_CACHE: dict[str, object] = {"ts": 0.0, "data": None}
+_ADMIN_PENDING_STORAGE_CACHE: dict[str, object] = {"ts": 0.0, "count": 0}
+_ADMIN_PUBLISHED_GROUPS_CACHE: dict[str, object] = {"ts": 0.0, "groups": None}
+_ADMIN_STORAGE_SUGGEST_CACHE: dict[str, object] = {"ts": 0.0, "rows": None}
+_ADMIN_SITE_CACHE_TTL_SEC = 20.0
+_ADMIN_BADGES_CACHE_TTL_SEC = 12.0
+_ADMIN_GROUPS_CACHE_TTL_SEC = 18.0
+_ADMIN_STORAGE_SUGGEST_TTL_SEC = 25.0
+
+
+def _invalidate_admin_caches() -> None:
+    _ADMIN_SITE_CACHE["ts"] = 0.0
+    _ADMIN_SITE_CACHE["row"] = None
+    _ADMIN_BADGES_CACHE["ts"] = 0.0
+    _ADMIN_BADGES_CACHE["data"] = None
+    _ADMIN_PENDING_STORAGE_CACHE["ts"] = 0.0
+    _ADMIN_PENDING_STORAGE_CACHE["count"] = 0
+    _ADMIN_PUBLISHED_GROUPS_CACHE["ts"] = 0.0
+    _ADMIN_PUBLISHED_GROUPS_CACHE["groups"] = None
+    _ADMIN_STORAGE_SUGGEST_CACHE["ts"] = 0.0
+    _ADMIN_STORAGE_SUGGEST_CACHE["rows"] = None
 
 def _normalize_phone(phone: str) -> str:
     return phone.replace(" ", "")
@@ -164,6 +189,12 @@ def _apply_site_defaults(row: SiteSettings) -> bool:
     return changed
 
 async def _site_settings() -> SiteSettings:
+    now = time.monotonic()
+    cached_row = _ADMIN_SITE_CACHE.get("row")
+    cached_ts = float(_ADMIN_SITE_CACHE.get("ts") or 0.0)
+    if cached_row is not None and (now - cached_ts) <= _ADMIN_SITE_CACHE_TTL_SEC:
+        return cached_row  # type: ignore[return-value]
+
     row = await SiteSettings.find_one(SiteSettings.key == "main")
     if not row:
         row = SiteSettings(key="main")
@@ -172,6 +203,8 @@ async def _site_settings() -> SiteSettings:
     if changed:
         row.updated_at = datetime.now()
         await row.save()
+    _ADMIN_SITE_CACHE["ts"] = now
+    _ADMIN_SITE_CACHE["row"] = row
     return row
 
 
@@ -257,12 +290,44 @@ async def _catalog_counts(groups: list[dict] | None = None) -> dict:
 
 
 async def _admin_badges(groups: list[dict] | None = None) -> dict:
+    if groups is None:
+        now = time.monotonic()
+        cached_ts = float(_ADMIN_BADGES_CACHE.get("ts") or 0.0)
+        cached_data = _ADMIN_BADGES_CACHE.get("data")
+        if cached_data is not None and (now - cached_ts) <= _ADMIN_BADGES_CACHE_TTL_SEC:
+            return dict(cached_data)  # type: ignore[arg-type]
+
+        counts = await _catalog_counts(None)
+        pending_ts = float(_ADMIN_PENDING_STORAGE_CACHE.get("ts") or 0.0)
+        if (now - pending_ts) <= _ADMIN_BADGES_CACHE_TTL_SEC:
+            pending_storage = int(_ADMIN_PENDING_STORAGE_CACHE.get("count") or 0)
+        else:
+            pending_storage = await FileSystemItem.find({
+                "source": "storage",
+                "is_folder": False,
+                "catalog_status": {"$nin": ["published", "used"]}
+            }).count()
+            _ADMIN_PENDING_STORAGE_CACHE["ts"] = now
+            _ADMIN_PENDING_STORAGE_CACHE["count"] = pending_storage
+        counts["pending_storage"] = pending_storage
+        _ADMIN_BADGES_CACHE["ts"] = now
+        _ADMIN_BADGES_CACHE["data"] = dict(counts)
+        return counts
+
     counts = await _catalog_counts(groups)
-    counts["pending_storage"] = await FileSystemItem.find({
-        "source": "storage",
-        "is_folder": False,
-        "catalog_status": {"$nin": ["published", "used"]}
-    }).count()
+    now = time.monotonic()
+    pending_ts = float(_ADMIN_PENDING_STORAGE_CACHE.get("ts") or 0.0)
+    if (now - pending_ts) <= _ADMIN_BADGES_CACHE_TTL_SEC:
+        counts["pending_storage"] = int(_ADMIN_PENDING_STORAGE_CACHE.get("count") or 0)
+    else:
+        pending_storage = await FileSystemItem.find({
+            "source": "storage",
+            "is_folder": False,
+            "catalog_status": {"$nin": ["published", "used"]}
+        }).count()
+        _ADMIN_PENDING_STORAGE_CACHE["ts"] = now
+        _ADMIN_PENDING_STORAGE_CACHE["count"] = pending_storage
+        counts["pending_storage"] = pending_storage
     return counts
 
 
@@ -459,10 +524,16 @@ def _summarize_group(group: dict) -> dict:
     return group
 
 async def _group_storage_suggestions() -> list[dict]:
+    now = time.monotonic()
+    cached_ts = float(_ADMIN_STORAGE_SUGGEST_CACHE.get("ts") or 0.0)
+    cached_rows = _ADMIN_STORAGE_SUGGEST_CACHE.get("rows")
+    if cached_rows is not None and (now - cached_ts) <= _ADMIN_STORAGE_SUGGEST_TTL_SEC:
+        return copy.deepcopy(cached_rows)  # type: ignore[arg-type]
+
     rows = await FileSystemItem.find(
         FileSystemItem.is_folder == False,
         FileSystemItem.source == "storage"
-    ).sort("-created_at").to_list()
+    ).sort("-created_at").limit(4500).to_list()
     groups: dict[tuple, dict] = {}
     for item in rows:
         status = (getattr(item, "catalog_status", "") or "").lower()
@@ -508,9 +579,18 @@ async def _group_storage_suggestions() -> list[dict]:
     for g in groups.values():
         g["items"].sort(key=lambda x: (x.get("season") or 0, x.get("episode") or 0, x.get("quality") or ""))
         _summarize_group(g)
-    return sorted(groups.values(), key=lambda g: g["title"].lower())
+    out = sorted(groups.values(), key=lambda g: g["title"].lower())
+    _ADMIN_STORAGE_SUGGEST_CACHE["ts"] = now
+    _ADMIN_STORAGE_SUGGEST_CACHE["rows"] = copy.deepcopy(out)
+    return out
 
 async def _group_published_catalog() -> list[dict]:
+    now = time.monotonic()
+    cached_ts = float(_ADMIN_PUBLISHED_GROUPS_CACHE.get("ts") or 0.0)
+    cached_groups = _ADMIN_PUBLISHED_GROUPS_CACHE.get("groups")
+    if cached_groups is not None and (now - cached_ts) <= _ADMIN_GROUPS_CACHE_TTL_SEC:
+        return copy.deepcopy(cached_groups)  # type: ignore[arg-type]
+
     await sync_content_catalog(force=False)
     groups = await build_content_groups(None, True, limit=5000, ensure_sync=False)
     for g in groups:
@@ -518,7 +598,10 @@ async def _group_published_catalog() -> list[dict]:
         _summarize_group(g)
         g["release_date_label"] = _format_release_date(g.get("release_date", ""))
         g["content_path"] = _content_path(g.get("title", ""), g.get("year", ""))
-    return sorted(groups, key=lambda g: (g.get("title") or "").lower())
+    out = sorted(groups, key=lambda g: (g.get("title") or "").lower())
+    _ADMIN_PUBLISHED_GROUPS_CACHE["ts"] = now
+    _ADMIN_PUBLISHED_GROUPS_CACHE["groups"] = copy.deepcopy(out)
+    return out
 
 
 async def _find_group_by_item_id(item_id: str) -> dict | None:
@@ -623,17 +706,18 @@ async def main_control(request: Request):
 
     total_users = await User.count()
     total_files = await FileSystemItem.find(FileSystemItem.is_folder == False).count()
-    pending_admin_requests_all = await User.find(User.status == "pending").sort("-requested_at").to_list()
-    pending_requests_all = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").to_list()
-    fulfilled_requests_all = await ContentRequest.find(ContentRequest.status == "fulfilled").sort("-updated_at").to_list()
-    _hydrate_request_links(fulfilled_requests_all, published_groups)
+    pending_admin_requests_total = await User.find(User.status == "pending").count()
+    pending_content_requests_total = await ContentRequest.find(ContentRequest.status == "pending").count()
+    fulfilled_content_requests_total = await ContentRequest.find(ContentRequest.status == "fulfilled").count()
+
+    pending_admin_requests = await User.find(User.status == "pending").sort("-requested_at").limit(5).to_list()
+    pending_requests = await ContentRequest.find(ContentRequest.status == "pending").sort("-created_at").limit(5).to_list()
+    fulfilled_requests = await ContentRequest.find(ContentRequest.status == "fulfilled").sort("-updated_at").limit(5).to_list()
+    _hydrate_request_links(fulfilled_requests, published_groups)
     request_content_options = _build_request_content_options(published_groups)
 
     total_titles = int(base_ctx.get("published_movies") or 0) + int(base_ctx.get("published_series") or 0)
     published_preview = published_groups[:15]
-    pending_content_requests = pending_requests_all[:5]
-    fulfilled_content_requests = fulfilled_requests_all[:5]
-    pending_admin_requests = pending_admin_requests_all[:5]
 
     return templates.TemplateResponse("admin.html", {
         "request": request,
@@ -642,11 +726,11 @@ async def main_control(request: Request):
         "total_files": total_files,
         "total_titles": total_titles,
         "pending_users": pending_admin_requests,
-        "pending_content_requests": pending_content_requests,
-        "fulfilled_content_requests": fulfilled_content_requests,
-        "pending_content_requests_total": len(pending_requests_all),
-        "fulfilled_content_requests_total": len(fulfilled_requests_all),
-        "pending_admin_requests_total": len(pending_admin_requests_all),
+        "pending_content_requests": pending_requests,
+        "fulfilled_content_requests": fulfilled_requests,
+        "pending_content_requests_total": pending_content_requests_total,
+        "fulfilled_content_requests_total": fulfilled_content_requests_total,
+        "pending_admin_requests_total": pending_admin_requests_total,
         "request_content_options": request_content_options,
         "published_preview": published_preview,
     })
@@ -742,6 +826,7 @@ async def save_header_footer_settings(
     site.contact_email = (contact_email or "support@mysticmovies.site").strip()
     site.updated_at = datetime.now()
     await site.save()
+    _invalidate_admin_caches()
     return RedirectResponse("/header-footer-settings?saved=1", status_code=303)
 
 
@@ -1145,6 +1230,7 @@ async def create_slider_item(
         updated_at=datetime.now(),
     )
     await row.insert()
+    _invalidate_admin_caches()
     return RedirectResponse("/manage-slider?saved=1", status_code=303)
 
 
@@ -1181,6 +1267,7 @@ async def update_slider_item(
     row.is_active = _is_truthy(is_active)
     row.updated_at = datetime.now()
     await row.save()
+    _invalidate_admin_caches()
     return RedirectResponse("/manage-slider?saved=1", status_code=303)
 
 
@@ -1192,6 +1279,7 @@ async def delete_slider_item(request: Request, slider_id: str):
     row = await HomeSlider.get(slider_id)
     if row:
         await row.delete()
+    _invalidate_admin_caches()
     return RedirectResponse("/manage-slider?saved=1", status_code=303)
 
 
@@ -1237,27 +1325,42 @@ async def reorder_slider_items(request: Request):
         await row.save()
         updated += 1
         order_value += 10
-
+    _invalidate_admin_caches()
     return {"status": "ok", "updated": updated}
 
 
 @router.get("/users")
 @router.get("/dashboard/users")
-async def users_page(request: Request):
+async def users_page(request: Request, page: int = 1, per_page: int = 300):
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/admin-login")
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
+    try:
+        page = max(int(page), 1)
+    except Exception:
+        page = 1
+    try:
+        per_page = int(per_page)
+    except Exception:
+        per_page = 300
+    per_page = max(50, min(per_page, 800))
+    offset = (page - 1) * per_page
+
     base_ctx = await _admin_context_base(user)
-    all_users = await User.find_all().sort("-created_at").to_list()
-    pending_admin_requests = await User.find(User.status == "pending").sort("-requested_at").to_list()
+    users_total = await User.count()
+    all_users = await User.find_all().sort("-created_at").skip(offset).limit(per_page).to_list()
+    pending_admin_requests = await User.find(User.status == "pending").sort("-requested_at").limit(400).to_list()
     return templates.TemplateResponse("admin_users.html", {
         "request": request,
         **base_ctx,
         "users": all_users,
         "pending_admin_requests": pending_admin_requests,
+        "users_total": users_total,
+        "users_page": page,
+        "users_per_page": per_page,
     })
 
 
@@ -1716,6 +1819,7 @@ async def publish_content_update(
                 await target_folder.save()
 
     await sync_content_catalog(force=True)
+    _invalidate_admin_caches()
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.post("/dashboard/publish-content/add-files")
@@ -1881,6 +1985,7 @@ async def publish_content_delete(
     await ContentItem.find(*doc_filters).delete()
 
     await sync_content_catalog(force=True)
+    _invalidate_admin_caches()
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.post("/dashboard/publish-content/delete-file")
@@ -1906,6 +2011,7 @@ async def publish_content_delete_file(
     except Exception:
         pass
     await sync_content_catalog(force=True)
+    _invalidate_admin_caches()
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.post("/dashboard/publish-content/update-file")
@@ -1975,6 +2081,7 @@ async def publish_content_update_file(
     if old_parent_id and old_parent_id != item.parent_id:
         await _cleanup_parents(old_parent_id)
     await sync_content_catalog(force=True)
+    _invalidate_admin_caches()
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
 @router.get("/dashboard/storage/search")
@@ -2414,6 +2521,7 @@ async def _publish_items(
             asyncio.create_task(sync_content_catalog(force=False))
         except Exception:
             pass
+    _invalidate_admin_caches()
 
 @router.post("/main-control/publish")
 @router.post("/dashboard/publish")
@@ -2650,6 +2758,7 @@ async def main_control_update_metadata(
         await item.save()
 
     await sync_content_catalog(force=True)
+    _invalidate_admin_caches()
     return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/main-control/delete")
@@ -2672,6 +2781,7 @@ async def main_control_delete_group(
         FileSystemItem.title == group_title
     ).delete()
     await sync_content_catalog(force=True)
+    _invalidate_admin_caches()
     return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/token/regenerate")
@@ -2795,6 +2905,7 @@ async def update_content_metadata(
     item.quality = (quality or "").strip()
     await item.save()
     await sync_content_catalog(force=True)
+    _invalidate_admin_caches()
     return RedirectResponse("/dashboard", status_code=303)
 
 @router.post("/admin/request/{request_id}/{action}")
@@ -2849,6 +2960,7 @@ async def update_content_request(
     row.status = action
     row.updated_at = datetime.now()
     await row.save()
+    _invalidate_admin_caches()
     target = (return_to or "/dashboard").strip()
     if not target.startswith("/"):
         target = "/dashboard"
@@ -2867,6 +2979,7 @@ async def delete_user(request: Request, user_phone: str = Form(...), return_to: 
         await target.delete()
         # Optional: Delete their files too
         await FileSystemItem.find(FileSystemItem.owner_phone == user_phone).delete()
+        _invalidate_admin_caches()
     
     target = (return_to or "/dashboard").strip()
     if not target.startswith("/"):
@@ -2892,6 +3005,7 @@ async def set_user_role(
         target.role = role_value
         target.role_requested = role_value
         await target.save()
+        _invalidate_admin_caches()
     return RedirectResponse(return_to or "/dashboard", status_code=303)
 
 @router.post("/admin/approve_user")
@@ -2909,6 +3023,7 @@ async def approve_user(request: Request, user_phone: str = Form(...), return_to:
         elif not getattr(target, "role", ""):
             target.role = "user"
         await target.save()
+        _invalidate_admin_caches()
     target = (return_to or "/dashboard").strip()
     if not target.startswith("/"):
         target = "/dashboard"
@@ -2923,6 +3038,7 @@ async def block_user(request: Request, user_phone: str = Form(...), return_to: s
     if target:
         target.status = "blocked"
         await target.save()
+        _invalidate_admin_caches()
     target = (return_to or "/dashboard").strip()
     if not target.startswith("/"):
         target = "/dashboard"

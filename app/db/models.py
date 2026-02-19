@@ -21,6 +21,11 @@ class User(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "users"
+        indexes = [
+            [("status", 1), ("requested_at", -1)],
+            [("status", 1), ("created_at", -1)],
+            [("role", 1), ("status", 1)],
+        ]
 
 class FilePart(BaseModel):
     telegram_file_id: str
@@ -79,6 +84,15 @@ class FileSystemItem(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "filesystem"
+        indexes = [
+            [("parent_id", 1), ("is_folder", 1), ("name", 1)],
+            [("owner_phone", 1), ("parent_id", 1), ("is_folder", 1)],
+            [("source", 1), ("catalog_status", 1), ("created_at", -1)],
+            [("catalog_status", 1), ("catalog_type", 1), ("title", 1), ("year", 1)],
+            [("catalog_status", 1), ("catalog_type", 1), ("series_title", 1), ("season", 1), ("episode", 1)],
+            [("share_token", 1)],
+            [("name", 1)],
+        ]
 
 
 class ContentItem(Document):
@@ -116,6 +130,9 @@ class ContentItem(Document):
             [("status", 1), ("search_title", 1)],
             [("slug", 1), ("content_type", 1)],
             [("owner_phone", 1), ("status", 1)],
+            [("status", 1), ("content_type", 1), ("release_date", -1)],
+            [("status", 1), ("title", 1)],
+            [("tmdb_id", 1)],
         ]
 
 
@@ -127,6 +144,9 @@ class SharedCollection(Document):
     created_at: datetime = datetime.now()
     class Settings:
         name = "shared_collections"
+        indexes = [
+            [("owner_phone", 1), ("created_at", -1)],
+        ]
 
 class TokenSetting(Document):
     key: str = Field(unique=True)
@@ -147,6 +167,11 @@ class PlaybackProgress(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "playback_progress"
+        indexes = [
+            [("user_type", 1), ("user_key", 1), ("updated_at", -1)],
+            [("item_id", 1), ("updated_at", -1)],
+            [("collection_token", 1), ("updated_at", -1)],
+        ]
 
 
 class WatchParty(Document):
@@ -161,6 +186,11 @@ class WatchParty(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "watch_parties"
+        indexes = [
+            [("token", 1)],
+            [("room_code", 1)],
+            [("updated_at", -1)],
+        ]
 
 
 class WatchPartyMember(Document):
@@ -170,6 +200,9 @@ class WatchPartyMember(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "watch_party_members"
+        indexes = [
+            [("token", 1), ("last_seen", -1)],
+        ]
 
 
 class WatchPartyMessage(Document):
@@ -180,6 +213,9 @@ class WatchPartyMessage(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "watch_party_messages"
+        indexes = [
+            [("token", 1), ("created_at", -1)],
+        ]
 
 
 class SiteSettings(Document):
@@ -213,6 +249,9 @@ class HomeSlider(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "home_sliders"
+        indexes = [
+            [("is_active", 1), ("sort_order", 1), ("created_at", -1)],
+        ]
 
 
 class WatchlistEntry(Document):
@@ -222,6 +261,10 @@ class WatchlistEntry(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "watchlist_entries"
+        indexes = [
+            [("user_phone", 1), ("created_at", -1)],
+            [("user_phone", 1), ("item_id", 1)],
+        ]
 
 
 class ContentRequest(Document):
@@ -240,6 +283,10 @@ class ContentRequest(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "content_requests"
+        indexes = [
+            [("status", 1), ("updated_at", -1)],
+            [("user_phone", 1), ("created_at", -1)],
+        ]
 
 
 class UserActivityEvent(Document):
@@ -256,6 +303,11 @@ class UserActivityEvent(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "user_activity_events"
+        indexes = [
+            [("user_key", 1), ("created_at", -1)],
+            [("action", 1), ("created_at", -1)],
+            [("item_id", 1), ("created_at", -1)],
+        ]
 
 
 class AppSettings(Document):
@@ -304,6 +356,10 @@ class AppRelease(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "app_releases"
+        indexes = [
+            [("is_active", 1), ("build_number", -1)],
+            [("update_mode", 1), ("created_at", -1)],
+        ]
 
 
 class AppBroadcast(Document):
@@ -316,6 +372,10 @@ class AppBroadcast(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "app_broadcasts"
+        indexes = [
+            [("is_active", 1), ("created_at", -1)],
+            [("type", 1), ("created_at", -1)],
+        ]
 
 
 class AppDeviceSession(Document):
@@ -333,6 +393,12 @@ class AppDeviceSession(Document):
     model_config = ConfigDict(extra='allow')
     class Settings:
         name = "app_devices"
+        indexes = [
+            [("device_id", 1), ("updated_at", -1)],
+            [("handshake_token", 1)],
+            [("last_ping_at", -1)],
+            [("user_phone", 1), ("updated_at", -1)],
+        ]
 
 
 class MassContentState(Document):
@@ -375,6 +441,11 @@ class MassContentState(Document):
 
     class Settings:
         name = "mass_content_states"
+        indexes = [
+            [("panel", 1), ("updated_at", -1)],
+            [("uploaded", 1), ("uploaded_at", -1)],
+            [("normalized_title", 1), ("content_type", 1)],
+        ]
 
 async def init_db():
     client = AsyncIOMotorClient(

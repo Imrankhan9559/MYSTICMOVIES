@@ -3,6 +3,7 @@ import uuid
 import json
 import asyncio
 import html
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -11,6 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, Request, Form, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
+from beanie import PydanticObjectId
 from beanie.operators import In
 
 from app.core.config import settings
@@ -33,6 +35,16 @@ templates = Jinja2Templates(directory="app/templates")
 CATALOG_ITEMS_PER_PAGE = 24
 _SUGGEST_CACHE: dict[str, dict] = {}
 _SUGGEST_CACHE_TTL_SEC = 25.0
+_CATALOG_CACHE: dict[str, dict] = {}
+_CATALOG_CACHE_TTL_SEC = 18.0
+_HOME_WARM_TASK: asyncio.Task | None = None
+_HOME_WARM_LAST_TS: float = 0.0
+_SITE_SETTINGS_CACHE: dict[str, object] = {"ts": 0.0, "row": None}
+_SITE_SETTINGS_CACHE_TTL_SEC = 20.0
+_LINK_TOKEN_CACHE: dict[str, object] = {"ts": 0.0, "value": ""}
+_LINK_TOKEN_CACHE_TTL_SEC = 45.0
+_HOME_SLIDER_CACHE: dict[str, object] = {"ts": 0.0, "rows": None}
+_HOME_SLIDER_CACHE_TTL_SEC = 30.0
 
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg")
 QUALITY_RE = re.compile(r"(2160p|1440p|1080p|720p|480p|380p|360p)", re.I)
@@ -147,6 +159,16 @@ def _phone_variants(phone: str) -> list[str]:
     return out
 
 
+def _cast_ids(values: list[str]) -> list[PydanticObjectId]:
+    out: list[PydanticObjectId] = []
+    for value in values or []:
+        try:
+            out.append(PydanticObjectId(str(value)))
+        except Exception:
+            continue
+    return out
+
+
 def _is_admin(user: User | None) -> bool:
     if not user:
         return False
@@ -212,6 +234,51 @@ def _suggest_cache_get(key: str):
 def _suggest_cache_set(key: str, items: list[dict]):
     try:
         _SUGGEST_CACHE[key] = {"ts": asyncio.get_event_loop().time(), "items": list(items or [])}
+    except Exception:
+        pass
+
+
+def _catalog_scope_key(user: User | None, is_admin: bool) -> str:
+    if is_admin:
+        return "admin"
+    if user:
+        phone_key = _normalize_phone(user.phone_number or "") or (user.phone_number or "").strip().lower()
+        return f"user:{phone_key}"
+    admin_key = ",".join(_phone_variants(getattr(settings, "ADMIN_PHONE", "") or ""))
+    return f"guest:{admin_key}"
+
+
+def _catalog_cache_get(scope_key: str, limit: int) -> list[dict] | None:
+    row = _CATALOG_CACHE.get(scope_key)
+    if not row:
+        return None
+    try:
+        now = asyncio.get_event_loop().time()
+        if (now - float(row.get("ts") or 0.0)) > _CATALOG_CACHE_TTL_SEC:
+            _CATALOG_CACHE.pop(scope_key, None)
+            return None
+        items = list(row.get("items") or [])
+        cached_limit = int(row.get("limit") or len(items))
+        if cached_limit < int(limit or 0):
+            return None
+        return items[: int(limit or 0)] if limit else items
+    except Exception:
+        _CATALOG_CACHE.pop(scope_key, None)
+        return None
+
+
+def _catalog_cache_set(scope_key: str, items: list[dict], limit: int) -> None:
+    try:
+        _CATALOG_CACHE[scope_key] = {
+            "ts": asyncio.get_event_loop().time(),
+            "items": list(items or []),
+            "limit": int(limit or len(items or [])),
+        }
+        if len(_CATALOG_CACHE) > 16:
+            # Drop oldest entries to keep cache bounded.
+            ordered = sorted(_CATALOG_CACHE.items(), key=lambda kv: float((kv[1] or {}).get("ts") or 0.0))
+            for key, _value in ordered[:-12]:
+                _CATALOG_CACHE.pop(key, None)
     except Exception:
         pass
 
@@ -956,11 +1023,20 @@ def _item_card(item: FileSystemItem) -> dict:
 
 
 async def _get_link_token() -> str:
+    now = time.monotonic()
+    cached_val = str(_LINK_TOKEN_CACHE.get("value") or "").strip()
+    cached_ts = float(_LINK_TOKEN_CACHE.get("ts") or 0.0)
+    if cached_val and (now - cached_ts) <= _LINK_TOKEN_CACHE_TTL_SEC:
+        return cached_val
+
     token = await TokenSetting.find_one(TokenSetting.key == "link_token")
     if not token:
         token = TokenSetting(key="link_token", value=str(uuid.uuid4()))
         await token.insert()
-    return token.value
+    value = (token.value or "").strip()
+    _LINK_TOKEN_CACHE["ts"] = now
+    _LINK_TOKEN_CACHE["value"] = value
+    return value
 
 
 async def _ensure_share_token(file_id: str) -> str:
@@ -971,6 +1047,48 @@ async def _ensure_share_token(file_id: str) -> str:
         item.share_token = str(uuid.uuid4())
         await item.save()
     return item.share_token
+
+
+async def _ensure_share_tokens(file_ids: list[str]) -> dict[str, str]:
+    unique_ids = []
+    seen_ids: set[str] = set()
+    for raw in file_ids:
+        fid = (raw or "").strip()
+        if not fid or fid in seen_ids:
+            continue
+        seen_ids.add(fid)
+        unique_ids.append(fid)
+    if not unique_ids:
+        return {}
+
+    rows = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(unique_ids))).to_list()
+    token_map: dict[str, str] = {}
+    pending_updates = []
+    for row in rows:
+        row_id = str(row.id)
+        token = (getattr(row, "share_token", "") or "").strip()
+        if not token:
+            token = str(uuid.uuid4())
+            pending_updates.append({"id": row.id, "token": token})
+        token_map[row_id] = token
+
+    if pending_updates:
+        try:
+            from pymongo import UpdateOne as _UpdateOne
+
+            ops = [_UpdateOne({"_id": upd["id"]}, {"$set": {"share_token": upd["token"]}}) for upd in pending_updates]
+            await FileSystemItem.get_motor_collection().bulk_write(ops, ordered=False)
+        except Exception:
+            for upd in pending_updates:
+                try:
+                    row = await FileSystemItem.get(upd["id"])
+                    if row and not (getattr(row, "share_token", "") or "").strip():
+                        row.share_token = upd["token"]
+                        await row.save()
+                except Exception:
+                    continue
+
+    return token_map
 
 
 def _clean_link_rows(value, include_icon: bool = False) -> list[dict]:
@@ -1045,6 +1163,12 @@ def _apply_site_defaults(row: SiteSettings) -> bool:
 
 
 async def _site_settings() -> SiteSettings:
+    now = time.monotonic()
+    cached_row = _SITE_SETTINGS_CACHE.get("row")
+    cached_ts = float(_SITE_SETTINGS_CACHE.get("ts") or 0.0)
+    if cached_row is not None and (now - cached_ts) <= _SITE_SETTINGS_CACHE_TTL_SEC:
+        return cached_row  # type: ignore[return-value]
+
     row = await SiteSettings.find_one(SiteSettings.key == "main")
     if not row:
         row = SiteSettings(key="main")
@@ -1053,6 +1177,8 @@ async def _site_settings() -> SiteSettings:
     if changed:
         row.updated_at = datetime.now()
         await row.save()
+    _SITE_SETTINGS_CACHE["ts"] = now
+    _SITE_SETTINGS_CACHE["row"] = row
     return row
 
 
@@ -1302,6 +1428,12 @@ def _find_group_in_catalog(catalog: list[dict], content_key: str) -> dict | None
 
 
 async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -> list[dict]:
+    limit = max(1, int(limit or 1))
+    scope_key = _catalog_scope_key(user, is_admin)
+    cached = _catalog_cache_get(scope_key, limit)
+    if cached is not None:
+        return cached
+
     # Fast path: build catalog from ContentItem + embedded file refs only.
     # Avoid expensive filesystem joins on every content/search request.
     await sync_content_catalog(force=False, limit=max(limit * 2, 2000))
@@ -1313,6 +1445,7 @@ async def _build_catalog(user: User | None, is_admin: bool, limit: int = 1200) -
         if group:
             groups.append(group)
 
+    _catalog_cache_set(scope_key, groups, limit)
     return groups
 
 async def _build_file_links(items: list[dict], link_token: str, viewer_name: str, limit: int = 3) -> list[dict]:
@@ -1375,6 +1508,20 @@ async def _warm_group_assets(groups: list[dict], limit: int = 16):
             continue
         await _ensure_group_assets(g)
         warmed += 1
+
+
+def _schedule_home_warm(groups: list[dict], limit: int = 12) -> None:
+    global _HOME_WARM_TASK, _HOME_WARM_LAST_TS
+    try:
+        now = asyncio.get_event_loop().time()
+        if _HOME_WARM_TASK and not _HOME_WARM_TASK.done():
+            return
+        if (now - float(_HOME_WARM_LAST_TS or 0.0)) < 20.0:
+            return
+        _HOME_WARM_LAST_TS = now
+        _HOME_WARM_TASK = asyncio.create_task(_warm_group_assets(list(groups or []), limit=limit))
+    except Exception:
+        pass
 
 
 def _normalize_filter_type(value: str) -> str:
@@ -1563,7 +1710,15 @@ async def _build_home_slides(catalog: list[dict], max_slides: int = 8) -> list[d
         (item.get("slug") or _group_slug(item.get("title", ""), item.get("year", ""))): item
         for item in catalog
     }
-    manual_rows = await HomeSlider.find(HomeSlider.is_active == True).sort([("sort_order", 1), ("created_at", -1)]).to_list()
+    now = time.monotonic()
+    cached_rows = _HOME_SLIDER_CACHE.get("rows")
+    cached_ts = float(_HOME_SLIDER_CACHE.get("ts") or 0.0)
+    if cached_rows is not None and (now - cached_ts) <= _HOME_SLIDER_CACHE_TTL_SEC:
+        manual_rows = list(cached_rows)  # type: ignore[arg-type]
+    else:
+        manual_rows = await HomeSlider.find(HomeSlider.is_active == True).sort([("sort_order", 1), ("created_at", -1)]).limit(24).to_list()
+        _HOME_SLIDER_CACHE["ts"] = now
+        _HOME_SLIDER_CACHE["rows"] = list(manual_rows)
     slides: list[dict] = []
     seen_links: set[str] = set()
 
@@ -1627,8 +1782,8 @@ async def home_page(request: Request):
     series = [c for c in catalog if c["type"] == "series"][:24]
     trending = catalog[:18]
     display_groups = trending + movies + series
-    # Warm TMDB in background to keep homepage fast
-    asyncio.create_task(_warm_group_assets(display_groups, limit=12))
+    # Warm TMDB in background with throttle to avoid request-time lag spikes.
+    _schedule_home_warm(display_groups, limit=12)
     return templates.TemplateResponse("home.html", {
         "request": request,
         "user": user,
@@ -1784,6 +1939,18 @@ async def content_details(request: Request, content_key: str):
 
     viewer_name = _viewer_name(user)
     share_params = _share_params(link_token, viewer_name) if viewer_name else ""
+    all_file_ids: list[str] = []
+    for variant in (group.get("qualities") or {}).values():
+        fid = str((variant or {}).get("file_id") or "").strip()
+        if fid:
+            all_file_ids.append(fid)
+    for eps in (group.get("seasons") or {}).values():
+        for variants in (eps or {}).values():
+            for variant in (variants or {}).values():
+                fid = str((variant or {}).get("file_id") or "").strip()
+                if fid:
+                    all_file_ids.append(fid)
+    share_tokens = await _ensure_share_tokens(all_file_ids)
 
     qualities = []
     if group["type"] == "movie":
@@ -1792,7 +1959,8 @@ async def content_details(request: Request, content_key: str):
             key=lambda x: (-_quality_rank(x[0]), x[0]),
         )
         for q, v in movie_qualities:
-            token = await _ensure_share_token(v["file_id"])
+            file_id = str(v.get("file_id") or "")
+            token = share_tokens.get(file_id, "")
             query = f"?{share_params}" if share_params else ""
             size_bytes = int(v.get("size") or 0)
             qualities.append({
@@ -1803,8 +1971,8 @@ async def content_details(request: Request, content_key: str):
                 "download_url": f"/d/{token}{query}" if token and share_params else "",
                 "telegram_url": f"/t/{token}{query}" if token and share_params else "",
                 "watch_url": f"/w/{token}{query}" if token and share_params else "",
-                "admin_url": f"/player/{v['file_id']}",
-                "file_id": v["file_id"],
+                "admin_url": f"/player/{file_id}",
+                "file_id": file_id,
             })
 
     seasons = []
@@ -1817,7 +1985,8 @@ async def content_details(request: Request, content_key: str):
                 quality_rows = []
                 max_size = 0
                 for q, v in sorted(variants.items(), key=lambda x: (-_quality_rank(x[0]), x[0])):
-                    token = await _ensure_share_token(v["file_id"])
+                    file_id = str(v.get("file_id") or "")
+                    token = share_tokens.get(file_id, "")
                     query = f"?{share_params}" if share_params else ""
                     size_bytes = int(v.get("size") or 0)
                     max_size = max(max_size, size_bytes)
@@ -1830,8 +1999,8 @@ async def content_details(request: Request, content_key: str):
                         "download_url": f"/d/{token}{query}" if token and share_params else "",
                         "telegram_url": f"/t/{token}{query}" if token and share_params else "",
                         "watch_url": f"/w/{token}{query}" if token and share_params else "",
-                        "admin_url": f"/player/{v['file_id']}",
-                        "file_id": v["file_id"],
+                        "admin_url": f"/player/{file_id}",
+                        "file_id": file_id,
                     })
                 episode_num = int(ep_no)
                 episodes_payload.append({
@@ -2043,18 +2212,8 @@ async def content_search(request: Request, q: str):
     cached = _suggest_cache_get(cache_key)
     if cached is not None:
         return {"items": cached}
-    query: dict = {"status": "published", "search_title": {"$regex": re.escape(q), "$options": "i"}}
-    if not is_admin:
-        admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
-        if user:
-            query["$or"] = [
-                {"owner_phone": admin_phone},
-                {"owner_phone": user.phone_number},
-                {"collaborators": user.phone_number},
-                {"owner_phone": ""},
-            ]
-        elif admin_phone:
-            query["$or"] = [{"owner_phone": admin_phone}, {"owner_phone": ""}]
+    scope_query = _content_scope_query(user, is_admin)
+    query: dict = {**scope_query, "search_title": {"$regex": re.escape(q), "$options": "i"}}
     docs = await ContentItem.find(query).sort("-updated_at").limit(25).to_list()
     items = []
     for doc in docs:
@@ -2085,27 +2244,18 @@ async def content_search_suggestions(request: Request, q: str = ""):
     search_regex = _build_search_regex(q)
     if not search_regex:
         return {"items": []}
-    query: dict = {
-        "status": "published",
+    search_or = {
         "$or": [
             {"search_title": {"$regex": search_regex, "$options": "i"}},
             {"title": {"$regex": search_regex, "$options": "i"}},
             {"year": {"$regex": re.escape(q), "$options": "i"}},
-        ],
+        ]
     }
-    if not is_admin:
-        admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
-        if user:
-            query["$and"] = [{
-                "$or": [
-                    {"owner_phone": admin_phone},
-                    {"owner_phone": user.phone_number},
-                    {"collaborators": user.phone_number},
-                    {"owner_phone": ""},
-                ]
-            }]
-        elif admin_phone:
-            query["$and"] = [{"$or": [{"owner_phone": admin_phone}, {"owner_phone": ""}]}]
+    scope_query = _content_scope_query(user, is_admin)
+    if "$or" in scope_query:
+        query: dict = {"$and": [scope_query, search_or]}
+    else:
+        query = {**scope_query, **search_or}
 
     docs = await ContentItem.find(query).sort("-updated_at").limit(12).to_list()
     items = []
