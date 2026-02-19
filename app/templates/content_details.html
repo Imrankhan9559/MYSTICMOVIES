@@ -160,27 +160,29 @@
                         | {{ s.qualities|join(", ") }}
                         {% endif %}
                     </div>
-                    {% set season_quality_options = s.full_qualities if s.full_qualities and s.full_qualities|length > 0 else s.qualities %}
-                    {% if season_quality_options and season_quality_options|length > 0 %}
-                        {% if user %}
-                        <button
-                            type="button"
-                            class="season-bundle-trigger px-2.5 py-1 rounded border border-yellow-500/60 text-[11px] font-semibold text-yellow-300 hover:bg-yellow-400 hover:text-black transition"
-                            data-season="{{ s.season }}"
-                            data-qualities="{{ season_quality_options | join(',') }}">
-                            Get Full Season
-                        </button>
-                        {% else %}
-                        <a
-                            href="/login?return_url={{ request.url.path | urlencode }}"
-                            class="px-2.5 py-1 rounded border border-gray-700 text-[11px] font-semibold text-gray-200 hover:border-yellow-500 transition">
-                            Login for Full Season
-                        </a>
-                        {% endif %}
-                    {% endif %}
                 </div>
             </summary>
             <div class="mt-4 space-y-3">
+                {% set season_quality_options = s.full_qualities if s.full_qualities and s.full_qualities|length > 0 else s.qualities %}
+                {% if season_quality_options and season_quality_options|length > 0 %}
+                <div class="flex flex-wrap items-center gap-2 pb-1">
+                    {% if user %}
+                    <button
+                        type="button"
+                        class="season-bundle-trigger px-2.5 py-1 rounded border border-yellow-500/60 text-[11px] font-semibold text-yellow-300 hover:bg-yellow-400 hover:text-black transition"
+                        data-season="{{ s.season }}"
+                        data-qualities="{{ season_quality_options | join(',') }}">
+                        Get Full Season
+                    </button>
+                    {% else %}
+                    <a
+                        href="/login?return_url={{ request.url.path | urlencode }}"
+                        class="px-2.5 py-1 rounded border border-gray-700 text-[11px] font-semibold text-gray-200 hover:border-yellow-500 transition">
+                        Login for Full Season
+                    </a>
+                    {% endif %}
+                </div>
+                {% endif %}
                 {% for ep in s.episodes %}
                 <details class="rounded border border-gray-800 bg-black px-3 py-2">
                     <summary class="cursor-pointer list-none flex items-center justify-between gap-2">

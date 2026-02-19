@@ -19,7 +19,129 @@
 }
 .panel-list::-webkit-scrollbar { width: 8px; }
 .panel-list::-webkit-scrollbar-thumb { background: #2f3b4b; border-radius: 10px; }
-.live-notes-box { max-height: 200px; overflow: auto; }
+.live-notes-box { max-height: 280px; overflow: auto; }
+.live-notes-box {
+    border-color: #304867 !important;
+    background: linear-gradient(180deg, rgba(4,10,19,.98), rgba(3,8,16,.96)) !important;
+}
+.live-notes-title {
+    color: #69d5ff;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    font-weight: 700;
+}
+.notes-list {
+    display: grid;
+    gap: 8px;
+}
+.note-row {
+    border: 1px solid #24354c;
+    border-radius: 10px;
+    padding: 8px 10px;
+    background: rgba(12,18,31,.78);
+}
+.note-row.note-ok { border-color: rgba(34,197,94,.4); background: rgba(5,38,21,.32); }
+.note-row.note-warn { border-color: rgba(245,158,11,.4); background: rgba(62,40,9,.28); }
+.note-row.note-miss { border-color: rgba(248,113,113,.4); background: rgba(59,19,21,.32); }
+.note-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+.note-pill {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid #355376;
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-size: 10px;
+    line-height: 1.45;
+    font-weight: 700;
+    color: #d7e8ff;
+    background: rgba(20,34,54,.88);
+}
+.note-pill.state-ok { border-color: rgba(34,197,94,.55); color: #86efac; background: rgba(6,47,24,.5); }
+.note-pill.state-warn { border-color: rgba(245,158,11,.55); color: #fde68a; background: rgba(66,44,10,.5); }
+.note-pill.state-miss { border-color: rgba(248,113,113,.6); color: #fecaca; background: rgba(69,20,23,.58); }
+.note-text {
+    font-size: 12px;
+    line-height: 1.45;
+    color: #e5efff;
+    word-break: break-word;
+}
+.fullscreen-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 5200;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 14px;
+}
+.fullscreen-layer.active { display: flex; }
+.fullscreen-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(2, 7, 14, .82);
+    backdrop-filter: blur(3px);
+    opacity: 0;
+    transition: opacity .18s ease;
+}
+.fullscreen-layer.active .fullscreen-backdrop { opacity: 1; }
+.fullscreen-shell {
+    position: relative;
+    width: min(1480px, 98vw);
+    max-height: 94vh;
+    border: 1px solid #2d4364;
+    border-radius: 14px;
+    background: linear-gradient(180deg, #081225 0%, #050d1a 100%);
+    box-shadow: 0 22px 56px rgba(0,0,0,.58);
+    overflow: hidden;
+    transform: translateY(10px) scale(.985);
+    opacity: 0;
+    transition: transform .2s ease, opacity .2s ease;
+}
+.fullscreen-layer.active .fullscreen-shell {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+}
+.fullscreen-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #243854;
+    background: linear-gradient(90deg, rgba(6,13,27,.96), rgba(10,22,42,.96));
+}
+.fullscreen-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #eaf3ff;
+}
+.fullscreen-sub {
+    font-size: 11px;
+    color: #9fb9dd;
+}
+.fullscreen-body {
+    max-height: calc(94vh - 62px);
+    overflow: auto;
+    padding: 10px;
+}
+.fullscreen-body .live-notes-box { max-height: 52vh; }
+.fullscreen-list {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+}
+@media (max-width: 767px) {
+    .panel-list { max-height: 50vh; }
+    .fullscreen-layer { padding: 8px; }
+    .fullscreen-shell { width: 100vw; max-height: 98vh; border-radius: 10px; }
+    .fullscreen-body { max-height: calc(98vh - 58px); padding: 8px; }
+}
 .toast-wrap {
     position: fixed;
     right: 18px;
@@ -250,10 +372,11 @@ section.content .card-header {
                 <div class="card card-outline card-warning h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 1: Searching / Processing</h3>
-                        <div class="btn-group btn-group-sm">
-                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/processing">Export CSV</a>
-                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="processing">Clear All</button>
-                        </div>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-xs btn-outline-info panel-fullscreen-btn" data-panel="processing" title="Fullscreen panel"><i class="fas fa-expand"></i></button>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/processing">Export CSV</a>
+                        <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="processing">Clear All</button>
+                    </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-processing" class="panel-list"></div>
@@ -264,10 +387,11 @@ section.content .card-header {
                 <div class="card card-outline card-danger h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 2: TMDB Not Found</h3>
-                        <div class="btn-group btn-group-sm">
-                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/tmdb_not_found">Export CSV</a>
-                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="tmdb_not_found">Clear All</button>
-                        </div>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-xs btn-outline-info panel-fullscreen-btn" data-panel="tmdb_not_found" title="Fullscreen panel"><i class="fas fa-expand"></i></button>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/tmdb_not_found">Export CSV</a>
+                        <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="tmdb_not_found">Clear All</button>
+                    </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-tmdb-not-found" class="panel-list"></div>
@@ -278,10 +402,11 @@ section.content .card-header {
                 <div class="card card-outline card-danger h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 3: File Not Found</h3>
-                        <div class="btn-group btn-group-sm">
-                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/file_not_found">Export CSV</a>
-                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="file_not_found">Clear All</button>
-                        </div>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-xs btn-outline-info panel-fullscreen-btn" data-panel="file_not_found" title="Fullscreen panel"><i class="fas fa-expand"></i></button>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/file_not_found">Export CSV</a>
+                        <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="file_not_found">Clear All</button>
+                    </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-file-not-found" class="panel-list"></div>
@@ -292,10 +417,11 @@ section.content .card-header {
                 <div class="card card-outline card-warning h-100">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 4: Incomplete Content</h3>
-                        <div class="btn-group btn-group-sm">
-                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/incomplete">Export CSV</a>
-                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="incomplete">Clear All</button>
-                        </div>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-xs btn-outline-info panel-fullscreen-btn" data-panel="incomplete" title="Fullscreen panel"><i class="fas fa-expand"></i></button>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/incomplete">Export CSV</a>
+                        <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="incomplete">Clear All</button>
+                    </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-incomplete" class="panel-list"></div>
@@ -306,10 +432,11 @@ section.content .card-header {
                 <div class="card card-outline card-success">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 5: Complete Content</h3>
-                        <div class="btn-group btn-group-sm">
-                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/complete">Export CSV</a>
-                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="complete">Clear All</button>
-                        </div>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-xs btn-outline-info panel-fullscreen-btn" data-panel="complete" title="Fullscreen panel"><i class="fas fa-expand"></i></button>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/complete">Export CSV</a>
+                        <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="complete">Clear All</button>
+                    </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-complete" class="panel-list"></div>
@@ -320,10 +447,11 @@ section.content .card-header {
                 <div class="card card-outline card-info">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 6: Uploading</h3>
-                        <div class="btn-group btn-group-sm">
-                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/uploading">Export CSV</a>
-                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="uploading">Clear All</button>
-                        </div>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-xs btn-outline-info panel-fullscreen-btn" data-panel="uploading" title="Fullscreen panel"><i class="fas fa-expand"></i></button>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/uploading">Export CSV</a>
+                        <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="uploading">Clear All</button>
+                    </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-uploading" class="panel-list"></div>
@@ -334,10 +462,11 @@ section.content .card-header {
                 <div class="card card-outline card-secondary">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 7: Uploaded Content</h3>
-                        <div class="btn-group btn-group-sm">
-                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/uploaded">Export CSV</a>
-                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="uploaded">Clear All</button>
-                        </div>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-xs btn-outline-info panel-fullscreen-btn" data-panel="uploaded" title="Fullscreen panel"><i class="fas fa-expand"></i></button>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/uploaded">Export CSV</a>
+                        <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="uploaded">Clear All</button>
+                    </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-uploaded" class="panel-list"></div>
@@ -348,10 +477,11 @@ section.content .card-header {
                 <div class="card card-outline card-warning">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h3 class="card-title mb-0">Panel 8: Skipped Existing</h3>
-                        <div class="btn-group btn-group-sm">
-                            <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/skipped">Export CSV</a>
-                            <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="skipped">Clear All</button>
-                        </div>
+                    <div class="btn-group btn-group-sm">
+                        <button type="button" class="btn btn-xs btn-outline-info panel-fullscreen-btn" data-panel="skipped" title="Fullscreen panel"><i class="fas fa-expand"></i></button>
+                        <a class="btn btn-xs btn-outline-light" href="/advance-mass-content-adder/export/skipped">Export CSV</a>
+                        <button type="button" class="btn btn-xs btn-outline-danger clear-panel-btn" data-panel="skipped">Clear All</button>
+                    </div>
                     </div>
                     <div class="card-body p-2">
                         <div id="panel-skipped" class="panel-list"></div>
@@ -409,6 +539,19 @@ section.content .card-header {
         </div>
     </div>
 </div>
+<div id="panel-fullscreen-layer" class="fullscreen-layer">
+    <div class="fullscreen-backdrop" data-close-fullscreen="1"></div>
+    <div class="fullscreen-shell">
+        <div class="fullscreen-head">
+            <div>
+                <div id="panel-fullscreen-title" class="fullscreen-title">Panel</div>
+                <div id="panel-fullscreen-sub" class="fullscreen-sub">Fullscreen mode</div>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-light" data-close-fullscreen="1"><i class="fas fa-times mr-1"></i>Close</button>
+        </div>
+        <div id="panel-fullscreen-body" class="fullscreen-body"></div>
+    </div>
+</div>
 {% endblock %}
 
 {% block page_scripts %}
@@ -439,6 +582,16 @@ let wsReconnectTimer = null;
 let wsReconnectAttempts = 0;
 let wsConnected = false;
 const qualityOrder = ["4K", "1080P", "720P", "480P", "360P", "HD"];
+const panelNames = {
+    processing: "Panel 1: Searching / Processing",
+    tmdb_not_found: "Panel 2: TMDB Not Found",
+    file_not_found: "Panel 3: File Not Found",
+    incomplete: "Panel 4: Incomplete Content",
+    complete: "Panel 5: Complete Content",
+    uploading: "Panel 6: Uploading",
+    uploaded: "Panel 7: Uploaded Content",
+    skipped: "Panel 8: Skipped Existing",
+};
 
 const storagePickerBackdrop = document.getElementById("storage-picker-backdrop");
 const storagePickerBody = document.getElementById("storage-picker-body");
@@ -454,6 +607,16 @@ const storagePickerState = {
     query: "",
     offset: 0,
     hasMore: false,
+};
+const fullLayer = document.getElementById("panel-fullscreen-layer");
+const fullTitle = document.getElementById("panel-fullscreen-title");
+const fullSub = document.getElementById("panel-fullscreen-sub");
+const fullBody = document.getElementById("panel-fullscreen-body");
+const fullState = {
+    open: false,
+    mode: "",
+    panel: "",
+    itemId: "",
 };
 
 function toast(message, type = "info", timeout = 2600) {
@@ -508,20 +671,38 @@ function normalizeQuality(value) {
 function notesHtml(item) {
     const notes = Array.isArray(item.live_notes) ? item.live_notes : [];
     if (!notes.length) return `<div class="text-xs text-muted">No note rows yet.</div>`;
-    const preview = notes.slice(0, 12);
-    const extra = notes.slice(12);
-    const previewHtml = `<ul class="mb-0 pl-3">${preview.map(n => {
-        const cls = n.state === "missing" ? "text-danger" : (n.state === "found_partial" ? "text-warning" : "text-success");
-        return `<li class="text-xs ${cls}">${esc(n.text || "")}</li>`;
-    }).join("")}</ul>`;
+    const rowHtml = (n) => {
+        const state = String(n && n.state ? n.state : "").toLowerCase();
+        const rowCls = state === "missing" ? "note-miss" : (state === "found_partial" ? "note-warn" : "note-ok");
+        const statePill = state === "missing"
+            ? `<span class="note-pill state-miss">NOT FOUND</span>`
+            : (state === "found_partial"
+                ? `<span class="note-pill state-warn">PARTIAL</span>`
+                : `<span class="note-pill state-ok">FOUND</span>`);
+        const season = Number(n && n.season ? n.season : 0);
+        const episode = Number(n && n.episode ? n.episode : 0);
+        const quality = normalizeQuality(n && n.quality ? n.quality : "");
+        const meta = [];
+        if (season > 0) meta.push(`<span class="note-pill">S${String(season).padStart(2, "0")}</span>`);
+        if (episode > 0) meta.push(`<span class="note-pill">E${String(episode).padStart(2, "0")}</span>`);
+        if (quality && quality !== "HD") meta.push(`<span class="note-pill">${esc(quality)}</span>`);
+        meta.push(statePill);
+        const text = String((n && (n.text || n.note)) || "").trim();
+        return `
+            <div class="note-row ${rowCls}">
+                <div class="note-meta">${meta.join("")}</div>
+                <div class="note-text">${esc(text || "No detail.")}</div>
+            </div>
+        `;
+    };
+    const preview = notes.slice(0, 16);
+    const extra = notes.slice(16);
+    const previewHtml = `<div class="notes-list">${preview.map(rowHtml).join("")}</div>`;
     if (!extra.length) return previewHtml;
     return `${previewHtml}
         <details class="mt-1">
             <summary class="text-xs text-muted">Show ${extra.length} more notes</summary>
-            <ul class="mb-0 pl-3 mt-1">${extra.map(n => {
-                const cls = n.state === "missing" ? "text-danger" : (n.state === "found_partial" ? "text-warning" : "text-success");
-                return `<li class="text-xs ${cls}">${esc(n.text || "")}</li>`;
-            }).join("")}</ul>
+            <div class="notes-list mt-2">${extra.map(rowHtml).join("")}</div>
         </details>`;
 }
 
@@ -653,6 +834,7 @@ function qualityBoardHtml(item, panelKey) {
 
 function actionsHtml(item, panelKey) {
     const id = esc(item.id);
+    const focus = `<button class="btn btn-xs btn-outline-light mr-1 action-btn" data-action="focus-item" data-id="${id}" data-panel="${esc(panelKey)}"><i class="fas fa-expand-arrows-alt mr-1"></i>Focus</button>`;
     const uploadState = String(item.upload_state || "idle");
     const retryTmdb = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-tmdb" data-id="${id}">Retry TMDB</button>`;
     const retryFiles = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-files" data-id="${id}">Retry Files</button>`;
@@ -663,15 +845,15 @@ function actionsHtml(item, panelKey) {
     const uploadIncomplete = `<button class="btn btn-xs btn-warning mr-1 action-btn" data-action="upload" data-id="${id}" ${uploadDisabled}>${uploadLabel === "Upload" ? "Upload (Warn)" : uploadLabel}</button>`;
     const processSkipped = `<button class="btn btn-xs btn-outline-success mr-1 action-btn" data-action="process-skipped" data-id="${id}">Add Anyway</button>`;
 
-    if (panelKey === "processing") return del;
-    if (panelKey === "tmdb_not_found") return retryTmdb + del;
-    if (panelKey === "file_not_found") return retryFiles + del;
-    if (panelKey === "incomplete") return retryFiles + uploadIncomplete + del;
-    if (panelKey === "complete") return upload + retryFiles + del;
-    if (panelKey === "uploading") return del;
-    if (panelKey === "uploaded") return del;
-    if (panelKey === "skipped") return processSkipped + del;
-    return del;
+    if (panelKey === "processing") return focus + del;
+    if (panelKey === "tmdb_not_found") return focus + retryTmdb + del;
+    if (panelKey === "file_not_found") return focus + retryFiles + del;
+    if (panelKey === "incomplete") return focus + retryFiles + uploadIncomplete + del;
+    if (panelKey === "complete") return focus + upload + retryFiles + del;
+    if (panelKey === "uploading") return focus + del;
+    if (panelKey === "uploaded") return focus + del;
+    if (panelKey === "skipped") return focus + processSkipped + del;
+    return focus + del;
 }
 
 function uploadStageHtml(item, panelKey) {
@@ -749,7 +931,7 @@ function itemHtml(item, panelKey) {
         </div>
     ` : "";
     return `
-        <div class="border border-secondary rounded p-2 mb-2 bg-dark mass-card">
+        <div class="border border-secondary rounded p-2 mb-2 bg-dark mass-card" data-item-id="${id}">
             <div class="d-flex">
                 <div class="mr-2">${poster}</div>
                 <div class="flex-fill">
@@ -768,11 +950,80 @@ function itemHtml(item, panelKey) {
                 </div>
             </div>
             <div class="mt-2 p-2 border border-secondary rounded bg-black live-notes-box">
-                <div class="text-xs text-info mb-1">Live Notes</div>
+                <div class="text-xs mb-1 live-notes-title">Live Notes</div>
                 ${notesHtml(item)}
             </div>
         </div>
     `;
+}
+
+function findItemById(itemId) {
+    const panels = latestState && latestState.panels ? latestState.panels : {};
+    for (const key of Object.keys(panels || {})) {
+        const list = Array.isArray(panels[key]) ? panels[key] : [];
+        for (const row of list) {
+            if (String(row.id || "") === String(itemId || "")) {
+                return { panel: key, item: row };
+            }
+        }
+    }
+    return null;
+}
+
+function closeFullscreen() {
+    fullState.open = false;
+    fullState.mode = "";
+    fullState.panel = "";
+    fullState.itemId = "";
+    if (fullLayer) fullLayer.classList.remove("active");
+}
+
+function openFullscreenPanel(panelKey) {
+    fullState.open = true;
+    fullState.mode = "panel";
+    fullState.panel = String(panelKey || "").trim();
+    fullState.itemId = "";
+    if (fullLayer) {
+        fullLayer.classList.add("active");
+    }
+    renderFullscreen();
+}
+
+function openFullscreenItem(itemId, panelKey = "") {
+    fullState.open = true;
+    fullState.mode = "item";
+    fullState.itemId = String(itemId || "").trim();
+    fullState.panel = String(panelKey || "").trim();
+    if (fullLayer) {
+        fullLayer.classList.add("active");
+    }
+    renderFullscreen();
+}
+
+function renderFullscreen() {
+    if (!fullState.open || !fullBody || !fullTitle || !fullSub) return;
+    const panels = latestState && latestState.panels ? latestState.panels : {};
+    if (fullState.mode === "panel") {
+        const panelKey = fullState.panel;
+        const list = Array.isArray(panels[panelKey]) ? panels[panelKey] : [];
+        fullTitle.textContent = panelNames[panelKey] || panelKey || "Panel";
+        fullSub.textContent = `${list.length} item(s)`;
+        const view = list.slice(0, 220);
+        fullBody.innerHTML = `<div class="fullscreen-list">${view.length ? view.map(row => itemHtml(row, panelKey)).join("") : `<div class="text-muted p-3">No entries.</div>`}</div>`;
+        return;
+    }
+    if (fullState.mode === "item") {
+        const found = findItemById(fullState.itemId);
+        if (!found || !found.item) {
+            fullTitle.textContent = "Content Focus";
+            fullSub.textContent = "Item no longer available in panels.";
+            fullBody.innerHTML = `<div class="text-warning p-3">This item moved or no longer exists in live panels.</div>`;
+            return;
+        }
+        fullTitle.textContent = found.item.title || "Content Focus";
+        fullSub.textContent = panelNames[found.panel] || found.panel || "Panel";
+        fullBody.innerHTML = `<div class="fullscreen-list">${itemHtml(found.item, found.panel)}</div>`;
+    }
 }
 
 function renderPanels(snapshot) {
@@ -823,6 +1074,9 @@ function renderPanels(snapshot) {
         : "";
     const syncTxt = wsConnected ? "Live" : "Polling";
     statusBanner.textContent = `Total: ${Number(snapshot.total || 0)} | Processing: ${Number(counts.processing || 0)} | TMDB Not Found: ${Number(counts.tmdb_not_found || 0)} | File Not Found: ${Number(counts.file_not_found || 0)} | Incomplete: ${Number(counts.incomplete || 0)} | Complete: ${Number(counts.complete || 0)} | Uploading: ${Number(counts.uploading || 0)} | Uploaded: ${Number(counts.uploaded || 0)} | Skipped: ${Number(counts.skipped || 0)} | Workers: P${Number(workers.process_active || 0)}/U${Number(workers.upload_active || 0)}${importTxt} | Sync: ${syncTxt}`;
+    if (fullState.open) {
+        renderFullscreen();
+    }
 }
 
 function scheduleRender(snapshot) {
@@ -987,6 +1241,25 @@ document.getElementById("mass-manual-form").addEventListener("submit", async (e)
 
 document.getElementById("refresh-now-btn").addEventListener("click", fetchState);
 
+document.addEventListener("click", (e) => {
+    const btn = e.target.closest(".panel-fullscreen-btn");
+    if (!btn) return;
+    const panel = String(btn.dataset.panel || "").trim();
+    if (!panel) return;
+    openFullscreenPanel(panel);
+});
+
+document.addEventListener("click", (e) => {
+    if (!e.target.closest("[data-close-fullscreen='1']")) return;
+    closeFullscreen();
+});
+
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && fullState.open) {
+        closeFullscreen();
+    }
+});
+
 document.addEventListener("click", async (e) => {
     const btn = e.target.closest(".clear-panel-btn");
     if (!btn) return;
@@ -1044,6 +1317,10 @@ document.addEventListener("click", async (e) => {
             if (!out.ok) toast(out.data.error || "Delete failed.", "error");
             else toast("Item deleted.", "warn");
             await fetchState();
+            return;
+        }
+        if (action === "focus-item") {
+            openFullscreenItem(id, btn.dataset.panel || "");
             return;
         }
         if (action === "retry-tmdb") {
