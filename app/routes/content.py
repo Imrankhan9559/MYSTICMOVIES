@@ -10,7 +10,7 @@ import urllib.request
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Request, Form, HTTPException
+from fastapi import APIRouter, Request, Form, HTTPException, Body
 from fastapi.responses import JSONResponse, RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from beanie import PydanticObjectId
@@ -27,6 +27,7 @@ from app.db.models import (
     ContentRequest,
     SiteSettings,
     HomeSlider,
+    SharedCollection,
 )
 from app.routes.dashboard import get_current_user
 from app.utils.file_utils import format_size
@@ -66,6 +67,26 @@ TRASH_RE = re.compile(
 )
 SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
 SEASON_TAG_RE = re.compile(r"\bS\d{1,2}E\d{1,3}\b|\bS\d{1,2}\b|\bE\d{1,3}\b|\bSeason\s?\d{1,2}\b|\bEpisode\s?\d{1,3}\b", re.I)
+
+
+def invalidate_public_catalog_cache() -> None:
+    try:
+        _CATALOG_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        _RELATED_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        _SUGGEST_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        _HOME_SLIDER_CACHE["ts"] = 0.0
+        _HOME_SLIDER_CACHE["rows"] = None
+    except Exception:
+        pass
 
 def _quality_rank(q: str) -> int:
     norm = re.sub(r"\s+", "", (q or "").upper())
@@ -1130,6 +1151,40 @@ async def _ensure_share_tokens(file_ids: list[str]) -> dict[str, str]:
     return token_map
 
 
+async def _get_or_create_shared_bundle(owner_phone: str, bundle_name: str, item_ids: list[str]) -> str:
+    clean_ids: list[str] = []
+    seen: set[str] = set()
+    for raw in item_ids:
+        fid = str(raw or "").strip()
+        if not fid or fid in seen:
+            continue
+        seen.add(fid)
+        clean_ids.append(fid)
+    if not clean_ids:
+        return ""
+
+    existing = await SharedCollection.find_one(
+        SharedCollection.owner_phone == owner_phone,
+        SharedCollection.name == bundle_name,
+    )
+    if existing:
+        existing_ids = [str(x or "").strip() for x in (existing.item_ids or []) if str(x or "").strip()]
+        if existing_ids != clean_ids:
+            existing.item_ids = clean_ids
+            await existing.save()
+        return str(existing.token or "").strip()
+
+    token = str(uuid.uuid4())
+    bundle = SharedCollection(
+        token=token,
+        item_ids=clean_ids,
+        owner_phone=owner_phone,
+        name=bundle_name,
+    )
+    await bundle.insert()
+    return token
+
+
 def _clean_link_rows(value, include_icon: bool = False) -> list[dict]:
     rows = value if isinstance(value, list) else []
     cleaned: list[dict] = []
@@ -2058,10 +2113,12 @@ async def content_details(request: Request, content_key: str):
         for s_no, eps in sorted(group["seasons"].items(), key=lambda x: int(x[0])):
             season_titles = (group.get("episode_titles", {}) or {}).get(s_no, {})
             season_qualities = set()
+            season_quality_coverage: dict[str, int] = {}
             episodes_payload = []
             for ep_no, variants in sorted(eps.items(), key=lambda x: int(x[0])):
                 quality_rows = []
                 max_size = 0
+                episode_quality_labels: set[str] = set()
                 for q, v in sorted(variants.items(), key=lambda x: (-_quality_rank(x[0]), x[0])):
                     file_id = str(v.get("file_id") or "")
                     token = share_tokens.get(file_id, "")
@@ -2069,6 +2126,7 @@ async def content_details(request: Request, content_key: str):
                     size_bytes = int(v.get("size") or 0)
                     max_size = max(max_size, size_bytes)
                     season_qualities.add(q)
+                    episode_quality_labels.add(q)
                     quality_rows.append({
                         "label": q,
                         "size": size_bytes,
@@ -2080,6 +2138,8 @@ async def content_details(request: Request, content_key: str):
                         "admin_url": f"/player/{file_id}",
                         "file_id": file_id,
                     })
+                for q_label in episode_quality_labels:
+                    season_quality_coverage[q_label] = int(season_quality_coverage.get(q_label, 0) or 0) + 1
                 episode_num = int(ep_no)
                 episodes_payload.append({
                     "episode": episode_num,
@@ -2089,9 +2149,14 @@ async def content_details(request: Request, content_key: str):
                     "display_size": max_size,
                     "display_size_label": format_size(max_size),
                 })
+            full_season_qualities = sorted(
+                [q for q, count in season_quality_coverage.items() if int(count or 0) >= len(episodes_payload)],
+                key=lambda q: (-_quality_rank(q), q),
+            )
             seasons.append({
                 "season": s_no,
                 "qualities": sorted(season_qualities, key=lambda q: (-_quality_rank(q), q)),
+                "full_qualities": full_season_qualities,
                 "episode_count": len(episodes_payload),
                 "episodes": episodes_payload,
             })
@@ -2125,6 +2190,136 @@ async def content_details(request: Request, content_key: str):
         "link_token": link_token,
         "viewer_name": viewer_name,
     })
+
+
+@router.post("/content/details/{content_key}/season-bundle")
+async def content_season_bundle(request: Request, content_key: str, payload: dict = Body(...)):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse(
+            {"ok": False, "auth_required": True, "message": "Login required."},
+            status_code=401,
+        )
+
+    is_admin = _is_admin(user)
+    content_key = (content_key or "").strip()
+    season_no_raw = payload.get("season")
+    quality_raw = str(payload.get("quality") or "").strip()
+    action = str(payload.get("action") or "download").strip().lower()
+    allow_partial = bool(payload.get("allow_partial"))
+
+    try:
+        season_no = int(season_no_raw)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid season number."}, status_code=400)
+    if season_no <= 0:
+        return JSONResponse({"ok": False, "error": "Invalid season number."}, status_code=400)
+    if not quality_raw:
+        return JSONResponse({"ok": False, "error": "Quality is required."}, status_code=400)
+
+    doc = await _content_doc_from_key(content_key, user, is_admin)
+    group = _group_from_content_doc(doc) if doc else None
+    if not group:
+        catalog = await _build_catalog(user, is_admin, limit=1500)
+        group = _find_group_in_catalog(catalog, content_key)
+    if not group:
+        return JSONResponse({"ok": False, "error": "Content not found."}, status_code=404)
+    if str(group.get("type") or "").lower() != "series":
+        return JSONResponse({"ok": False, "error": "Season bundle is available for series only."}, status_code=400)
+
+    season_bucket = (group.get("seasons") or {}).get(season_no) or (group.get("seasons") or {}).get(str(season_no))
+    if not season_bucket or not isinstance(season_bucket, dict):
+        return JSONResponse({"ok": False, "error": f"Season {season_no} not found."}, status_code=404)
+
+    target_quality = _compact_quality_label(quality_raw) or quality_raw.strip().upper()
+    episode_ids: list[tuple[int, str]] = []
+    missing_episodes: list[int] = []
+    for ep_raw, variants in sorted(season_bucket.items(), key=lambda x: int(x[0])):
+        try:
+            ep_no = int(ep_raw)
+        except Exception:
+            continue
+        if not isinstance(variants, dict):
+            missing_episodes.append(ep_no)
+            continue
+
+        selected_variant = None
+        for q_label, q_data in variants.items():
+            norm_q = _compact_quality_label(str(q_label or "")) or str(q_label or "").strip().upper()
+            if norm_q == target_quality:
+                selected_variant = q_data
+                break
+        if not selected_variant:
+            missing_episodes.append(ep_no)
+            continue
+
+        file_id = str((selected_variant or {}).get("file_id") or "").strip()
+        if not file_id:
+            missing_episodes.append(ep_no)
+            continue
+        episode_ids.append((ep_no, file_id))
+
+    if not episode_ids:
+        return JSONResponse(
+            {"ok": False, "error": f"No files found for Season {season_no} at {target_quality}."},
+            status_code=404,
+        )
+
+    if missing_episodes and not allow_partial:
+        return JSONResponse(
+            {
+                "ok": False,
+                "needs_confirm": True,
+                "partial": True,
+                "message": f"Season {season_no} is incomplete at {target_quality}.",
+                "available_count": len(episode_ids),
+                "total_count": len(season_bucket),
+                "missing_episodes": missing_episodes,
+            },
+            status_code=409,
+        )
+
+    ordered_file_ids = [fid for _, fid in sorted(episode_ids, key=lambda x: x[0])]
+    bundle_name = f"{(group.get('title') or 'Series').strip()} - Season {season_no} - {target_quality}"
+    bundle_token = await _get_or_create_shared_bundle(user.phone_number, bundle_name, ordered_file_ids)
+    if not bundle_token:
+        return JSONResponse({"ok": False, "error": "Could not create season bundle."}, status_code=500)
+
+    link_token = await _get_link_token()
+    viewer_name = _viewer_name(user)
+    share_params = _share_params(link_token, viewer_name) if viewer_name else ""
+    query = f"?{share_params}" if share_params else ""
+    download_query = f"{query}&nozip=1" if query else "?nozip=1"
+    urls = {
+        "watch": f"/s/{bundle_token}{query}",
+        "download": f"/d/{bundle_token}{download_query}",
+        "telegram": f"/t/{bundle_token}{query}",
+        "watch_together": f"/w/{bundle_token}{query}",
+    }
+    action_to_url = {
+        "watch": urls["watch"],
+        "download": urls["download"],
+        "telegram": urls["telegram"],
+        "watch_together": urls["watch_together"],
+        "watch_together_season": urls["watch_together"],
+    }
+    open_url = action_to_url.get(action, urls["download"])
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "season": season_no,
+            "quality": target_quality,
+            "bundle_token": bundle_token,
+            "available_count": len(ordered_file_ids),
+            "total_count": len(season_bucket),
+            "partial": bool(missing_episodes),
+            "missing_episodes": missing_episodes,
+            "urls": urls,
+            "open_url": open_url,
+        },
+        status_code=200,
+    )
 
 
 @router.get("/content/details/{content_key}/related")

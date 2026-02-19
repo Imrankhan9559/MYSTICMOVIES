@@ -1118,8 +1118,9 @@ async def public_download_token(request: Request, token: str, range: str = Heade
         raise HTTPException(404, "No video files found.")
 
     video_items = sorted(video_items, key=lambda i: _natural_key(i.name))
+    force_multi = (request.query_params.get("nozip") or "").strip().lower() in {"1", "true", "yes", "on"}
 
-    if len(video_items) > 30:
+    if len(video_items) > 30 and not force_multi:
         temp_dir = tempfile.mkdtemp()
         zip_filename = f"Mystic_Bundle_{uuid.uuid4().hex[:6]}.zip"
         zip_path = os.path.join(tempfile.gettempdir(), zip_filename)

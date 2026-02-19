@@ -594,12 +594,20 @@ def _is_video_row(item: FileSystemItem) -> bool:
 
 def _source_label(item: FileSystemItem) -> str:
     source = (item.source or "").strip().lower()
-    return "Bot Listening" if source == "bot" else "Telegram Storage"
+    if source == "bot":
+        return "Bot Listening"
+    if source == "upload":
+        return "Dashboard Upload"
+    return "Telegram Storage"
 
 
 def _source_upload_label(item: FileSystemItem) -> str:
     source = (item.source or "").strip().lower()
-    return "Uploaded from Bot Listener" if source == "bot" else "Uploaded from Telegram Storage"
+    if source == "bot":
+        return "Uploaded from Bot Listener"
+    if source == "upload":
+        return "Uploaded from Dashboard"
+    return "Uploaded from Telegram Storage"
 
 
 def _title_match(target_titles: list[str], file_name: str, row_title: str = "", row_series_title: str = "") -> bool:
@@ -960,6 +968,7 @@ async def _get_storage_pool_cached() -> list[FileSystemItem]:
         "$or": [
             {"source": "bot"},
             {"source": "storage", "catalog_status": {"$nin": ["published", "used"]}},
+            {"source": "upload", "catalog_status": {"$nin": ["published", "used"]}},
         ],
     }
     fresh = await FileSystemItem.find(query).sort("-created_at").limit(5500).to_list()
@@ -1011,6 +1020,7 @@ async def _fetch_storage_candidates_multi(search_titles: list[str]) -> list[File
                     "$or": [
                         {"source": "bot"},
                         {"source": "storage", "catalog_status": {"$nin": ["published", "used"]}},
+                        {"source": "upload", "catalog_status": {"$nin": ["published", "used"]}},
                     ]
                 },
             ],
@@ -2754,8 +2764,11 @@ async def advance_mass_content_storage_search(
 
     query: dict[str, Any] = {
         "is_folder": False,
-        "source": "storage",
-        "catalog_status": {"$nin": ["published", "used"]},
+        "$or": [
+            {"source": "bot"},
+            {"source": "storage", "catalog_status": {"$nin": ["published", "used"]}},
+            {"source": "upload", "catalog_status": {"$nin": ["published", "used"]}},
+        ],
     }
     if q:
         search_regex = _build_title_regex(q)
@@ -2815,8 +2828,12 @@ async def advance_mass_content_adder_attach_file(
     storage_row = await FileSystemItem.get(file_id)
     if not storage_row or storage_row.is_folder:
         return JSONResponse({"ok": False, "error": "File not found."}, status_code=404)
-    if (storage_row.source or "").strip().lower() != "storage":
-        return JSONResponse({"ok": False, "error": "Only storage files can be attached here."}, status_code=400)
+    source = (storage_row.source or "").strip().lower()
+    if source not in {"storage", "bot", "upload"}:
+        return JSONResponse({"ok": False, "error": "Only bot/storage/upload files can be attached here."}, status_code=400)
+    status = (storage_row.catalog_status or "").strip().lower()
+    if status in {"published", "used"}:
+        return JSONResponse({"ok": False, "error": "This file is already published/used."}, status_code=400)
     if not _is_video_row(storage_row):
         return JSONResponse({"ok": False, "error": "Selected item is not a video file."}, status_code=400)
 
@@ -3375,7 +3392,7 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
                     cast_profiles=list(row.cast_profiles or []),
                     tmdb_id=row.tmdb_id,
                     overrides=overrides,
-                    sync_force=False,
+                    sync_force=True,
                 )
                 _STORAGE_POOL_CACHE["rows"] = []
                 _STORAGE_POOL_CACHE["expires_at"] = datetime.min

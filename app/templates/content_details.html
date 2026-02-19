@@ -153,10 +153,30 @@
         <details class="rounded-lg border border-gray-800 bg-gray-900 px-4 py-3">
             <summary class="cursor-pointer list-none flex items-center justify-between gap-3">
                 <div class="text-white font-semibold">Season {{ s.season }}</div>
-                <div class="text-xs text-gray-400">
-                    {{ s.episode_count }} Episodes
-                    {% if s.qualities and s.qualities|length > 0 %}
-                    | {{ s.qualities|join(", ") }}
+                <div class="flex items-center gap-2">
+                    <div class="text-xs text-gray-400">
+                        {{ s.episode_count }} Episodes
+                        {% if s.qualities and s.qualities|length > 0 %}
+                        | {{ s.qualities|join(", ") }}
+                        {% endif %}
+                    </div>
+                    {% set season_quality_options = s.full_qualities if s.full_qualities and s.full_qualities|length > 0 else s.qualities %}
+                    {% if season_quality_options and season_quality_options|length > 0 %}
+                        {% if user %}
+                        <button
+                            type="button"
+                            class="season-bundle-trigger px-2.5 py-1 rounded border border-yellow-500/60 text-[11px] font-semibold text-yellow-300 hover:bg-yellow-400 hover:text-black transition"
+                            data-season="{{ s.season }}"
+                            data-qualities="{{ season_quality_options | join(',') }}">
+                            Get Full Season
+                        </button>
+                        {% else %}
+                        <a
+                            href="/login?return_url={{ request.url.path | urlencode }}"
+                            class="px-2.5 py-1 rounded border border-gray-700 text-[11px] font-semibold text-gray-200 hover:border-yellow-500 transition">
+                            Login for Full Season
+                        </a>
+                        {% endif %}
                     {% endif %}
                 </div>
             </summary>
@@ -205,6 +225,44 @@
     <div class="text-sm text-gray-400">No episodes available for this series yet.</div>
     {% endif %}
 </section>
+
+{% if user %}
+<div id="seasonBundleModal" class="fixed inset-0 z-[80] hidden">
+    <div class="absolute inset-0 bg-black/70 backdrop-blur-[1px]" data-close-season-modal="1"></div>
+    <div class="absolute inset-0 p-4 sm:p-6 flex items-center justify-center">
+        <div id="seasonBundleDialog" class="w-full max-w-2xl rounded-2xl border border-gray-700 bg-gray-950 shadow-2xl transform transition-all duration-200 scale-95 opacity-0">
+            <div class="p-4 sm:p-5 border-b border-gray-800 flex items-center justify-between">
+                <div>
+                    <h3 id="seasonModalTitle" class="text-lg font-bold text-white">Get Full Season</h3>
+                    <p id="seasonModalSub" class="text-xs text-gray-400 mt-1">Choose quality and action.</p>
+                </div>
+                <button type="button" class="h-8 w-8 rounded-full border border-gray-700 text-gray-300 hover:border-yellow-500 hover:text-yellow-300 transition" data-close-season-modal="1">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="p-4 sm:p-5">
+                <div class="text-xs uppercase tracking-widest text-gray-500 mb-2">Available Qualities</div>
+                <div id="seasonQualityOptions" class="flex flex-wrap gap-2"></div>
+                <div id="seasonModalStatus" class="mt-3 text-xs text-gray-400 min-h-[20px]"></div>
+                <div class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <button type="button" class="season-action-btn px-3 py-2 rounded bg-yellow-400 text-black font-bold text-sm disabled:opacity-40 disabled:cursor-not-allowed transition" data-action="download" disabled>
+                        <i class="fas fa-download mr-2"></i>Download Season
+                    </button>
+                    <button type="button" class="season-action-btn px-3 py-2 rounded border border-gray-700 text-gray-100 font-semibold text-sm hover:border-yellow-500 disabled:opacity-40 disabled:cursor-not-allowed transition" data-action="watch" disabled>
+                        <i class="fas fa-play mr-2"></i>Watch Season
+                    </button>
+                    <button type="button" class="season-action-btn px-3 py-2 rounded border border-gray-700 text-gray-100 font-semibold text-sm hover:border-yellow-500 disabled:opacity-40 disabled:cursor-not-allowed transition" data-action="telegram" disabled>
+                        <i class="fab fa-telegram mr-2"></i>Get Full Season in Telegram
+                    </button>
+                    <button type="button" class="season-action-btn px-3 py-2 rounded border border-gray-700 text-gray-100 font-semibold text-sm hover:border-yellow-500 disabled:opacity-40 disabled:cursor-not-allowed transition" data-action="watch_together" disabled>
+                        <i class="fas fa-users mr-2"></i>Watch Together
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 {% endif %}
 
 <section id="relatedSection" data-endpoint="/content/details/{{ item.slug or item.id }}/related" class="rounded-2xl border border-gray-800 bg-gray-950 p-5 sm:p-8 mb-6">
@@ -279,6 +337,192 @@ if (trailerJumpBtn && trailerSection) {
         trailerPlayer.src = `${baseSrc}${joiner}autoplay=1`;
     });
 }
+</script>
+{% endif %}
+{% if item.type == "series" and user %}
+<script>
+(() => {
+    const contentKey = {{ (item.slug or item.id)|tojson }};
+    const modal = document.getElementById("seasonBundleModal");
+    const dialog = document.getElementById("seasonBundleDialog");
+    const titleEl = document.getElementById("seasonModalTitle");
+    const subEl = document.getElementById("seasonModalSub");
+    const statusEl = document.getElementById("seasonModalStatus");
+    const qualityWrap = document.getElementById("seasonQualityOptions");
+    const actionButtons = Array.from(document.querySelectorAll(".season-action-btn"));
+    const triggers = Array.from(document.querySelectorAll(".season-bundle-trigger"));
+    if (!modal || !dialog || !qualityWrap || !statusEl || !triggers.length) return;
+
+    const state = {
+        season: null,
+        quality: "",
+        qualities: [],
+        busy: false,
+        cache: new Map(),
+    };
+
+    const parseQualities = (raw) => String(raw || "")
+        .split(",")
+        .map(x => x.trim())
+        .filter(Boolean);
+
+    const setStatus = (text, tone = "muted") => {
+        statusEl.textContent = text || "";
+        statusEl.className = "mt-3 text-xs min-h-[20px]";
+        if (tone === "error") statusEl.classList.add("text-red-400");
+        else if (tone === "ok") statusEl.classList.add("text-emerald-400");
+        else statusEl.classList.add("text-gray-400");
+    };
+
+    const setBusy = (busy) => {
+        state.busy = !!busy;
+        for (const btn of actionButtons) {
+            const disabled = !state.quality || busy;
+            btn.disabled = disabled;
+            btn.classList.toggle("opacity-50", disabled);
+            btn.classList.toggle("cursor-not-allowed", disabled);
+        }
+    };
+
+    const closeModal = () => {
+        dialog.classList.remove("scale-100", "opacity-100");
+        dialog.classList.add("scale-95", "opacity-0");
+        setTimeout(() => {
+            modal.classList.add("hidden");
+        }, 140);
+    };
+
+    const renderQualityChips = () => {
+        qualityWrap.innerHTML = "";
+        for (const quality of state.qualities) {
+            const chip = document.createElement("button");
+            chip.type = "button";
+            chip.dataset.quality = quality;
+            chip.className = "season-quality-chip px-3 py-1.5 rounded-full border border-gray-700 text-xs font-semibold text-gray-200 hover:border-yellow-500 transition";
+            chip.textContent = quality;
+            qualityWrap.appendChild(chip);
+        }
+    };
+
+    const refreshSelectedQuality = () => {
+        for (const chip of qualityWrap.querySelectorAll(".season-quality-chip")) {
+            const active = chip.dataset.quality === state.quality;
+            chip.classList.toggle("bg-yellow-400", active);
+            chip.classList.toggle("text-black", active);
+            chip.classList.toggle("border-yellow-400", active);
+        }
+    };
+
+    const openModal = (season, qualityList) => {
+        state.season = Number(season || 0);
+        state.qualities = qualityList;
+        state.quality = qualityList[0] || "";
+        titleEl.textContent = `Get Full Season ${state.season}`;
+        subEl.textContent = "Choose one quality, then action.";
+        renderQualityChips();
+        refreshSelectedQuality();
+        setBusy(false);
+        setStatus(state.quality ? `Selected quality: ${state.quality}` : "No quality found for this season.", state.quality ? "ok" : "error");
+        modal.classList.remove("hidden");
+        requestAnimationFrame(() => {
+            dialog.classList.remove("scale-95", "opacity-0");
+            dialog.classList.add("scale-100", "opacity-100");
+        });
+    };
+
+    const buildCacheKey = (season, quality) => `${season}|${quality}`;
+
+    const resolveBundle = async (action, allowPartial = false) => {
+        const cacheKey = buildCacheKey(state.season, state.quality);
+        const cached = state.cache.get(cacheKey);
+        if (cached) return cached;
+        const res = await fetch(`/content/details/${encodeURIComponent(contentKey)}/season-bundle`, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                season: state.season,
+                quality: state.quality,
+                action,
+                allow_partial: !!allowPartial,
+            }),
+        });
+        let data = {};
+        try { data = await res.json(); } catch (_) {}
+        if (res.status === 401 || data.auth_required) {
+            const ret = encodeURIComponent(window.location.pathname + window.location.search);
+            window.location.href = `/login?return_url=${ret}`;
+            throw new Error("auth");
+        }
+        if (res.status === 409 && data.needs_confirm) {
+            const missing = Array.isArray(data.missing_episodes) ? data.missing_episodes.join(", ") : "";
+            const proceed = window.confirm(`${data.message || "Some episodes are missing."}\nMissing Episodes: ${missing}\nContinue with available episodes only?`);
+            if (!proceed) throw new Error("cancelled");
+            return await resolveBundle(action, true);
+        }
+        if (!res.ok || !data.ok) {
+            throw new Error(data.error || data.message || `Request failed (${res.status})`);
+        }
+        state.cache.set(cacheKey, data);
+        return data;
+    };
+
+    qualityWrap.addEventListener("click", (event) => {
+        const chip = event.target.closest(".season-quality-chip");
+        if (!chip) return;
+        state.quality = chip.dataset.quality || "";
+        refreshSelectedQuality();
+        setBusy(false);
+        setStatus(`Selected quality: ${state.quality}`, "ok");
+    });
+
+    actionButtons.forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            if (!state.season || !state.quality || state.busy) return;
+            const action = btn.dataset.action || "download";
+            try {
+                setBusy(true);
+                setStatus("Preparing season links...", "muted");
+                const out = await resolveBundle(action, false);
+                const map = {
+                    "download": out.urls?.download || out.open_url,
+                    "watch": out.urls?.watch || out.open_url,
+                    "telegram": out.urls?.telegram || out.open_url,
+                    "watch_together": out.urls?.watch_together || out.open_url,
+                };
+                const targetUrl = map[action] || out.open_url;
+                if (!targetUrl) throw new Error("Action URL is missing.");
+                setStatus(`Opening ${action.replace("_", " ")}...`, "ok");
+                window.location.href = targetUrl;
+            } catch (err) {
+                if ((err && err.message) === "cancelled" || (err && err.message) === "auth") return;
+                setStatus(err?.message || "Action failed. Please try again.", "error");
+            } finally {
+                setBusy(false);
+            }
+        });
+    });
+
+    triggers.forEach((btn) => {
+        btn.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const season = Number(btn.dataset.season || 0);
+            const qualities = parseQualities(btn.dataset.qualities || "");
+            openModal(season, qualities);
+        });
+    });
+
+    modal.addEventListener("click", (event) => {
+        if (event.target.closest("[data-close-season-modal='1']")) {
+            closeModal();
+        }
+    });
+
+    document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !modal.classList.contains("hidden")) closeModal();
+    });
+})();
 </script>
 {% endif %}
 <script>

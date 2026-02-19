@@ -27,7 +27,13 @@ from app.db.models import (
     AppDeviceSession,
 )
 from app.routes.dashboard import get_current_user, _cast_ids, _clone_parts, _build_search_regex
-from app.routes.content import refresh_tmdb_metadata, _parse_name, _tmdb_get, _ensure_group_assets
+from app.routes.content import (
+    refresh_tmdb_metadata,
+    _parse_name,
+    _tmdb_get,
+    _ensure_group_assets,
+    invalidate_public_catalog_cache,
+)
 from app.core.config import settings
 from app.core.telegram_bot import pool_status, reload_bot_pool, speed_test, _get_pool_tokens
 from app.utils.file_utils import format_size
@@ -2511,14 +2517,17 @@ async def _publish_items(
                 except Exception:
                     pass
 
+    # Invalidate frontend/admin caches first so next requests don't serve stale lists.
+    invalidate_public_catalog_cache()
+
     # Sync strategy:
     # - sync_force=True: keep strict synchronous consistency.
-    # - sync_force=False: run sync in background so publish path returns faster.
+    # - sync_force=False: trigger a forced sync in background so publish path stays responsive.
     if sync_force:
         await sync_content_catalog(force=True)
     else:
         try:
-            asyncio.create_task(sync_content_catalog(force=False))
+            asyncio.create_task(sync_content_catalog(force=True))
         except Exception:
             pass
     _invalidate_admin_caches()
