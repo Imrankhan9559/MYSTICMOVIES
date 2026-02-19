@@ -1,6 +1,8 @@
 import asyncio
 import csv
 import io
+import logging
+import os
 import re
 from datetime import datetime
 from typing import Any
@@ -19,6 +21,7 @@ from app.utils.file_utils import format_size
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+logger = logging.getLogger(__name__)
 
 _MASS_WS_CLIENTS: set[WebSocket] = set()
 _MASS_TASKS: dict[str, asyncio.Task] = {}
@@ -36,7 +39,10 @@ _MASS_IMPORT_LOCK = asyncio.Lock()
 _MASS_IMPORT_TASK: asyncio.Task | None = None
 _MASS_IMPORT_QUEUE: list[dict[str, str]] = []
 _MASS_MAX_PENDING_PROCESS_TASKS = 120
-_MASS_SNAPSHOT_ROW_LIMIT = 1800
+_MASS_SNAPSHOT_ROW_LIMIT = max(120, min(int(os.getenv("MASS_SNAPSHOT_ROW_LIMIT", "700")), 3000))
+_MASS_DEDUPE_SCAN_LIMIT = max(500, min(int(os.getenv("MASS_DEDUPE_SCAN_LIMIT", "12000")), 50000))
+_MASS_DEDUPE_MAX_RUNTIME_SEC = max(0.5, float(os.getenv("MASS_DEDUPE_MAX_RUNTIME_SEC", "3.0")))
+_MASS_EXPORT_ROW_LIMIT = max(500, min(int(os.getenv("MASS_EXPORT_ROW_LIMIT", "20000")), 50000))
 _MASS_DEDUPE_COOLDOWN_SEC = 180
 _MASS_DEDUPE_LAST_RUN_TS = 0.0
 _MASS_IMPORT_STATUS: dict[str, Any] = {
@@ -1900,7 +1906,14 @@ async def _cleanup_mass_state_duplicates() -> int:
         return 0
     _MASS_DEDUPE_LAST_RUN_TS = now_ts
 
-    rows = await MassContentState.find_all().sort("-updated_at").limit(50000).to_list()
+    try:
+        rows = await asyncio.wait_for(
+            MassContentState.find_all().sort("-updated_at").limit(_MASS_DEDUPE_SCAN_LIMIT).to_list(),
+            timeout=_MASS_DEDUPE_MAX_RUNTIME_SEC,
+        )
+    except Exception as exc:
+        logger.warning("Mass dedupe skipped due to DB timeout/error: %s", exc)
+        return 0
     if not rows:
         return 0
     picked: dict[str, MassContentState] = {}
@@ -2125,7 +2138,7 @@ def _serialize_row(row: MassContentState) -> dict:
                 "source_label": item.get("source_label") or "",
             }
         )
-    for item in list(row.matched_files or [])[:180]:
+    for item in list(row.matched_files or [])[:100]:
         season = _int_or_none(item.get("season"))
         episode = _int_or_none(item.get("episode"))
         matched_full.append(
@@ -2245,7 +2258,10 @@ def _dedupe_mass_rows(rows: list[MassContentState]) -> list[MassContentState]:
 
 
 async def _build_snapshot() -> dict:
-    rows = await MassContentState.find_all().sort("-updated_at").limit(_MASS_SNAPSHOT_ROW_LIMIT).to_list()
+    rows = await asyncio.wait_for(
+        MassContentState.find_all().sort("-updated_at").limit(_MASS_SNAPSHOT_ROW_LIMIT).to_list(),
+        timeout=max(1.0, min(_MASS_DEDUPE_MAX_RUNTIME_SEC, 4.0)),
+    )
     rows = _dedupe_mass_rows(rows)
     payload = [_serialize_row(row) for row in rows]
     panels = {
@@ -2282,7 +2298,42 @@ async def _build_snapshot_cached(force: bool = False) -> dict:
     last_ts = float(_MASS_SNAPSHOT_CACHE.get("ts") or 0.0)
     if not force and cached is not None and (now - last_ts) <= _MASS_SNAPSHOT_MIN_INTERVAL_SEC:
         return cached
-    snapshot = await _build_snapshot()
+    try:
+        snapshot = await _build_snapshot()
+    except Exception as exc:
+        logger.warning("Mass snapshot build failed, using cached/empty snapshot: %s", exc)
+        if isinstance(cached, dict):
+            return cached
+        return {
+            "panels": {
+                "processing": [],
+                "tmdb_not_found": [],
+                "file_not_found": [],
+                "incomplete": [],
+                "complete": [],
+                "uploading": [],
+                "uploaded": [],
+                "skipped": [],
+            },
+            "counts": {
+                "processing": 0,
+                "tmdb_not_found": 0,
+                "file_not_found": 0,
+                "incomplete": 0,
+                "complete": 0,
+                "uploading": 0,
+                "uploaded": 0,
+                "skipped": 0,
+            },
+            "total": 0,
+            "import": _import_status_snapshot(),
+            "workers": {
+                "process_active": sum(1 for task in _MASS_TASKS.values() if not task.done()),
+                "upload_active": sum(1 for task in _MASS_UPLOAD_TASKS.values() if not task.done()),
+            },
+            "server_time": datetime.now().isoformat(),
+            "warning": "Snapshot unavailable due to database timeout.",
+        }
     _MASS_SNAPSHOT_CACHE["data"] = snapshot
     _MASS_SNAPSHOT_CACHE["ts"] = now
     return snapshot
@@ -3348,9 +3399,21 @@ async def advance_mass_content_adder_export(request: Request, panel: str):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
-    rows = await MassContentState.find_all().sort("-updated_at").to_list()
+    panel_key = _normalize_mass_panel_key(panel, fallback="")
+    if panel_key not in _MASS_PANEL_KEYS:
+        return JSONResponse({"ok": False, "error": "Invalid panel."}, status_code=400)
+
+    query: dict[str, Any] = {}
+    if panel_key == "uploaded":
+        query["uploaded"] = True
+    elif panel_key == "uploading":
+        query["upload_state"] = {"$in": ["queued", "uploading"]}
+    else:
+        query["panel"] = panel_key
+
+    rows = await MassContentState.find(query).sort("-updated_at").limit(_MASS_EXPORT_ROW_LIMIT).to_list()
     rows = _dedupe_mass_rows(rows)
-    filtered = _rows_for_panel(panel, rows)
+    filtered = _rows_for_panel(panel_key, rows)
 
     out = io.StringIO()
     writer = csv.writer(out)

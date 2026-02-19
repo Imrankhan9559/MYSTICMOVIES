@@ -442,8 +442,11 @@ class MassContentState(Document):
     class Settings:
         name = "mass_content_states"
         indexes = [
+            [("updated_at", -1)],
             [("panel", 1), ("updated_at", -1)],
+            [("upload_state", 1), ("updated_at", -1)],
             [("uploaded", 1), ("uploaded_at", -1)],
+            [("tmdb_status", 1), ("updated_at", -1)],
             [("normalized_title", 1), ("content_type", 1)],
         ]
 
@@ -452,7 +455,7 @@ async def init_db():
         settings.MONGO_URI,
         serverSelectionTimeoutMS=int(os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS", "5000")),
         connectTimeoutMS=int(os.getenv("MONGO_CONNECT_TIMEOUT_MS", "10000")),
-        socketTimeoutMS=int(os.getenv("MONGO_SOCKET_TIMEOUT_MS", "30000")),
+        socketTimeoutMS=int(os.getenv("MONGO_SOCKET_TIMEOUT_MS", "45000")),
         maxPoolSize=int(os.getenv("MONGO_MAX_POOL_SIZE", "80")),
         minPoolSize=int(os.getenv("MONGO_MIN_POOL_SIZE", "5")),
         retryWrites=True,
