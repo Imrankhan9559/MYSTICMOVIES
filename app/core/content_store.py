@@ -33,6 +33,20 @@ def _normalize_phone(phone: str) -> str:
     return re.sub(r"\D+", "", (phone or ""))
 
 
+def _phone_variants(phone: str) -> list[str]:
+    raw = (phone or "").strip()
+    normalized = _normalize_phone(raw)
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in [raw, normalized]:
+        val = (value or "").strip()
+        if not val or val in seen:
+            continue
+        seen.add(val)
+        out.append(val)
+    return out
+
+
 def _slugify(text: str) -> str:
     value = re.sub(r"[^a-z0-9]+", "-", (text or "").strip().lower())
     return value.strip("-")
@@ -134,20 +148,19 @@ def _content_doc_query(user: User | None, is_admin: bool) -> dict:
     base: dict = {"status": "published"}
     if is_admin:
         return base
-    admin_phone = _normalize_phone(getattr(settings, "ADMIN_PHONE", ""))
+    admin_variants = _phone_variants(getattr(settings, "ADMIN_PHONE", ""))
     if user:
-        phone = _normalize_phone(getattr(user, "phone_number", ""))
+        user_variants = _phone_variants(getattr(user, "phone_number", ""))
+        owner_values = sorted(set(admin_variants + user_variants + [""]))
+        collab_values = user_variants or [_normalize_phone(getattr(user, "phone_number", ""))]
         or_filters = [
-            {"owner_phone": phone},
-            {"collaborators": phone},
-            {"owner_phone": ""},
+            {"owner_phone": {"$in": owner_values}},
+            {"collaborators": {"$in": collab_values}} if collab_values else {"owner_phone": ""},
         ]
-        if admin_phone:
-            or_filters.insert(0, {"owner_phone": admin_phone})
         base["$or"] = or_filters
         return base
-    if admin_phone:
-        base["$or"] = [{"owner_phone": admin_phone}, {"owner_phone": ""}]
+    if admin_variants:
+        base["$or"] = [{"owner_phone": {"$in": admin_variants + [""]}}]
     return base
 
 

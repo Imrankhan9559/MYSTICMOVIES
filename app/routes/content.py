@@ -130,7 +130,21 @@ DEFAULT_FOOTER_SUPPORT_LINKS = [
 
 
 def _normalize_phone(phone: str) -> str:
-    return (phone or "").replace(" ", "")
+    return re.sub(r"\D+", "", (phone or ""))
+
+
+def _phone_variants(phone: str) -> list[str]:
+    raw = (phone or "").strip()
+    normalized = _normalize_phone(raw)
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in [raw, normalized]:
+        val = (value or "").strip()
+        if not val or val in seen:
+            continue
+        seen.add(val)
+        out.append(val)
+    return out
 
 
 def _is_admin(user: User | None) -> bool:
@@ -1046,15 +1060,20 @@ def _content_query(user: User | None, is_admin: bool):
     base = {"catalog_status": "published"}
     if is_admin:
         return base
-    admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
+    admin_variants = _phone_variants(getattr(settings, "ADMIN_PHONE", "") or "")
     if user:
+        user_variants = _phone_variants(user.phone_number or "")
+        owner_values = sorted(set(admin_variants + user_variants))
+        collab_values = user_variants or [user.phone_number]
         base["$or"] = [
-            {"owner_phone": admin_phone},
-            {"owner_phone": user.phone_number},
-            {"collaborators": user.phone_number},
+            {"owner_phone": {"$in": owner_values}} if owner_values else {"owner_phone": ""},
+            {"collaborators": {"$in": collab_values}} if collab_values else {"owner_phone": ""},
         ]
         return base
-    base["owner_phone"] = admin_phone
+    if admin_variants:
+        base["owner_phone"] = {"$in": admin_variants}
+    else:
+        base["owner_phone"] = ""
     return base
 
 
@@ -1073,16 +1092,17 @@ def _content_scope_query(user: User | None, is_admin: bool) -> dict:
     query: dict = {"status": "published"}
     if is_admin:
         return query
-    admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
+    admin_variants = _phone_variants(getattr(settings, "ADMIN_PHONE", "") or "")
     if user:
+        user_variants = _phone_variants(user.phone_number or "")
+        owner_values = sorted(set(admin_variants + user_variants + [""]))
+        collab_values = user_variants or [user.phone_number]
         query["$or"] = [
-            {"owner_phone": admin_phone},
-            {"owner_phone": user.phone_number},
-            {"collaborators": user.phone_number},
-            {"owner_phone": ""},
+            {"owner_phone": {"$in": owner_values}},
+            {"collaborators": {"$in": collab_values}} if collab_values else {"owner_phone": ""},
         ]
-    elif admin_phone:
-        query["$or"] = [{"owner_phone": admin_phone}, {"owner_phone": ""}]
+    elif admin_variants:
+        query["$or"] = [{"owner_phone": {"$in": admin_variants + [""]}}]
     return query
 
 
@@ -1093,14 +1113,24 @@ def _can_view_content_doc(doc: ContentItem | None, user: User | None, is_admin: 
         return False
     if is_admin:
         return True
-    admin_phone = (getattr(settings, "ADMIN_PHONE", "") or "").strip()
+    admin_variants = set(_phone_variants(getattr(settings, "ADMIN_PHONE", "") or ""))
     owner_phone = (getattr(doc, "owner_phone", "") or "").strip()
+    owner_variants = set(_phone_variants(owner_phone))
     if user:
-        user_phone = (user.phone_number or "").strip()
-        if user_phone and user_phone in (getattr(doc, "collaborators", []) or []):
+        user_variants = set(_phone_variants(user.phone_number or ""))
+        collaborators = {
+            val
+            for raw in (getattr(doc, "collaborators", []) or [])
+            for val in _phone_variants(str(raw or ""))
+        }
+        if user_variants and (user_variants & collaborators):
             return True
-        return owner_phone in {admin_phone, user_phone, ""}
-    return owner_phone in {admin_phone, ""}
+        if owner_phone == "":
+            return True
+        return bool(owner_variants & (admin_variants | user_variants))
+    if owner_phone == "":
+        return True
+    return bool(owner_variants & admin_variants)
 
 
 async def _content_doc_from_key(content_key: str, user: User | None, is_admin: bool) -> ContentItem | None:
