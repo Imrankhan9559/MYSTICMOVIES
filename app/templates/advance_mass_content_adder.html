@@ -65,6 +65,47 @@
 .note-pill.state-ok { border-color: rgba(34,197,94,.55); color: #86efac; background: rgba(6,47,24,.5); }
 .note-pill.state-warn { border-color: rgba(245,158,11,.55); color: #fde68a; background: rgba(66,44,10,.5); }
 .note-pill.state-miss { border-color: rgba(248,113,113,.6); color: #fecaca; background: rgba(69,20,23,.58); }
+.coverage-chip-btn {
+    cursor: pointer;
+    text-decoration: none;
+    outline: none;
+    background-clip: padding-box;
+}
+.coverage-chip-btn.is-active {
+    box-shadow: 0 0 0 2px rgba(105, 213, 255, 0.35);
+}
+.coverage-detail-box {
+    margin-top: 8px;
+    border: 1px solid #2b4360;
+    border-radius: 10px;
+    background: rgba(8, 16, 29, 0.92);
+    padding: 8px 10px;
+}
+.coverage-detail-title {
+    color: #b9dfff;
+    font-size: 11px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    letter-spacing: 0.02em;
+}
+.coverage-detail-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    margin-bottom: 5px;
+}
+.coverage-detail-row:last-child { margin-bottom: 0; }
+.coverage-detail-row .label {
+    font-size: 11px;
+    color: #9fb9dd;
+    min-width: 52px;
+}
+.coverage-detail-row .value {
+    font-size: 11px;
+    color: #e4efff;
+    word-break: break-word;
+}
 .note-text {
     font-size: 12px;
     line-height: 1.45;
@@ -620,6 +661,7 @@ const fullState = {
 };
 const noteExpandedState = new Map();
 let fullscreenRenderFingerprint = "";
+const coverageDetailState = new Map();
 
 function toast(message, type = "info", timeout = 2600) {
     const el = document.createElement("div");
@@ -681,6 +723,15 @@ function seasonEpisodeTextFromRaw(raw) {
     return text;
 }
 
+function _episodeListText(values) {
+    const rows = (Array.isArray(values) ? values : [])
+        .map(v => Number(v || 0))
+        .filter(v => v > 0)
+        .sort((a, b) => a - b);
+    if (!rows.length) return "None";
+    return rows.map(v => `Episode ${v}`).join(", ");
+}
+
 function itemFingerprint(item) {
     const notesCount = Array.isArray(item && item.live_notes) ? item.live_notes.length : 0;
     const choicesCount = Array.isArray(item && item.file_choice_groups) ? item.file_choice_groups.length : 0;
@@ -698,6 +749,71 @@ function itemFingerprint(item) {
 
 function seriesCoverageHtml(item) {
     if (String(item.content_type || "").toLowerCase() !== "series") return "";
+    const serverCoverage = Array.isArray(item.season_quality_coverage) ? item.season_quality_coverage : [];
+    if (serverCoverage.length) {
+        const itemId = String(item && item.id ? item.id : "");
+        const rows = serverCoverage.map((seasonRow) => {
+            const seasonNo = Number(seasonRow && seasonRow.season ? seasonRow.season : 0);
+            const qualities = Array.isArray(seasonRow && seasonRow.qualities) ? seasonRow.qualities : [];
+            const seasonStateKey = `${itemId}|${seasonNo}`;
+            const selectedQuality = String(coverageDetailState.get(seasonStateKey) || "").toUpperCase();
+            let selectedRow = null;
+            const chips = qualities.map((qRow) => {
+                const quality = normalizeQuality(qRow && qRow.quality ? qRow.quality : "HD");
+                const found = Number(qRow && qRow.found ? qRow.found : 0);
+                const expected = Number(qRow && qRow.expected ? qRow.expected : 0);
+                const isComplete = expected > 0 && found >= expected;
+                const isPartial = found > 0 && found < expected;
+                const cls = isComplete ? "state-ok" : (isPartial ? "state-warn" : "state-miss");
+                const foundEpisodes = Array.isArray(qRow && qRow.found_episodes) ? qRow.found_episodes : [];
+                const missingEpisodes = Array.isArray(qRow && qRow.missing_episodes) ? qRow.missing_episodes : [];
+                const isActive = selectedQuality && selectedQuality === quality.toUpperCase();
+                if (isActive) selectedRow = { quality, foundEpisodes, missingEpisodes };
+                const hoverText = `Found: ${_episodeListText(foundEpisodes)} | Missing: ${_episodeListText(missingEpisodes)}`;
+                return `
+                    <button
+                        type="button"
+                        class="note-pill coverage-chip-btn ${cls} ${isActive ? "is-active" : ""} action-btn"
+                        data-action="toggle-coverage-detail"
+                        data-id="${esc(itemId)}"
+                        data-season="${seasonNo}"
+                        data-quality="${esc(quality)}"
+                        title="${esc(hoverText)}">
+                        ${esc(quality)} ${found}/${expected || 0}
+                    </button>
+                `;
+            }).join("");
+            const detailsHtml = selectedRow ? `
+                <div class="coverage-detail-box">
+                    <div class="coverage-detail-title">Season ${seasonNo} ${esc(selectedRow.quality)} Details</div>
+                    <div class="coverage-detail-row">
+                        <span class="label">Found:</span>
+                        <span class="value">${esc(_episodeListText(selectedRow.foundEpisodes))}</span>
+                    </div>
+                    <div class="coverage-detail-row">
+                        <span class="label">Missing:</span>
+                        <span class="value">${esc(_episodeListText(selectedRow.missingEpisodes))}</span>
+                    </div>
+                </div>
+            ` : "";
+            return `
+                <div class="note-row">
+                    <div class="note-meta">
+                        <span class="note-pill">Season ${seasonNo}</span>
+                        ${chips || `<span class="note-pill state-miss">No qualities</span>`}
+                    </div>
+                    ${detailsHtml}
+                </div>
+            `;
+        }).join("");
+        return `
+            <div class="mt-1 mb-2">
+                <div class="text-xs text-info mb-1">Season Quality Coverage</div>
+                <div class="notes-list">${rows}</div>
+            </div>
+        `;
+    }
+
     const files = Array.isArray(item.matched_files) ? item.matched_files : [];
     const missing = Array.isArray(item.missing_items) ? item.missing_items : [];
     const seasonMap = new Map();
@@ -1500,6 +1616,21 @@ document.addEventListener("click", async (e) => {
         if (fullState.open) {
             renderFullscreen(true);
         }
+        return;
+    }
+    if (action === "toggle-coverage-detail") {
+        const season = Number(btn.dataset.season || 0);
+        const quality = normalizeQuality(btn.dataset.quality || "");
+        if (!season || !quality) return;
+        const key = `${String(id)}|${season}`;
+        const current = String(coverageDetailState.get(key) || "").toUpperCase();
+        if (current === quality.toUpperCase()) {
+            coverageDetailState.delete(key);
+        } else {
+            coverageDetailState.set(key, quality.toUpperCase());
+        }
+        scheduleRender(latestState);
+        if (fullState.open) renderFullscreen(true);
         return;
     }
     const lockKey = `${action}:${id}`;

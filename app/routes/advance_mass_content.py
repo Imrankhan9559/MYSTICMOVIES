@@ -698,6 +698,123 @@ def _panel_label(panel: str) -> str:
     return labels.get(key, panel)
 
 
+def _series_quality_coverage(row: MassContentState) -> list[dict]:
+    if (row.content_type or "").strip().lower() != "series":
+        return []
+
+    season_expected: dict[int, set[int]] = {}
+    for season_row in list(getattr(row, "seasons", []) or []):
+        season_no = _int_or_none(season_row.get("season"))
+        if not season_no:
+            continue
+        season_expected.setdefault(season_no, set())
+        eps: set[int] = set()
+        for ep in list(season_row.get("episodes", []) or []):
+            ep_no = _int_or_none(ep.get("episode"))
+            if ep_no:
+                eps.add(ep_no)
+        if eps:
+            season_expected[season_no].update(eps)
+
+    quality_hits: dict[int, dict[str, set[int]]] = {}
+    quality_missing: dict[int, dict[str, set[int]]] = {}
+
+    def _ensure_quality_bucket(store: dict[int, dict[str, set[int]]], season_no: int, quality: str) -> set[int]:
+        return store.setdefault(season_no, {}).setdefault(quality, set())
+
+    for item in list(getattr(row, "matched_files", []) or []):
+        season_no = _int_or_none(item.get("season"))
+        episode_no = _int_or_none(item.get("episode"))
+        if not season_no or not episode_no:
+            continue
+        quality = _normalize_quality_label(item.get("quality") or "HD")
+        _ensure_quality_bucket(quality_hits, season_no, quality).add(episode_no)
+        season_expected.setdefault(season_no, set()).add(episode_no)
+
+    for item in list(getattr(row, "missing_items", []) or []):
+        season_no = _int_or_none(item.get("season"))
+        episode_no = _int_or_none(item.get("episode"))
+        if not season_no:
+            continue
+        season_expected.setdefault(season_no, set())
+        quality = _normalize_quality_label(item.get("quality") or "HD")
+        _ensure_quality_bucket(quality_hits, season_no, quality)
+        _ensure_quality_bucket(quality_missing, season_no, quality)
+        if episode_no:
+            season_expected.setdefault(season_no, set()).add(episode_no)
+            _ensure_quality_bucket(quality_missing, season_no, quality).add(episode_no)
+
+    # Fallback from live notes so coverage remains complete even when row payload is partial/stale.
+    for note in list(getattr(row, "live_notes", []) or []):
+        if not isinstance(note, dict):
+            continue
+        season_no = _int_or_none(note.get("season"))
+        episode_no = _int_or_none(note.get("episode"))
+        if not season_no:
+            continue
+        season_expected.setdefault(season_no, set())
+        quality = _normalize_quality_label(note.get("quality") or "HD")
+        state = str(note.get("state") or "").strip().lower()
+        _ensure_quality_bucket(quality_hits, season_no, quality)
+        _ensure_quality_bucket(quality_missing, season_no, quality)
+        if episode_no:
+            season_expected[season_no].add(episode_no)
+            if state == "missing":
+                _ensure_quality_bucket(quality_missing, season_no, quality).add(episode_no)
+            else:
+                _ensure_quality_bucket(quality_hits, season_no, quality).add(episode_no)
+
+    if not season_expected:
+        return []
+
+    payload: list[dict] = []
+    for season_no in sorted(season_expected.keys()):
+        expected_eps = {int(x) for x in season_expected.get(season_no, set()) if int(x) > 0}
+        expected_count = len(expected_eps)
+        by_quality = quality_hits.get(season_no, {})
+        by_missing = quality_missing.get(season_no, {})
+        # Always show base qualities even when not found.
+        for base_q in ("1080P", "720P", "480P"):
+            by_quality.setdefault(base_q, set())
+            by_missing.setdefault(base_q, set())
+
+        # Merge any quality that is only in missing list.
+        for quality in by_missing.keys():
+            by_quality.setdefault(quality, set())
+        quality_rows: list[dict] = []
+        for quality, covered in by_quality.items():
+            found_set = {int(x) for x in (covered or set()) if int(x) > 0}
+            missing_set = {int(x) for x in (by_missing.get(quality) or set()) if int(x) > 0}
+            if expected_eps:
+                missing_set = (expected_eps - found_set) | missing_set
+                found_count = len(found_set & expected_eps)
+                expected_count_quality = len(expected_eps)
+            else:
+                expected_pool = found_set | missing_set
+                found_count = len(found_set)
+                expected_count_quality = len(expected_pool)
+            quality_rows.append(
+                {
+                    "quality": quality,
+                    "found": found_count,
+                    "expected": expected_count_quality if expected_count_quality >= 0 else expected_count,
+                    "found_episodes": sorted(list(found_set)),
+                    "missing_episodes": sorted(list(missing_set)),
+                }
+            )
+        quality_rows.sort(
+            key=lambda x: (-_quality_rank(x.get("quality") or ""), (x.get("quality") or "").upper())
+        )
+        payload.append(
+            {
+                "season": season_no,
+                "expected": expected_count,
+                "qualities": quality_rows,
+            }
+        )
+    return payload
+
+
 _MASS_PANEL_KEYS = {
     "processing",
     "tmdb_not_found",
@@ -2322,6 +2439,7 @@ def _serialize_row(row: MassContentState) -> dict:
         "matched_files_count": len(row.matched_files or []),
         "matched_files_preview": matched_preview,
         "matched_files": matched_full,
+        "season_quality_coverage": _series_quality_coverage(row),
         "file_choice_groups": list(getattr(row, "file_choice_groups", []) or []),
         "included_file_ids_count": len([str(x).strip() for x in (getattr(row, "included_file_ids", []) or []) if str(x).strip()]),
         "source_inputs": list(row.source_inputs or []),
