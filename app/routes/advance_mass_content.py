@@ -537,18 +537,19 @@ def _series_quality_from_name(name: str) -> str:
 def _movie_quality_from_size(size: int) -> str:
     total = int(size or 0)
     gb = 1024 * 1024 * 1024
+    mb = 1024 * 1024
     if total > 2 * gb:
         return "1080P"
     if total >= 1 * gb:
         return "720P"
-    return "480P"
+    if total >= 500 * mb:
+        return "480P"
+    return "360P"
 
 
 def _movie_quality_from_name_or_size(name: str, size: int) -> str:
-    # Prefer explicit quality tags in filename for movies; fallback to size heuristic.
-    by_name = _series_quality_from_name(name or "")
-    if by_name and by_name != "HD":
-        return by_name
+    # Movies are intentionally inferred from file size only.
+    # Web-series still use filename-based quality detection.
     return _movie_quality_from_size(size)
 
 
