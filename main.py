@@ -19,6 +19,13 @@ try:
 except Exception:
     pass
 
+# Pyrogram sync wrapper expects a current main-thread loop at import time.
+# Ensure one exists under uvloop policy before importing telegram modules.
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
 from app.core.config import settings
 from app.core.telegram_bot import start_telegram, stop_telegram
 from app.core.telethon_storage import get_client as get_telethon_client, stop_client as stop_telethon_client
