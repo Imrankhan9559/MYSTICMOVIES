@@ -773,6 +773,13 @@ def _series_quality_coverage(row: MassContentState) -> list[dict]:
         expected_count = len(expected_eps)
         by_quality = quality_hits.get(season_no, {})
         by_missing = quality_missing.get(season_no, {})
+        # Hide placeholder seasons that have no expected episode data and no matched/missing rows.
+        has_episode_evidence = bool(expected_eps)
+        if not has_episode_evidence:
+            any_found = any(bool(v) for v in by_quality.values()) if by_quality else False
+            any_missing = any(bool(v) for v in by_missing.values()) if by_missing else False
+            if not any_found and not any_missing:
+                continue
         # Always show base qualities even when not found.
         for base_q in ("1080P", "720P", "480P"):
             by_quality.setdefault(base_q, set())
@@ -2327,11 +2334,15 @@ async def _process_mass_item(item_id: str, mode: str = "full") -> None:
                             if ep_no <= 0:
                                 continue
                             episodes.append({"episode": ep_no, "name": (ep.get("name") or "").strip()})
+                        episode_count = int(season.get("episode_count") or len(episodes))
+                        # Skip placeholder/upcoming seasons that have no episodes yet.
+                        if episode_count <= 0 and not episodes:
+                            continue
                         seasons.append(
                             {
                                 "season": season_no,
                                 "name": season.get("name") or f"Season {season_no}",
-                                "episode_count": int(season.get("episode_count") or len(episodes)),
+                                "episode_count": episode_count,
                                 "episodes": episodes,
                             }
                         )
