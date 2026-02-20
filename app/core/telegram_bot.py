@@ -146,6 +146,13 @@ def _site_url(path: str = "/") -> str:
     return _site_base_url() + clean_path
 
 
+def _request_content_url(query: str = "") -> str:
+    q = (query or "").strip()
+    if not q:
+        return _site_url("/request-content")
+    return _site_url("/request-content") + "?q=" + urllib.parse.quote_plus(q)
+
+
 def _slugify(text: str) -> str:
     value = re.sub(r"[^a-z0-9]+", "-", (text or "").strip().lower())
     return value.strip("-")
@@ -154,6 +161,99 @@ def _slugify(text: str) -> str:
 def _norm_text(value: str) -> str:
     normalized = re.sub(r"[^a-z0-9]+", " ", (value or "").strip().lower())
     return re.sub(r"\s+", " ", normalized).strip()
+
+
+_FILENAME_EXT_RE = re.compile(r"\.(mkv|mp4|avi|mov|wmv|flv|m4v|webm|ts)\b", re.I)
+_SEASON_EP_TOKEN_RE = re.compile(
+    r"\b(?:s\d{1,2}e\d{1,3}|season\s*\d{1,2}|episode\s*\d{1,3}|ep\s*\d{1,3})\b",
+    re.I,
+)
+_QUALITY_TOKEN_RE = re.compile(r"\b(?:2160p|1440p|1080p|720p|480p|380p|360p|4k)\b", re.I)
+_CODEC_TOKEN_RE = re.compile(
+    r"\b(?:x264|x265|h264|h265|hevc|avc|10bit|8bit|ddp(?:\d\.\d)?|aac(?:\d\.\d)?|ac3|dts|atmos)\b",
+    re.I,
+)
+_SOURCE_TOKEN_RE = re.compile(
+    r"\b(?:web[-\s]?dl|webrip|bluray|brrip|hdrip|hdtc|hdcam|dvdrip|cam|ts|telesync|uhd|remux)\b",
+    re.I,
+)
+_LANG_TOKEN_RE = re.compile(
+    r"\b(?:hindi|english|bengali|bangla|tamil|telugu|malayalam|kannada|dual|multi|audio|sub|subs|esub|dubbed)\b",
+    re.I,
+)
+_NOISE_TOKENS = {
+    "movie",
+    "movies",
+    "series",
+    "webseries",
+    "web",
+    "dl",
+    "rip",
+    "telegram",
+    "bot",
+    "download",
+    "watch",
+    "file",
+    "files",
+    "complete",
+    "proper",
+    "repack",
+    "uncut",
+    "hq",
+    "hd",
+    "nf",
+    "amzn",
+    "hdhub4u",
+    "cinevood",
+}
+
+
+def _clean_filename_like_query(query: str) -> str:
+    value = (query or "").strip()
+    if not value:
+        return ""
+    value = _FILENAME_EXT_RE.sub(" ", value)
+    value = value.replace("+", " ")
+    value = re.sub(r"[._\-]+", " ", value)
+    value = re.sub(r"[\[\]\(\)\{\}]+", " ", value)
+    value = _SEASON_EP_TOKEN_RE.sub(" ", value)
+    value = _QUALITY_TOKEN_RE.sub(" ", value)
+    value = _CODEC_TOKEN_RE.sub(" ", value)
+    value = _SOURCE_TOKEN_RE.sub(" ", value)
+    value = _LANG_TOKEN_RE.sub(" ", value)
+    tokens = []
+    for token in _norm_text(value).split():
+        if token in _NOISE_TOKENS:
+            continue
+        if re.fullmatch(r"s\d{1,2}e\d{1,3}", token):
+            continue
+        if re.fullmatch(r"\d{3,4}p", token):
+            continue
+        if re.fullmatch(r"(?:x26[45]|h26[45])", token):
+            continue
+        if re.fullmatch(r"\d{1,2}bit", token):
+            continue
+        tokens.append(token)
+    return " ".join(tokens)
+
+
+def _query_variants(query: str) -> list[str]:
+    variants: list[str] = []
+
+    def _add(text: str):
+        norm = _norm_text(text)
+        if norm and norm not in variants:
+            variants.append(norm)
+
+    _add(query)
+    cleaned = _clean_filename_like_query(query)
+    _add(cleaned)
+    if cleaned:
+        no_year = " ".join(
+            t for t in cleaned.split() if not re.fullmatch(r"(?:19\d{2}|20\d{2})", t)
+        )
+        _add(no_year)
+    return variants
 
 
 def _extract_quality(name: str) -> str:
@@ -488,12 +588,22 @@ async def _build_published_catalog(limit: int = 5000) -> list[dict]:
 
 def _rank_catalog_matches(query: str, catalog: list[dict], limit: int = 5) -> list[dict]:
     q_raw = (query or "").strip()
-    q_norm = _norm_text(q_raw)
-    if not q_norm:
+    q_variants = _query_variants(q_raw)
+    if not q_variants:
         return []
-    generic_tokens = {"movie", "movies", "series", "webseries", "telegram", "bot", "download", "watch", "file", "files"}
-    q_tokens = set(q_norm.split())
-    if q_tokens and all(token in generic_tokens for token in q_tokens):
+    generic_tokens = {
+        "movie",
+        "movies",
+        "series",
+        "webseries",
+        "telegram",
+        "bot",
+        "download",
+        "watch",
+        "file",
+        "files",
+    }
+    if all(set(v.split()) and set(v.split()).issubset(generic_tokens) for v in q_variants):
         return []
 
     scored = []
@@ -502,32 +612,58 @@ def _rank_catalog_matches(query: str, catalog: list[dict], limit: int = 5) -> li
         if not t_norm:
             continue
         t_tokens = set(t_norm.split())
-        ratio = SequenceMatcher(None, q_norm, t_norm).ratio()
-        overlap = len(q_tokens & t_tokens)
-        contains = q_norm in t_norm
-        reverse_contains = t_norm in q_norm
+        best_score = -1.0
 
-        # Guardrail: no lexical relationship means no result.
-        if not contains and not reverse_contains and overlap == 0 and ratio < 0.83:
-            continue
-        if overlap == 0 and ratio < 0.66 and not contains:
+        for q_norm in q_variants:
+            q_tokens = set(q_norm.split())
+            if not q_tokens:
+                continue
+            ratio = SequenceMatcher(None, q_norm, t_norm).ratio()
+            overlap = len(q_tokens & t_tokens)
+            contains = q_norm in t_norm
+            reverse_contains = t_norm in q_norm
+
+            # Guardrail: no lexical relationship means no result.
+            if not contains and not reverse_contains and overlap == 0 and ratio < 0.79:
+                continue
+            if overlap == 0 and ratio < 0.62 and not contains and not reverse_contains:
+                continue
+
+            score = ratio * 100.0
+            if q_norm == t_norm:
+                score += 80
+            if contains:
+                score += 35
+            if reverse_contains:
+                score += 30
+            if overlap:
+                score += overlap * 10
+
+            if q_tokens:
+                q_cov = overlap / max(1, len(q_tokens))
+                if q_cov >= 0.85:
+                    score += 16
+                elif q_cov >= 0.6:
+                    score += 9
+            if t_tokens:
+                t_cov = overlap / max(1, len(t_tokens))
+                if t_cov >= 0.85:
+                    score += 14
+                elif t_cov >= 0.5:
+                    score += 7
+
+            if score > best_score:
+                best_score = score
+
+        if best_score < 0:
             continue
 
-        score = ratio * 100.0
-        if q_norm == t_norm:
-            score += 80
-        if contains:
-            score += 35
-        if reverse_contains:
-            score += 20
-        if overlap:
-            score += overlap * 9
         q_year = _parse_year(q_raw)
         if q_year and q_year == (item.get("year", "") or ""):
-            score += 8
-        if score < 58:
+            best_score += 8
+        if best_score < 56:
             continue
-        scored.append((score, item))
+        scored.append((best_score, item))
 
     scored.sort(key=lambda row: (-row[0], (row[1].get("title") or "").lower()))
     return [row[1] for row in scored[:limit]]
@@ -625,18 +761,20 @@ async def _send_content_result(client: Client, chat_id: int, item: dict, correct
 
 
 async def _send_not_found(client: Client, chat_id: int, query: str):
+    request_url = _request_content_url(query)
     text = _embed_message(
         "Content Not Found",
         [
             f"Search query: {query}",
             "This content is not uploaded yet.",
             "Please request it from the website.",
+            f"Request link: {request_url}",
         ],
         icon="❌",
         reaction="💡",
     )
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Request on Website", url=_site_url("/request-content"))]]
+        [[InlineKeyboardButton("Request Content", url=request_url)]]
     )
     try:
         await _send_animation_pyro(
@@ -669,6 +807,7 @@ async def _send_content_result_api(chat_id: int, item: dict, corrected_query: st
 
 
 async def _send_not_found_api(chat_id: int, query: str):
+    request_url = _request_content_url(query)
     try:
         await _send_animation_api(
             chat_id,
@@ -690,12 +829,13 @@ async def _send_not_found_api(chat_id: int, query: str):
                 f"Search query: {query}",
                 "This content is not uploaded yet.",
                 "Please request it from the website.",
+                f"Request link: {request_url}",
             ],
             icon="❌",
             reaction="💡",
         ),
         reply_markup=_bot_api_keyboard(
-            [[{"text": "Request on Website", "url": _site_url("/request-content")}]]
+            [[{"text": "Request Content", "url": request_url}]]
         ),
     )
 
