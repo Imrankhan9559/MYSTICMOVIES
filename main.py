@@ -11,18 +11,19 @@ from fastapi.middleware.gzip import GZipMiddleware
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
 
-from app.core.config import settings
-from app.core.telegram_bot import start_telegram, stop_telegram
-from app.core.telethon_storage import get_client as get_telethon_client, stop_client as stop_telethon_client
-from app.db.models import init_db
-from app.routes import auth, content, dashboard, stream, admin, share, app_client, advance_mass_content
-
-# Prefer uvloop for faster asyncio if available
+# Set loop policy as early as possible before importing modules that create
+# asyncio-aware clients/locks (Pyrogram/Telethon), to avoid loop mismatch issues.
 try:
     import uvloop
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 except Exception:
     pass
+
+from app.core.config import settings
+from app.core.telegram_bot import start_telegram, stop_telegram
+from app.core.telethon_storage import get_client as get_telethon_client, stop_client as stop_telethon_client
+from app.db.models import init_db
+from app.routes import auth, content, dashboard, stream, admin, share, app_client, advance_mass_content
 
 logger = logging.getLogger(__name__)
 

@@ -121,6 +121,14 @@ QUALITY_ORDER = {
 }
 
 
+def _collection_for(model_cls):
+    for attr in ("get_motor_collection", "get_pymongo_collection", "get_collection"):
+        getter = getattr(model_cls, attr, None)
+        if callable(getter):
+            return getter()
+    raise AttributeError(f"No collection getter found for {model_cls!r}")
+
+
 def _normalize_phone(phone: str) -> str:
     return re.sub(r"\D+", "", (phone or ""))
 
@@ -627,7 +635,7 @@ async def _build_published_catalog(limit: int = 5000) -> list[dict]:
                 "files": 1,
             }
             cursor = (
-                ContentItem.get_motor_collection()
+                _collection_for(ContentItem)
                 .find({"status": "published"}, projection)
                 .sort("updated_at", -1)
                 .limit(limit)
@@ -2395,28 +2403,38 @@ async def start_telegram():
         logger.info("Connecting to Telegram...")
         started_clients: list[tuple[str, Client]] = []
         has_pyrogram_update_receiver = False
+        primary_started = False
 
         try:
-            if not _is_client_connected(tg_client):
-                await tg_client.start()
-                started_clients.append(("tg_client", tg_client))
-            me = await tg_client.get_me()
-            tg_client._is_bot = getattr(me, "is_bot", False)
-            logger.info(f"Connected as {me.first_name} (@{me.username})")
-            if getattr(tg_client, "_is_bot", False):
-                try:
-                    await tg_client.delete_webhook(drop_pending_updates=True)
-                    logger.info("Cleared bot webhook for long polling (tg_client).")
-                except Exception as e:
-                    logger.warning(f"Failed to clear bot webhook (tg_client): {e}")
-                    _clear_bot_webhook_http(settings.BOT_TOKEN)
-            await resolve_storage_chat_id(tg_client)
-            if getattr(tg_client, "_is_bot", False):
-                _register_bot_handlers(tg_client)
-                has_pyrogram_update_receiver = True
-            if user_client and tg_client is user_client:
-                await ensure_bot_member(user_client)
-            await verify_storage_access_v2(tg_client)
+            try:
+                if not _is_client_connected(tg_client):
+                    await tg_client.start()
+                    started_clients.append(("tg_client", tg_client))
+                me = await tg_client.get_me()
+                tg_client._is_bot = getattr(me, "is_bot", False)
+                logger.info(f"Connected as {me.first_name} (@{me.username})")
+                if getattr(tg_client, "_is_bot", False):
+                    try:
+                        await tg_client.delete_webhook(drop_pending_updates=True)
+                        logger.info("Cleared bot webhook for long polling (tg_client).")
+                    except Exception as e:
+                        logger.warning(f"Failed to clear bot webhook (tg_client): {e}")
+                        _clear_bot_webhook_http(settings.BOT_TOKEN)
+                await resolve_storage_chat_id(tg_client)
+                if getattr(tg_client, "_is_bot", False):
+                    _register_bot_handlers(tg_client)
+                    has_pyrogram_update_receiver = True
+                if user_client and tg_client is user_client:
+                    await ensure_bot_member(user_client)
+                await verify_storage_access_v2(tg_client)
+                primary_started = True
+            except Exception as e:
+                # Do not hard-fail startup if the user session client is down.
+                # We can still serve commands using bot_client or Bot API polling.
+                logger.warning(f"Primary tg_client start failed: {e}")
+                if tg_client and tg_client is not bot_client:
+                    await _safe_stop_client(tg_client, "tg_client")
+                    _forget_bot_handlers(tg_client)
 
             if bot_client and bot_client is not tg_client:
                 try:
@@ -2432,6 +2450,8 @@ async def start_telegram():
                     except Exception as e:
                         logger.warning(f"Failed to clear bot webhook (bot_client): {e}")
                         _clear_bot_webhook_http(settings.BOT_TOKEN)
+                    if not primary_started:
+                        await resolve_storage_chat_id(bot_client)
                     await verify_storage_access_v2(bot_client)
                     _register_bot_handlers(bot_client)
                     has_pyrogram_update_receiver = True
@@ -2488,6 +2508,8 @@ async def start_telegram():
             elif settings.BOT_TOKEN and (_bot_api_task is None or _bot_api_task.done()):
                 _bot_api_task = asyncio.create_task(_bot_api_poll_loop(), name="bot_api_poll_loop")
                 logger.info("Bot API polling fallback started")
+            elif not settings.BOT_TOKEN:
+                logger.warning("No BOT_TOKEN configured; bot commands will be unavailable.")
 
             _telegram_started = True
         except Exception:

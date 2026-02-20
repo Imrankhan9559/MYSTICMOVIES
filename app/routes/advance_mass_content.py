@@ -32,8 +32,9 @@ _MASS_PROCESS_WORKERS = max(1, min(int(os.getenv("MASS_PROCESS_WORKERS", "3")), 
 _MASS_UPLOAD_WORKERS = max(1, min(int(os.getenv("MASS_UPLOAD_WORKERS", "3")), 8))
 _MASS_PROCESS_SEMAPHORE = asyncio.Semaphore(_MASS_PROCESS_WORKERS)
 _MASS_UPLOAD_SEMAPHORE = asyncio.Semaphore(_MASS_UPLOAD_WORKERS)
-_MASS_SNAPSHOT_CACHE: dict[str, Any] = {"ts": 0.0, "data": None}
+_MASS_SNAPSHOT_CACHE: dict[str, Any] = {"ts": 0.0, "data": None, "dirty": True}
 _MASS_SNAPSHOT_MIN_INTERVAL_SEC = 0.8
+_MASS_SNAPSHOT_IDLE_CACHE_TTL_SEC = max(2.0, float(os.getenv("MASS_SNAPSHOT_IDLE_CACHE_TTL_SEC", "300")))
 _STORAGE_POOL_CACHE: dict[str, Any] = {"rows": [], "expires_at": datetime.min}
 _STORAGE_POOL_TTL_SECONDS = 45
 _IMPORT_CHUNK_SIZE = 30
@@ -64,6 +65,27 @@ _MASS_IMPORT_STATUS: dict[str, Any] = {
     "updated_at": "",
     "message": "Idle",
 }
+
+
+def _collection_for(model_cls):
+    for attr in ("get_motor_collection", "get_pymongo_collection", "get_collection"):
+        getter = getattr(model_cls, attr, None)
+        if callable(getter):
+            return getter()
+    raise AttributeError(f"No collection getter found for {model_cls!r}")
+
+
+class _MassRowProxy:
+    __slots__ = ("_doc",)
+
+    def __init__(self, doc: dict[str, Any]):
+        self._doc = doc or {}
+
+    def __getattr__(self, name: str):
+        if name == "id":
+            return self._doc.get("id") or self._doc.get("_id")
+        return self._doc.get(name)
+
 
 _SERIES_SE_RE = re.compile(r"[Ss](\d{1,2})[\s._-]*[Ee](\d{1,3})")
 _SERIES_SE_ALT_RE = re.compile(r"\b(\d{1,2})x(\d{1,3})\b", re.I)
@@ -1979,7 +2001,7 @@ async def _build_existing_content_index() -> dict[str, set]:
     by_title: set[tuple[str, str]] = set()
     details_by_title: dict[tuple[str, str], dict[str, str]] = {}
     projection = {"title": 1, "content_type": 1, "year": 1, "slug": 1}
-    cursor = ContentItem.get_motor_collection().find({"status": "published"}, projection).limit(50000)
+    cursor = _collection_for(ContentItem).find({"status": "published"}, projection).limit(50000)
     async for doc in cursor:
         ctype = (str(doc.get("content_type") or "movie")).strip().lower()
         title = (str(doc.get("title") or "")).strip()
@@ -2495,7 +2517,7 @@ def _row_identity_key(row: MassContentState) -> str:
     return f"{ctype}:id:{row.id}"
 
 
-def _is_better_row(new_row: MassContentState, current_row: MassContentState) -> bool:
+def _is_better_row(new_row: Any, current_row: Any) -> bool:
     new_tuple = (
         1 if new_row.uploaded else 0,
         1 if new_row.upload_ready else 0,
@@ -2511,7 +2533,7 @@ def _is_better_row(new_row: MassContentState, current_row: MassContentState) -> 
     return new_tuple > cur_tuple
 
 
-def _panel_key_for_row(row: MassContentState) -> str:
+def _panel_key_for_row(row: Any) -> str:
     if bool(getattr(row, "uploaded", False)):
         return "uploaded"
     row_id = str(getattr(row, "id", "") or "")
@@ -2531,8 +2553,8 @@ def _panel_key_for_row(row: MassContentState) -> str:
     return _normalize_mass_panel_key(getattr(row, "panel", ""), fallback="processing")
 
 
-def _dedupe_mass_rows(rows: list[MassContentState]) -> list[MassContentState]:
-    picked: dict[str, MassContentState] = {}
+def _dedupe_mass_rows(rows: list[Any]) -> list[Any]:
+    picked: dict[str, Any] = {}
     for row in rows:
         identity = _row_identity_key(row)
         existing = picked.get(identity)
@@ -2544,7 +2566,40 @@ def _dedupe_mass_rows(rows: list[MassContentState]) -> list[MassContentState]:
 
 
 async def _build_snapshot() -> dict:
-    rows = await MassContentState.find_all().sort("-updated_at").limit(_MASS_SNAPSHOT_ROW_LIMIT).to_list()
+    projection = {
+        "title": 1,
+        "content_type": 1,
+        "year": 1,
+        "panel": 1,
+        "tmdb_status": 1,
+        "file_status": 1,
+        "upload_ready": 1,
+        "uploaded": 1,
+        "uploaded_at": 1,
+        "poster_url": 1,
+        "release_date": 1,
+        "missing_items": {"$slice": [{"$ifNull": ["$missing_items", []]}, 300]},
+        "live_notes": {"$slice": [{"$ifNull": ["$live_notes", []]}, 400]},
+        "matched_files": {"$slice": [{"$ifNull": ["$matched_files", []]}, 220]},
+        "seasons": {"$slice": [{"$ifNull": ["$seasons", []]}, 40]},
+        "file_choice_groups": {"$slice": [{"$ifNull": ["$file_choice_groups", []]}, 160]},
+        "included_file_ids": {"$slice": [{"$ifNull": ["$included_file_ids", []]}, 350]},
+        "source_inputs": {"$slice": [{"$ifNull": ["$source_inputs", []]}, 50]},
+        "upload_state": 1,
+        "upload_message": 1,
+        "last_error": 1,
+        "skip_reason": 1,
+        "existing_content": 1,
+        "updated_at": 1,
+        "tmdb_id": 1,
+    }
+    pipeline = [
+        {"$sort": {"updated_at": -1}},
+        {"$limit": _MASS_SNAPSHOT_ROW_LIMIT},
+        {"$project": projection},
+    ]
+    raw_rows = await _collection_for(MassContentState).aggregate(pipeline).to_list(length=_MASS_SNAPSHOT_ROW_LIMIT)
+    rows = [_MassRowProxy(doc) for doc in raw_rows]
     rows = _dedupe_mass_rows(rows)
     payload = [_serialize_row(row) for row in rows]
     panels = {
@@ -2567,20 +2622,36 @@ async def _build_snapshot() -> dict:
         "counts": {key: len(value) for key, value in panels.items()},
         "total": len(payload),
         "import": _import_status_snapshot(),
-        "workers": {
-            "process_active": sum(1 for task in _MASS_TASKS.values() if not task.done()),
-            "upload_active": sum(1 for task in _MASS_UPLOAD_TASKS.values() if not task.done()),
-        },
+        "workers": _mass_workers_snapshot(),
         "server_time": datetime.now().isoformat(),
     }
+
+
+def _mass_workers_snapshot() -> dict[str, int]:
+    return {
+        "process_active": sum(1 for task in _MASS_TASKS.values() if not task.done()),
+        "upload_active": sum(1 for task in _MASS_UPLOAD_TASKS.values() if not task.done()),
+    }
+
+
+def _mass_runtime_is_busy() -> bool:
+    workers = _mass_workers_snapshot()
+    if workers["process_active"] > 0 or workers["upload_active"] > 0:
+        return True
+    return bool(_MASS_IMPORT_STATUS.get("running"))
 
 
 async def _build_snapshot_cached(force: bool = False) -> dict:
     now = asyncio.get_event_loop().time()
     cached = _MASS_SNAPSHOT_CACHE.get("data")
     last_ts = float(_MASS_SNAPSHOT_CACHE.get("ts") or 0.0)
-    if not force and cached is not None and (now - last_ts) <= _MASS_SNAPSHOT_MIN_INTERVAL_SEC:
-        return cached
+    dirty = bool(_MASS_SNAPSHOT_CACHE.get("dirty"))
+    if not force and cached is not None:
+        age = now - last_ts
+        if (not dirty) and (not _mass_runtime_is_busy()) and age <= _MASS_SNAPSHOT_IDLE_CACHE_TTL_SEC:
+            return cached
+        if age <= _MASS_SNAPSHOT_MIN_INTERVAL_SEC:
+            return cached
     try:
         snapshot = await _build_snapshot()
     except Exception as exc:
@@ -2610,25 +2681,24 @@ async def _build_snapshot_cached(force: bool = False) -> dict:
             },
             "total": 0,
             "import": _import_status_snapshot(),
-            "workers": {
-                "process_active": sum(1 for task in _MASS_TASKS.values() if not task.done()),
-                "upload_active": sum(1 for task in _MASS_UPLOAD_TASKS.values() if not task.done()),
-            },
+            "workers": _mass_workers_snapshot(),
             "server_time": datetime.now().isoformat(),
             "warning": "Snapshot temporarily unavailable.",
         }
     _MASS_SNAPSHOT_CACHE["data"] = snapshot
     _MASS_SNAPSHOT_CACHE["ts"] = now
+    _MASS_SNAPSHOT_CACHE["dirty"] = False
     return snapshot
 
 
 def _invalidate_mass_snapshot_cache() -> None:
-    _MASS_SNAPSHOT_CACHE["data"] = None
+    _MASS_SNAPSHOT_CACHE["dirty"] = True
     _MASS_SNAPSHOT_CACHE["ts"] = 0.0
 
 
 async def _mass_broadcast_snapshot(force: bool = False) -> None:
     async with _MASS_BROADCAST_LOCK:
+        _MASS_SNAPSHOT_CACHE["dirty"] = True
         snapshot = await _build_snapshot_cached(force=bool(force))
         if not _MASS_WS_CLIENTS:
             return
@@ -3329,7 +3399,7 @@ async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
 
     deleted_count = 0
     target_id_strs: list[str] = []
-    cursor = MassContentState.get_motor_collection().find(panel_filter, {"_id": 1}).limit(6000)
+    cursor = _collection_for(MassContentState).find(panel_filter, {"_id": 1}).limit(6000)
     async for row in cursor:
         raw_id = row.get("_id")
         if raw_id is not None:
@@ -3339,7 +3409,7 @@ async def advance_mass_content_adder_clear_panel(request: Request, panel: str):
 
     cancelled = await _cancel_worker_tasks_for_ids(target_id_strs)
     try:
-        result = await MassContentState.get_motor_collection().delete_many(panel_filter)
+        result = await _collection_for(MassContentState).delete_many(panel_filter)
         deleted_count = int(getattr(result, "deleted_count", 0) or 0)
     except Exception:
         # Fallback path: delete row-by-row if bulk delete fails.
@@ -3389,7 +3459,7 @@ async def advance_mass_content_adder_clear_all(request: Request):
     _MASS_LOCKS.clear()
     await _cancel_import_worker(reason="Cleared by admin.")
 
-    result = await MassContentState.get_motor_collection().delete_many({})
+    result = await _collection_for(MassContentState).delete_many({})
     deleted = int(getattr(result, "deleted_count", 0) or 0)
     _invalidate_mass_snapshot_cache()
     await _mass_broadcast_snapshot(force=True)

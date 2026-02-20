@@ -5,6 +5,7 @@ import uuid
 import json
 import time
 import copy
+import os
 from fastapi import APIRouter, Request, HTTPException, Form
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -51,9 +52,12 @@ _ADMIN_SITE_CACHE_TTL_SEC = 20.0
 _ADMIN_BADGES_CACHE_TTL_SEC = 12.0
 _ADMIN_GROUPS_CACHE_TTL_SEC = 18.0
 _ADMIN_STORAGE_SUGGEST_TTL_SEC = 25.0
+_ADMIN_CATALOG_SYNC_COOLDOWN_SEC = max(20.0, float(os.getenv("ADMIN_CATALOG_SYNC_COOLDOWN_SEC", "180")))
+_ADMIN_LAST_CATALOG_SYNC_TS = 0.0
 
 
 def _invalidate_admin_caches() -> None:
+    global _ADMIN_LAST_CATALOG_SYNC_TS
     _ADMIN_SITE_CACHE["ts"] = 0.0
     _ADMIN_SITE_CACHE["row"] = None
     _ADMIN_BADGES_CACHE["ts"] = 0.0
@@ -66,6 +70,16 @@ def _invalidate_admin_caches() -> None:
     _ADMIN_PUBLISHED_SUMMARY_CACHE["groups"] = None
     _ADMIN_STORAGE_SUGGEST_CACHE["ts"] = 0.0
     _ADMIN_STORAGE_SUGGEST_CACHE["rows"] = None
+    _ADMIN_LAST_CATALOG_SYNC_TS = 0.0
+
+
+async def _maybe_sync_catalog(force: bool = False) -> None:
+    global _ADMIN_LAST_CATALOG_SYNC_TS
+    now = time.monotonic()
+    if not force and (now - float(_ADMIN_LAST_CATALOG_SYNC_TS or 0.0)) < _ADMIN_CATALOG_SYNC_COOLDOWN_SEC:
+        return
+    await sync_content_catalog(force=False)
+    _ADMIN_LAST_CATALOG_SYNC_TS = now
 
 def _normalize_phone(phone: str) -> str:
     return phone.replace(" ", "")
@@ -650,7 +664,7 @@ async def _group_published_catalog() -> list[dict]:
     if cached_groups is not None and (now - cached_ts) <= _ADMIN_GROUPS_CACHE_TTL_SEC:
         return copy.deepcopy(cached_groups)  # type: ignore[arg-type]
 
-    await sync_content_catalog(force=False)
+    await _maybe_sync_catalog(force=False)
     groups = await build_content_groups(None, True, limit=5000, ensure_sync=False)
     for g in groups:
         g["items"].sort(key=lambda x: (x.get("season") or 0, x.get("episode") or 0, x.get("quality") or ""))
@@ -767,7 +781,7 @@ async def _group_published_catalog_summary(q: str = "") -> list[dict]:
         if cached_groups is not None and (now - cached_ts) <= _ADMIN_GROUPS_CACHE_TTL_SEC:
             return copy.deepcopy(cached_groups)  # type: ignore[arg-type]
 
-    await sync_content_catalog(force=False)
+    await _maybe_sync_catalog(force=False)
     match: dict = {"status": "published"}
     if query:
         search_regex = _build_search_regex(query)
@@ -793,15 +807,6 @@ async def _group_published_catalog_summary(q: str = "") -> list[dict]:
                 "release_date": 1,
                 "updated_at": 1,
                 "poster_url": 1,
-                "backdrop_url": 1,
-                "description": 1,
-                "genres": {"$ifNull": ["$genres", []]},
-                "actors": {"$ifNull": ["$actors", []]},
-                "director": 1,
-                "trailer_url": 1,
-                "trailer_key": 1,
-                "cast_profiles": {"$ifNull": ["$cast_profiles", []]},
-                "tmdb_id": 1,
                 "sample_files": {"$slice": [{"$ifNull": ["$files", []]}, 3]},
                 "file_count": {
                     "$let": {
@@ -861,15 +866,6 @@ async def _group_published_catalog_summary(q: str = "") -> list[dict]:
             "release_date": (row.get("release_date") or "").strip(),
             "type": (row.get("content_type") or "movie").strip().lower(),
             "poster": (row.get("poster_url") or "").strip(),
-            "backdrop": (row.get("backdrop_url") or "").strip(),
-            "description": (row.get("description") or "").strip(),
-            "genres": row.get("genres") or [],
-            "actors": row.get("actors") or [],
-            "director": (row.get("director") or "").strip(),
-            "trailer_url": (row.get("trailer_url") or "").strip(),
-            "trailer_key": (row.get("trailer_key") or "").strip(),
-            "cast_profiles": row.get("cast_profiles") or [],
-            "tmdb_id": row.get("tmdb_id"),
             "items": items,
             "file_count": int(row.get("file_count") or 0),
             "total_size": int(row.get("total_size") or 0),
