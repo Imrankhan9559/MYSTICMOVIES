@@ -14,8 +14,7 @@ from pyrogram import Client, filters
 from pyrogram.handlers import MessageHandler
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.core.config import settings
-from app.core.content_store import build_content_groups
-from app.db.models import FileSystemItem, FilePart, User, SharedCollection
+from app.db.models import ContentItem, FileSystemItem, FilePart, User, SharedCollection
 from beanie import PydanticObjectId
 from beanie.operators import In
 from app.core.telethon_storage import (
@@ -46,6 +45,7 @@ _bot_handler_clients: set[str] = set()
 _bot_api_task: asyncio.Task | None = None
 _telegram_lifecycle_lock = asyncio.Lock()
 _telegram_started = False
+_catalog_cache_lock = asyncio.Lock()
 
 if settings.SESSION_STRING:
     user_client = Client(
@@ -77,7 +77,7 @@ _bot_cycle = None
 _bot_status_cache: list[dict] = []
 _catalog_cache_data: list[dict] = []
 _catalog_cache_ts: float = 0.0
-_catalog_cache_ttl_sec = 45.0
+_catalog_cache_ttl_sec = max(15.0, float(os.getenv("BOT_CATALOG_CACHE_TTL_SEC", "120")))
 
 AUTO_DELETE_SECONDS = 120
 AUTO_DELETE_NOTE = "⏳ This message will auto-delete in 120 seconds."
@@ -94,6 +94,16 @@ SEARCH_GIF_URL = os.getenv(
     "BOT_SEARCH_GIF_URL",
     "https://media.giphy.com/media/26n6WywJyh39n1pBu/giphy.gif",
 )
+BOT_SEARCH_SPELL_TIMEOUT_SEC = max(0.8, float(os.getenv("BOT_SEARCH_SPELL_TIMEOUT_SEC", "2.5")))
+
+BOT_COMMANDS = [
+    {"command": "start", "description": "Start bot / welcome"},
+    {"command": "help", "description": "Show help and commands"},
+    {"command": "commands", "description": "List all commands"},
+    {"command": "ping", "description": "Check bot status"},
+    {"command": "request", "description": "Request missing content"},
+    {"command": "site", "description": "Open MysticMovies site"},
+]
 
 QUALITY_RE = re.compile(r"(2160p|1440p|1080p|720p|480p|380p|360p)", re.I)
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
@@ -151,6 +161,48 @@ def _request_content_url(query: str = "") -> str:
     if not q:
         return _site_url("/request-content")
     return _site_url("/request-content") + "?q=" + urllib.parse.quote_plus(q)
+
+
+def _parse_command(text: str) -> tuple[str, str]:
+    raw = (text or "").strip()
+    if not raw.startswith("/"):
+        return "", raw
+    parts = raw.split(maxsplit=1)
+    cmd_token = parts[0][1:]
+    cmd = cmd_token.split("@", 1)[0].strip().lower()
+    args = parts[1].strip() if len(parts) > 1 else ""
+    return cmd, args
+
+
+def _help_embed() -> str:
+    lines = [
+        "Send any movie/web-series name to search instantly.",
+        "/start - start the bot",
+        "/help - show this help",
+        "/commands - command list",
+        "/ping - bot status check",
+        "/request <title> - request missing content",
+        "/site - open MysticMovies website",
+    ]
+    return _embed_message("Bot Commands", lines, icon="🧭", reaction="✅")
+
+
+def _help_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Visit Site", url=_site_url("/"))],
+            [InlineKeyboardButton("Request Content", url=_request_content_url(""))],
+        ]
+    )
+
+
+def _help_keyboard_api() -> str:
+    return _bot_api_keyboard(
+        [
+            [{"text": "Visit Site", "url": _site_url("/")}],
+            [{"text": "Request Content", "url": _request_content_url("")}],
+        ]
+    )
 
 
 def _slugify(text: str) -> str:
@@ -541,49 +593,95 @@ async def _google_spelling_suggestion(query: str) -> str:
         return ""
 
 
+async def _google_suggestion_fast(query: str) -> str:
+    try:
+        return await asyncio.wait_for(
+            _google_spelling_suggestion(query),
+            timeout=BOT_SEARCH_SPELL_TIMEOUT_SEC,
+        )
+    except Exception:
+        return ""
+
+
 async def _build_published_catalog(limit: int = 5000) -> list[dict]:
     global _catalog_cache_data, _catalog_cache_ts
     now = asyncio.get_event_loop().time()
     if _catalog_cache_data and (now - _catalog_cache_ts) <= _catalog_cache_ttl_sec:
         return _catalog_cache_data
 
-    groups = await build_content_groups(None, True, limit=limit, ensure_sync=True)
-    catalog = []
-    for group in groups:
-        quality_set: set[str] = set()
-        for row in group.get("qualities", {}).keys():
-            quality_set.add((row or "HD").upper())
-        for item in group.get("items", []) or []:
-            quality = (item.get("quality") or "").strip().upper()
-            if quality:
-                quality_set.add(quality)
-        qualities = sorted(quality_set or {"HD"}, key=lambda q: (-_quality_rank(q), q))
+    async with _catalog_cache_lock:
+        now = asyncio.get_event_loop().time()
+        if _catalog_cache_data and (now - _catalog_cache_ts) <= _catalog_cache_ttl_sec:
+            return _catalog_cache_data
 
-        season_values: set[int] = set()
-        for season_key in (group.get("seasons") or {}).keys():
-            try:
-                season_values.add(int(season_key))
-            except Exception:
-                continue
-        seasons = sorted(season_values)
+        try:
+            projection = {
+                "_id": 1,
+                "slug": 1,
+                "title": 1,
+                "search_title": 1,
+                "year": 1,
+                "release_date": 1,
+                "poster_url": 1,
+                "content_type": 1,
+                "files": 1,
+            }
+            cursor = (
+                ContentItem.get_motor_collection()
+                .find({"status": "published"}, projection)
+                .sort("updated_at", -1)
+                .limit(limit)
+            )
+            rows = await cursor.to_list(length=limit)
 
-        title = (group.get("title") or "").strip()
-        catalog.append({
-            "id": str(group.get("id") or ""),
-            "title": title,
-            "title_norm": _norm_text(title),
-            "year": (group.get("year") or "").strip(),
-            "type": (group.get("type") or "movie").strip().lower(),
-            "release_date": (group.get("release_date") or "").strip(),
-            "poster": (group.get("poster") or "").strip(),
-            "slug": (group.get("slug") or "").strip(),
-            "qualities": qualities,
-            "seasons": seasons,
-        })
+            catalog: list[dict] = []
+            for row in rows:
+                title = str(row.get("title") or row.get("search_title") or "").strip()
+                if not title:
+                    continue
 
-    _catalog_cache_data = catalog
-    _catalog_cache_ts = now
-    return catalog
+                quality_set: set[str] = set()
+                season_values: set[int] = set()
+                for f in (row.get("files") or []):
+                    if not isinstance(f, dict):
+                        continue
+                    quality = (str(f.get("quality") or "HD").strip().upper()) or "HD"
+                    quality_set.add(quality)
+                    try:
+                        season_no = int(f.get("season") or 0)
+                        if season_no > 0:
+                            season_values.add(season_no)
+                    except Exception:
+                        pass
+
+                qualities = sorted(quality_set or {"HD"}, key=lambda q: (-_quality_rank(q), q))
+                seasons = sorted(season_values)
+                content_type = (str(row.get("content_type") or "movie").strip().lower()) or "movie"
+
+                catalog.append(
+                    {
+                        "id": str(row.get("_id") or ""),
+                        "title": title,
+                        "title_norm": _norm_text(title),
+                        "year": str(row.get("year") or "").strip(),
+                        "type": "series" if content_type == "series" else "movie",
+                        "release_date": str(row.get("release_date") or "").strip(),
+                        "poster": str(row.get("poster_url") or "").strip(),
+                        "slug": str(row.get("slug") or "").strip(),
+                        "qualities": qualities,
+                        "seasons": seasons,
+                    }
+                )
+
+            _catalog_cache_data = catalog
+            _catalog_cache_ts = asyncio.get_event_loop().time()
+            return _catalog_cache_data
+        except Exception:
+            logger.exception("Failed to build bot catalog from content collection.")
+            # Keep serving stale cache if present.
+            if _catalog_cache_data:
+                return _catalog_cache_data
+            return []
 
 
 def _rank_catalog_matches(query: str, catalog: list[dict], limit: int = 5) -> list[dict]:
@@ -740,6 +838,79 @@ async def _send_welcome_message_api(chat_id: int, display_name: str, is_admin: b
         chat_id,
         _welcome_text(display_name, is_admin),
         reply_markup=_bot_api_keyboard([[{"text": "Visit Site", "url": _site_url("/")}]]),
+    )
+
+
+async def _send_help_message(client: Client, chat_id: int | str):
+    await _send_message_pyro(
+        client,
+        chat_id,
+        _help_embed(),
+        reply_markup=_help_keyboard(),
+    )
+
+
+async def _send_help_message_api(chat_id: int | str):
+    await _send_message_api(
+        chat_id,
+        _help_embed(),
+        reply_markup=_help_keyboard_api(),
+    )
+
+
+async def _send_pong_message(client: Client, chat_id: int | str):
+    await _send_message_pyro(
+        client,
+        chat_id,
+        _embed_message(
+            "Bot Status",
+            ["Bot is online and ready.", "Send a title to search content instantly."],
+            icon="🟢",
+            reaction="⚡",
+        ),
+    )
+
+
+async def _send_pong_message_api(chat_id: int | str):
+    await _send_message_api(
+        chat_id,
+        _embed_message(
+            "Bot Status",
+            ["Bot is online and ready.", "Send a title to search content instantly."],
+            icon="🟢",
+            reaction="⚡",
+        ),
+    )
+
+
+async def _send_request_message(client: Client, chat_id: int | str, query: str = ""):
+    request_url = _request_content_url(query)
+    lines = [
+        "Use this to request missing content.",
+        f"Request link: {request_url}",
+    ]
+    if query:
+        lines.insert(0, f"Prefilled title: {query}")
+    await _send_message_pyro(
+        client,
+        chat_id,
+        _embed_message("Request Content", lines, icon="📥", reaction="✅"),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Open Request Page", url=request_url)]]),
+    )
+
+
+async def _send_request_message_api(chat_id: int | str, query: str = ""):
+    request_url = _request_content_url(query)
+    lines = [
+        "Use this to request missing content.",
+        f"Request link: {request_url}",
+    ]
+    if query:
+        lines.insert(0, f"Prefilled title: {query}")
+    await _send_message_api(
+        chat_id,
+        _embed_message("Request Content", lines, icon="📥", reaction="✅"),
+        reply_markup=_bot_api_keyboard([[{"text": "Open Request Page", "url": request_url}]]),
     )
 
 
@@ -1590,7 +1761,7 @@ async def handle_start_command(client: Client, message):
                 msg = await tl_get_message(item.parts[0].message_id)
                 await tl_forward_to_user(message.chat.id, msg)
                 sent += 1
-                await asyncio.sleep(0.35)
+                await asyncio.sleep(0.15)
 
             if sent:
                 await _send_message_pyro(
@@ -1641,6 +1812,18 @@ async def handle_text_query(client: Client, message):
 
     query = raw_query[:120]
     catalog = await _build_published_catalog()
+    if not catalog:
+        await _send_message_pyro(
+            client,
+            message.chat.id,
+            _embed_message(
+                "Catalog Busy",
+                ["Search index is warming up.", "Please try again in a few seconds."],
+                icon="⏳",
+                reaction="⚡",
+            ),
+        )
+        return
     results = _rank_catalog_matches(query, catalog, limit=5)
     corrected = ""
 
@@ -1668,7 +1851,7 @@ async def handle_text_query(client: Client, message):
                     reaction="🔎",
                 ),
             )
-        suggestion = await _google_spelling_suggestion(query)
+        suggestion = await _google_suggestion_fast(query)
         if suggestion:
             corrected = suggestion
             results = _rank_catalog_matches(suggestion, catalog, limit=5)
@@ -1701,27 +1884,39 @@ async def handle_bot_message(client: Client, message):
     """Single entrypoint for bot messages to avoid filter mismatches."""
     try:
         chat_type = getattr(getattr(message, "chat", None), "type", "")
-        if chat_type not in ("private", "group", "supergroup", "channel"):
-            return
-        if message.text and message.text.strip().startswith("/start"):
-            await handle_start_command(client, message)
+        if chat_type != "private":
             return
         if message.text:
-            if message.text.strip().startswith("/"):
-                linked_user = await _linked_user_from_tg_id(
-                    getattr(message.from_user, "id", None) if message.from_user else None
-                )
-                display_name = (
-                    (getattr(message.from_user, "first_name", "") or "").strip()
-                    or (getattr(linked_user, "first_name", "") or "").strip()
-                    or "there"
-                )
-                await _send_welcome_message(
+            cmd, args = _parse_command(message.text)
+            if cmd == "start":
+                await handle_start_command(client, message)
+                return
+            if cmd in {"help", "commands", "menu"}:
+                await _send_help_message(client, message.chat.id)
+                return
+            if cmd in {"ping", "alive"}:
+                await _send_pong_message(client, message.chat.id)
+                return
+            if cmd in {"request", "req"}:
+                await _send_request_message(client, message.chat.id, args)
+                return
+            if cmd in {"site", "web"}:
+                await _send_message_pyro(
                     client,
                     message.chat.id,
-                    display_name,
-                    _is_admin_user(linked_user),
+                    _embed_message(
+                        "MysticMovies",
+                        [f"Open website: {_site_url('/')}"],
+                        icon="🌐",
+                        reaction="✅",
+                    ),
+                    reply_markup=InlineKeyboardMarkup(
+                        [[InlineKeyboardButton("Visit Site", url=_site_url("/"))]]
+                    ),
                 )
+                return
+            if cmd:
+                await _send_help_message(client, message.chat.id)
                 return
             await handle_text_query(client, message)
             return
@@ -1764,6 +1959,18 @@ def _clear_bot_webhook_http(token: str) -> None:
         logger.warning(f"Failed to clear bot webhook via HTTP: {e}")
 
 
+async def _set_bot_commands_http(token: str) -> None:
+    if not token:
+        return
+    try:
+        payload = json.dumps(BOT_COMMANDS)
+        resp = await _bot_api_call(token, "setMyCommands", {"commands": payload})
+        if not resp.get("ok"):
+            logger.warning("setMyCommands failed: %s", resp.get("description", "unknown"))
+    except Exception as e:
+        logger.warning("Failed to set bot commands: %s", e)
+
+
 async def _bot_api_call(token: str, method: str, params: dict | None = None) -> dict:
     params = params or {}
     def _do():
@@ -1782,7 +1989,7 @@ async def _handle_bot_api_message(message: dict):
     try:
         chat = message.get("chat") or {}
         chat_type = (chat.get("type") or "")
-        if chat_type not in ("private", "group", "supergroup", "channel"):
+        if chat_type != "private":
             return
 
         chat_id = chat.get("id")
@@ -1796,109 +2003,141 @@ async def _handle_bot_api_message(message: dict):
             or "there"
         )
 
-        if text.startswith("/start"):
-            parts = text.split(maxsplit=1)
-            if len(parts) > 1:
-                payload = parts[1].strip()
-                if payload.startswith("share_"):
-                    token = payload.replace("share_", "", 1)
-                    items = await _resolve_shared_items(token)
-                    if not items:
-                        await _send_message_api(
-                            chat_id,
-                            _embed_message(
-                                "Shared Link",
-                                ["File not found or expired."],
-                                icon="📦",
-                                reaction="⛔",
-                            ),
-                        )
-                        return
-
-                    items = [i for i in items if _is_video_item(i)]
-                    if not items:
-                        await _send_message_api(
-                            chat_id,
-                            _embed_message(
-                                "Shared Link",
-                                ["No video files found in this shared item."],
-                                icon="📦",
-                                reaction="⚠️",
-                            ),
-                        )
-                        return
-
-                    sent = 0
-                    unavailable = 0
-                    for item in items:
-                        if not item.parts:
-                            continue
-                        part = item.parts[0]
-                        source_chat = part.chat_id or normalize_chat_id(get_storage_chat_id())
-                        if not source_chat or source_chat == "me":
-                            unavailable += 1
-                            continue
-                        copy_resp = await _bot_api_call(
-                            settings.BOT_TOKEN,
-                            "copyMessage",
-                            {
-                                "chat_id": chat_id,
-                                "from_chat_id": source_chat,
-                                "message_id": part.message_id
-                            }
-                        )
-                        if not copy_resp.get("ok"):
+        if text:
+            cmd, args = _parse_command(text)
+            if cmd == "start":
+                parts = text.split(maxsplit=1)
+                if len(parts) > 1:
+                    payload = parts[1].strip()
+                    if payload.startswith("share_"):
+                        token = payload.replace("share_", "", 1)
+                        items = await _resolve_shared_items(token)
+                        if not items:
                             await _send_message_api(
                                 chat_id,
                                 _embed_message(
-                                    "Shared Link Error",
-                                    [f"Failed to send file: {copy_resp.get('description', 'unknown error')}"],
-                                    icon="❌",
+                                    "Shared Link",
+                                    ["File not found or expired."],
+                                    icon="📦",
+                                    reaction="⛔",
+                                ),
+                            )
+                            return
+
+                        items = [i for i in items if _is_video_item(i)]
+                        if not items:
+                            await _send_message_api(
+                                chat_id,
+                                _embed_message(
+                                    "Shared Link",
+                                    ["No video files found in this shared item."],
+                                    icon="📦",
                                     reaction="⚠️",
                                 ),
                             )
-                            continue
-                        try:
-                            copied_msg_id = int((copy_resp.get("result") or {}).get("message_id") or 0)
-                            if copied_msg_id:
-                                asyncio.create_task(_delete_later_api(chat_id, copied_msg_id))
-                        except Exception:
-                            pass
-                        sent += 1
-                        await asyncio.sleep(0.35)
+                            return
 
-                    if sent:
-                        await _send_message_api(
-                            chat_id,
-                            _embed_message(
-                                "Shared Files Sent",
-                                [f"Sent {sent} file(s)."],
-                                icon="📨",
-                                reaction="✅",
-                            ),
-                        )
-                    if unavailable:
-                        await _send_message_api(
-                            chat_id,
-                            _embed_message(
-                                "Partial Delivery",
-                                ["Some files were not available from storage."],
-                                icon="⚠️",
-                                reaction="📁",
-                            ),
-                        )
-                    return
+                        sent = 0
+                        unavailable = 0
+                        for item in items:
+                            if not item.parts:
+                                continue
+                            part = item.parts[0]
+                            source_chat = part.chat_id or normalize_chat_id(get_storage_chat_id())
+                            if not source_chat or source_chat == "me":
+                                unavailable += 1
+                                continue
+                            copy_resp = await _bot_api_call(
+                                settings.BOT_TOKEN,
+                                "copyMessage",
+                                {
+                                    "chat_id": chat_id,
+                                    "from_chat_id": source_chat,
+                                    "message_id": part.message_id
+                                }
+                            )
+                            if not copy_resp.get("ok"):
+                                await _send_message_api(
+                                    chat_id,
+                                    _embed_message(
+                                        "Shared Link Error",
+                                        [f"Failed to send file: {copy_resp.get('description', 'unknown error')}"],
+                                        icon="❌",
+                                        reaction="⚠️",
+                                    ),
+                                )
+                                continue
+                            try:
+                                copied_msg_id = int((copy_resp.get("result") or {}).get("message_id") or 0)
+                                if copied_msg_id:
+                                    asyncio.create_task(_delete_later_api(chat_id, copied_msg_id))
+                            except Exception:
+                                pass
+                            sent += 1
+                            await asyncio.sleep(0.15)
 
-            await _send_welcome_message_api(chat_id, display_name, _is_admin_user(linked_user))
-            return
+                        if sent:
+                            await _send_message_api(
+                                chat_id,
+                                _embed_message(
+                                    "Shared Files Sent",
+                                    [f"Sent {sent} file(s)."],
+                                    icon="📨",
+                                    reaction="✅",
+                                ),
+                            )
+                        if unavailable:
+                            await _send_message_api(
+                                chat_id,
+                                _embed_message(
+                                    "Partial Delivery",
+                                    ["Some files were not available from storage."],
+                                    icon="⚠️",
+                                    reaction="📁",
+                                ),
+                            )
+                        return
 
-        if text:
-            if text.startswith("/"):
                 await _send_welcome_message_api(chat_id, display_name, _is_admin_user(linked_user))
+                return
+            if cmd in {"help", "commands", "menu"}:
+                await _send_help_message_api(chat_id)
+                return
+            if cmd in {"ping", "alive"}:
+                await _send_pong_message_api(chat_id)
+                return
+            if cmd in {"request", "req"}:
+                await _send_request_message_api(chat_id, args)
+                return
+            if cmd in {"site", "web"}:
+                await _send_message_api(
+                    chat_id,
+                    _embed_message(
+                        "MysticMovies",
+                        [f"Open website: {_site_url('/')}"],
+                        icon="🌐",
+                        reaction="✅",
+                    ),
+                    reply_markup=_bot_api_keyboard([[{"text": "Visit Site", "url": _site_url("/")}]]),
+                )
+                return
+            if cmd:
+                await _send_help_message_api(chat_id)
                 return
 
             query = text[:120]
             catalog = await _build_published_catalog()
+            if not catalog:
+                await _send_message_api(
+                    chat_id,
+                    _embed_message(
+                        "Catalog Busy",
+                        ["Search index is warming up.", "Please try again in a few seconds."],
+                        icon="⏳",
+                        reaction="⚡",
+                    ),
+                )
+                return
             results = _rank_catalog_matches(query, catalog, limit=5)
             corrected = ""
 
@@ -1924,7 +2163,7 @@ async def _handle_bot_api_message(message: dict):
                             reaction="🔎",
                         ),
                     )
-                suggestion = await _google_spelling_suggestion(query)
+                suggestion = await _google_suggestion_fast(query)
                 if suggestion:
                     corrected = suggestion
                     results = _rank_catalog_matches(suggestion, catalog, limit=5)
@@ -2126,7 +2365,11 @@ async def _bot_api_poll_loop():
             resp = await _bot_api_call(
                 settings.BOT_TOKEN,
                 "getUpdates",
-                {"timeout": 25, "offset": offset}
+                {
+                    "timeout": 25,
+                    "offset": offset,
+                    "allowed_updates": json.dumps(["message", "edited_message"]),
+                },
             )
             if not resp.get("ok"):
                 await asyncio.sleep(2)
@@ -2136,6 +2379,8 @@ async def _bot_api_poll_loop():
                 msg = upd.get("message") or upd.get("edited_message") or upd.get("channel_post")
                 if msg:
                     await _handle_bot_api_message(msg)
+        except asyncio.CancelledError:
+            break
         except Exception as e:
             logger.warning(f"Bot API polling error: {e}")
             await asyncio.sleep(2)
@@ -2149,6 +2394,7 @@ async def start_telegram():
 
         logger.info("Connecting to Telegram...")
         started_clients: list[tuple[str, Client]] = []
+        has_pyrogram_update_receiver = False
 
         try:
             if not _is_client_connected(tg_client):
@@ -2167,6 +2413,7 @@ async def start_telegram():
             await resolve_storage_chat_id(tg_client)
             if getattr(tg_client, "_is_bot", False):
                 _register_bot_handlers(tg_client)
+                has_pyrogram_update_receiver = True
             if user_client and tg_client is user_client:
                 await ensure_bot_member(user_client)
             await verify_storage_access_v2(tg_client)
@@ -2187,6 +2434,7 @@ async def start_telegram():
                         _clear_bot_webhook_http(settings.BOT_TOKEN)
                     await verify_storage_access_v2(bot_client)
                     _register_bot_handlers(bot_client)
+                    has_pyrogram_update_receiver = True
                 except Exception as e:
                     logger.warning(f"Bot client start failed: {e}")
                     failed_bot = bot_client
@@ -2220,15 +2468,26 @@ async def start_telegram():
                         _clear_bot_webhook_http(token)
                     await verify_storage_access_v2(bot)
                     _register_bot_handlers(bot)
+                    has_pyrogram_update_receiver = True
                 except Exception as e:
                     logger.error(f"Failed to start bot pool #{idx}: {e}")
                     await _safe_stop_client(bot, f"pool_{idx}")
                     _forget_bot_handlers(bot)
 
-            # Start Bot API polling fallback
-            if settings.BOT_TOKEN and (_bot_api_task is None or _bot_api_task.done()):
+            # Publish bot command menu.
+            if settings.BOT_TOKEN:
+                await _set_bot_commands_http(settings.BOT_TOKEN)
+            for token in _get_pool_tokens():
+                if token != settings.BOT_TOKEN:
+                    await _set_bot_commands_http(token)
+
+            # Start Bot API polling only as fallback (never together with Pyrogram polling).
+            if has_pyrogram_update_receiver:
+                await _stop_bot_api_task()
+                logger.info("Bot API polling disabled (Pyrogram update receiver active).")
+            elif settings.BOT_TOKEN and (_bot_api_task is None or _bot_api_task.done()):
                 _bot_api_task = asyncio.create_task(_bot_api_poll_loop(), name="bot_api_poll_loop")
-                logger.info("Bot API polling started")
+                logger.info("Bot API polling fallback started")
 
             _telegram_started = True
         except Exception:

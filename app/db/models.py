@@ -134,6 +134,9 @@ class ContentItem(Document):
             [("status", 1), ("collaborators", 1), ("updated_at", -1)],
             [("status", 1), ("content_type", 1), ("release_date", -1)],
             [("status", 1), ("title", 1)],
+            [("status", 1), ("content_type", 1), ("title", 1), ("year", 1)],
+            [("file_ids", 1)],
+            [("files.file_id", 1)],
             [("tmdb_id", 1)],
         ]
 

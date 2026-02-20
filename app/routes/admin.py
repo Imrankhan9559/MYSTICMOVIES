@@ -45,6 +45,7 @@ _ADMIN_SITE_CACHE: dict[str, object] = {"ts": 0.0, "row": None}
 _ADMIN_BADGES_CACHE: dict[str, object] = {"ts": 0.0, "data": None}
 _ADMIN_PENDING_STORAGE_CACHE: dict[str, object] = {"ts": 0.0, "count": 0}
 _ADMIN_PUBLISHED_GROUPS_CACHE: dict[str, object] = {"ts": 0.0, "groups": None}
+_ADMIN_PUBLISHED_SUMMARY_CACHE: dict[str, object] = {"ts": 0.0, "groups": None}
 _ADMIN_STORAGE_SUGGEST_CACHE: dict[str, object] = {"ts": 0.0, "rows": None}
 _ADMIN_SITE_CACHE_TTL_SEC = 20.0
 _ADMIN_BADGES_CACHE_TTL_SEC = 12.0
@@ -61,6 +62,8 @@ def _invalidate_admin_caches() -> None:
     _ADMIN_PENDING_STORAGE_CACHE["count"] = 0
     _ADMIN_PUBLISHED_GROUPS_CACHE["ts"] = 0.0
     _ADMIN_PUBLISHED_GROUPS_CACHE["groups"] = None
+    _ADMIN_PUBLISHED_SUMMARY_CACHE["ts"] = 0.0
+    _ADMIN_PUBLISHED_SUMMARY_CACHE["groups"] = None
     _ADMIN_STORAGE_SUGGEST_CACHE["ts"] = 0.0
     _ADMIN_STORAGE_SUGGEST_CACHE["rows"] = None
 
@@ -447,6 +450,48 @@ async def _remove_file_from_content_docs(file_id: str) -> None:
         doc.updated_at = datetime.now()
         await doc.save()
 
+
+async def _remove_files_from_content_docs(file_ids: list[str]) -> None:
+    targets = [str(x).strip() for x in (file_ids or []) if str(x).strip()]
+    if not targets:
+        return
+    now_dt = datetime.now()
+    coll = ContentItem.get_motor_collection()
+    try:
+        await coll.update_many(
+            {
+                "$or": [
+                    {"file_ids": {"$in": targets}},
+                    {"files.file_id": {"$in": targets}},
+                ]
+            },
+            {
+                "$pull": {
+                    "file_ids": {"$in": targets},
+                    "files": {"file_id": {"$in": targets}},
+                },
+                "$set": {"updated_at": now_dt},
+            },
+        )
+        await coll.update_many(
+            {
+                "status": "published",
+                "$expr": {
+                    "$and": [
+                        {"$eq": [{"$size": {"$ifNull": ["$file_ids", []]}}, 0]},
+                        {"$eq": [{"$size": {"$ifNull": ["$files", []]}}, 0]},
+                    ]
+                },
+            },
+            {"$set": {"status": "archived", "updated_at": now_dt}},
+        )
+    except Exception:
+        for fid in targets:
+            try:
+                await _remove_file_from_content_docs(fid)
+            except Exception:
+                pass
+
 def _quality_rank(q: str) -> int:
     order = {"2160P": 5, "1440P": 4, "1080P": 3, "720P": 2, "480P": 1, "380P": 0, "360P": 0, "HD": 0}
     return order.get((q or "").upper(), 0)
@@ -610,15 +655,409 @@ async def _group_published_catalog() -> list[dict]:
     return out
 
 
+async def _content_doc_to_group(doc: ContentItem, include_all_items: bool = True) -> dict:
+    refs = list(getattr(doc, "files", []) or [])
+    if not refs:
+        refs = [{"file_id": str(raw)} for raw in (getattr(doc, "file_ids", []) or []) if str(raw).strip()]
+
+    view_refs = refs if include_all_items else refs[:3]
+    missing_ids: list[str] = []
+    for ref in view_refs:
+        fid = str((ref.get("file_id") if isinstance(ref, dict) else getattr(ref, "file_id", "")) or "").strip()
+        if not fid:
+            continue
+        name = (ref.get("name") if isinstance(ref, dict) else getattr(ref, "name", "")) or ""
+        size_raw = (ref.get("size") if isinstance(ref, dict) else getattr(ref, "size", 0)) or 0
+        if not str(name).strip() or int(size_raw or 0) <= 0:
+            missing_ids.append(fid)
+
+    row_map: dict[str, FileSystemItem] = {}
+    if missing_ids:
+        try:
+            rows = await FileSystemItem.find(In(FileSystemItem.id, _cast_ids(missing_ids))).to_list()
+            row_map = {str(row.id): row for row in rows}
+        except Exception:
+            row_map = {}
+
+    ctype = (getattr(doc, "content_type", "") or "movie").strip().lower()
+    items: list[dict] = []
+    for ref in view_refs:
+        getv = ref.get if isinstance(ref, dict) else lambda k, d=None: getattr(ref, k, d)
+        fid = str(getv("file_id", "") or "").strip()
+        if not fid:
+            continue
+        row = row_map.get(fid)
+        name = str(getv("name", "") or "").strip() or (getattr(row, "name", "") if row else "")
+        parsed = _parse_name(name or "")
+        quality = (
+            str(getv("quality", "") or "").strip()
+            or (getattr(row, "quality", "") if row else "")
+            or (parsed.get("quality") or "HD")
+        )
+        season = getv("season", None)
+        episode = getv("episode", None)
+        if season is None and row is not None:
+            season = getattr(row, "season", None)
+        if episode is None and row is not None:
+            episode = getattr(row, "episode", None)
+        if season is None:
+            season = parsed.get("season")
+        if episode is None:
+            episode = parsed.get("episode")
+        if ctype != "series":
+            season = None
+            episode = None
+        size_val = int((getv("size", 0) or 0) or (getattr(row, "size", 0) if row else 0) or 0)
+        item = {
+            "id": fid,
+            "name": name or fid,
+            "size": size_val,
+            "size_label": format_size(size_val),
+            "quality": (quality or "HD").upper(),
+            "season": int(season) if season else None,
+            "episode": int(episode) if episode else None,
+            "episode_title": str(getv("episode_title", "") or "").strip() or (getattr(row, "episode_title", "") if row else ""),
+        }
+        items.append(item)
+
+    group = {
+        "id": str(doc.id),
+        "title": (getattr(doc, "title", "") or "").strip(),
+        "year": (getattr(doc, "year", "") or "").strip(),
+        "slug": (getattr(doc, "slug", "") or "").strip(),
+        "release_date": (getattr(doc, "release_date", "") or "").strip(),
+        "type": ctype,
+        "poster": (getattr(doc, "poster_url", "") or "").strip(),
+        "backdrop": (getattr(doc, "backdrop_url", "") or "").strip(),
+        "description": (getattr(doc, "description", "") or "").strip(),
+        "genres": list(getattr(doc, "genres", []) or []),
+        "actors": list(getattr(doc, "actors", []) or []),
+        "director": (getattr(doc, "director", "") or "").strip(),
+        "trailer_url": (getattr(doc, "trailer_url", "") or "").strip(),
+        "trailer_key": (getattr(doc, "trailer_key", "") or "").strip(),
+        "cast_profiles": list(getattr(doc, "cast_profiles", []) or []),
+        "tmdb_id": getattr(doc, "tmdb_id", None),
+        "items": items,
+    }
+    group["items"].sort(key=lambda x: (x.get("season") or 0, x.get("episode") or 0, x.get("quality") or ""))
+    _summarize_group(group)
+    if not group.get("file_count"):
+        fallback_count = len(list(getattr(doc, "files", []) or [])) or len(list(getattr(doc, "file_ids", []) or []))
+        if fallback_count > 0:
+            group["file_count"] = fallback_count
+    group["release_date_label"] = _format_release_date(group.get("release_date", ""))
+    group["content_path"] = _content_path(group.get("title", ""), group.get("year", ""))
+    return group
+
+
+async def _group_published_catalog_summary(q: str = "") -> list[dict]:
+    query = (q or "").strip()
+    now = time.monotonic()
+    if not query:
+        cached_ts = float(_ADMIN_PUBLISHED_SUMMARY_CACHE.get("ts") or 0.0)
+        cached_groups = _ADMIN_PUBLISHED_SUMMARY_CACHE.get("groups")
+        if cached_groups is not None and (now - cached_ts) <= _ADMIN_GROUPS_CACHE_TTL_SEC:
+            return copy.deepcopy(cached_groups)  # type: ignore[arg-type]
+
+    await sync_content_catalog(force=False)
+    match: dict = {"status": "published"}
+    if query:
+        search_regex = _build_search_regex(query)
+        if not search_regex:
+            return []
+        rx = {"$regex": search_regex, "$options": "i"}
+        match["$or"] = [
+            {"title": rx},
+            {"search_title": rx},
+            {"year": rx},
+            {"content_type": rx},
+            {"files.name": rx},
+        ]
+
+    pipeline = [
+        {"$match": match},
+        {
+            "$project": {
+                "title": 1,
+                "year": 1,
+                "slug": 1,
+                "content_type": 1,
+                "release_date": 1,
+                "updated_at": 1,
+                "poster_url": 1,
+                "backdrop_url": 1,
+                "description": 1,
+                "genres": {"$ifNull": ["$genres", []]},
+                "actors": {"$ifNull": ["$actors", []]},
+                "director": 1,
+                "trailer_url": 1,
+                "trailer_key": 1,
+                "cast_profiles": {"$ifNull": ["$cast_profiles", []]},
+                "tmdb_id": 1,
+                "sample_files": {"$slice": [{"$ifNull": ["$files", []]}, 3]},
+                "file_count": {
+                    "$let": {
+                        "vars": {
+                            "files_len": {"$size": {"$ifNull": ["$files", []]}},
+                            "ids_len": {"$size": {"$ifNull": ["$file_ids", []]}},
+                        },
+                        "in": {
+                            "$cond": [
+                                {"$gt": ["$$files_len", 0]},
+                                "$$files_len",
+                                "$$ids_len",
+                            ]
+                        },
+                    }
+                },
+                "total_size": {
+                    "$sum": {
+                        "$map": {
+                            "input": {"$ifNull": ["$files", []]},
+                            "as": "f",
+                            "in": {
+                                "$convert": {
+                                    "input": {"$ifNull": ["$$f.size", 0]},
+                                    "to": "long",
+                                    "onError": 0,
+                                    "onNull": 0,
+                                }
+                            },
+                        }
+                    }
+                },
+            }
+        },
+        {"$sort": {"updated_at": -1}},
+        {"$limit": 2500},
+    ]
+    rows = await ContentItem.get_motor_collection().aggregate(pipeline).to_list(length=2500)
+    groups: list[dict] = []
+    for row in rows:
+        items = []
+        for ref in (row.get("sample_files") or []):
+            if not isinstance(ref, dict):
+                continue
+            name = (ref.get("name") or "").strip()
+            size_val = int(ref.get("size") or 0)
+            items.append({
+                "name": name or "Unknown file",
+                "size": size_val,
+                "size_label": format_size(size_val),
+            })
+        group = {
+            "id": str(row.get("_id") or ""),
+            "title": (row.get("title") or "").strip(),
+            "year": (row.get("year") or "").strip(),
+            "slug": (row.get("slug") or "").strip(),
+            "release_date": (row.get("release_date") or "").strip(),
+            "type": (row.get("content_type") or "movie").strip().lower(),
+            "poster": (row.get("poster_url") or "").strip(),
+            "backdrop": (row.get("backdrop_url") or "").strip(),
+            "description": (row.get("description") or "").strip(),
+            "genres": row.get("genres") or [],
+            "actors": row.get("actors") or [],
+            "director": (row.get("director") or "").strip(),
+            "trailer_url": (row.get("trailer_url") or "").strip(),
+            "trailer_key": (row.get("trailer_key") or "").strip(),
+            "cast_profiles": row.get("cast_profiles") or [],
+            "tmdb_id": row.get("tmdb_id"),
+            "items": items,
+            "file_count": int(row.get("file_count") or 0),
+            "total_size": int(row.get("total_size") or 0),
+        }
+        group["total_size_label"] = format_size(group["total_size"])
+        group["release_date_label"] = _format_release_date(group.get("release_date", ""))
+        group["content_path"] = _content_path(group.get("title", ""), group.get("year", ""))
+        groups.append(group)
+
+    if not query:
+        _ADMIN_PUBLISHED_SUMMARY_CACHE["ts"] = now
+        _ADMIN_PUBLISHED_SUMMARY_CACHE["groups"] = copy.deepcopy(groups)
+    return groups
+
+
+async def _refresh_content_doc_for_group(
+    group_title: str,
+    group_type: str,
+    group_year: str = "",
+    known_doc_id: str = "",
+) -> None:
+    title = (group_title or "").strip()
+    ctype = (group_type or "movie").strip().lower()
+    year = (group_year or "").strip()
+    if not title:
+        return
+
+    query_items = [
+        FileSystemItem.catalog_status == "published",
+        FileSystemItem.catalog_type == ctype,
+        Or(FileSystemItem.title == title, FileSystemItem.series_title == title),
+    ]
+    if year:
+        query_items.append(FileSystemItem.year == year)
+    items = await FileSystemItem.find(*query_items).to_list()
+
+    doc = None
+    if known_doc_id:
+        try:
+            doc = await ContentItem.get(known_doc_id)
+        except Exception:
+            doc = None
+    if not doc:
+        doc_query = [
+            ContentItem.status == "published",
+            ContentItem.content_type == ctype,
+            ContentItem.title == title,
+        ]
+        if year:
+            doc_query.append(ContentItem.year == year)
+        doc = await ContentItem.find(*doc_query).sort("-updated_at").first_or_none()
+
+    if not items:
+        if doc:
+            await doc.delete()
+        return
+
+    def _pick(attr: str, default: str = "") -> str:
+        for row in items:
+            val = (getattr(row, attr, "") or "").strip()
+            if val:
+                return val
+        return default
+
+    def _pick_list(attr: str) -> list[str]:
+        for row in items:
+            val = getattr(row, attr, None) or []
+            if val:
+                return list(val)
+        return []
+
+    owner_phone = _pick("owner_phone")
+    collaborators: set[str] = set()
+    for row in items:
+        for value in (getattr(row, "collaborators", []) or []):
+            text = (value or "").strip()
+            if text:
+                collaborators.add(text)
+
+    files = []
+    file_ids: list[str] = []
+    for row in items:
+        if bool(getattr(row, "is_folder", False)):
+            continue
+        fid = str(row.id)
+        file_ids.append(fid)
+        info = _parse_name(getattr(row, "name", "") or "")
+        quality = (getattr(row, "quality", "") or info.get("quality") or "HD").upper()
+        season = getattr(row, "season", None) or info.get("season")
+        episode = getattr(row, "episode", None) or info.get("episode")
+        if ctype != "series":
+            season = None
+            episode = None
+        files.append({
+            "file_id": fid,
+            "name": getattr(row, "name", "") or fid,
+            "quality": quality,
+            "season": int(season) if season else None,
+            "episode": int(episode) if episode else None,
+            "episode_title": (getattr(row, "episode_title", "") or "").strip(),
+            "size": int(getattr(row, "size", 0) or 0),
+            "mime_type": getattr(row, "mime_type", None),
+        })
+
+    effective_year = year or _pick("year")
+    slug_base = _slugify(title)
+    slug = f"{slug_base}-{effective_year}" if (slug_base and effective_year) else slug_base
+    now_dt = datetime.now()
+    base_item = items[0] if items else None
+
+    if not doc:
+        doc = ContentItem(
+            slug=slug,
+            title=title,
+            search_title=title.lower(),
+            content_type=ctype,
+            status="published",
+            year=effective_year,
+            release_date=_pick("release_date"),
+            poster_url=_pick("poster_url"),
+            backdrop_url=_pick("backdrop_url"),
+            description=_pick("description"),
+            genres=_pick_list("genres"),
+            actors=_pick_list("actors"),
+            director=_pick("director"),
+            trailer_url=_pick("trailer_url"),
+            trailer_key=_pick("trailer_key"),
+            cast_profiles=list(getattr(base_item, "cast_profiles", []) or []),
+            tmdb_id=next((getattr(row, "tmdb_id", None) for row in items if getattr(row, "tmdb_id", None)), None),
+            owner_phone=owner_phone,
+            collaborators=sorted(collaborators),
+            file_ids=file_ids,
+            files=files,
+            created_at=now_dt,
+            updated_at=now_dt,
+        )
+        await doc.insert()
+    else:
+        doc.slug = slug
+        doc.title = title
+        doc.search_title = title.lower()
+        doc.content_type = ctype
+        doc.status = "published"
+        doc.year = effective_year
+        doc.release_date = _pick("release_date")
+        doc.poster_url = _pick("poster_url")
+        doc.backdrop_url = _pick("backdrop_url")
+        doc.description = _pick("description")
+        doc.genres = _pick_list("genres")
+        doc.actors = _pick_list("actors")
+        doc.director = _pick("director")
+        doc.trailer_url = _pick("trailer_url")
+        doc.trailer_key = _pick("trailer_key")
+        doc.cast_profiles = list(getattr(base_item, "cast_profiles", []) or [])
+        doc.tmdb_id = next((getattr(row, "tmdb_id", None) for row in items if getattr(row, "tmdb_id", None)), None)
+        doc.owner_phone = owner_phone
+        doc.collaborators = sorted(collaborators)
+        doc.file_ids = file_ids
+        doc.files = files
+        doc.updated_at = now_dt
+        await doc.save()
+
+    try:
+        await ContentItem.get_motor_collection().delete_many(
+            {
+                "_id": {"$ne": doc.id},
+                "status": "published",
+                "content_type": ctype,
+                "title": title,
+                "year": effective_year,
+            }
+        )
+    except Exception:
+        pass
+
+
 async def _find_group_by_item_id(item_id: str) -> dict | None:
-    groups = await _group_published_catalog()
-    for g in groups:
-        if g.get("id") == item_id:
-            return g
-        for itm in g.get("items", []):
-            if itm.get("id") == item_id:
-                return g
-    return None
+    target = (item_id or "").strip()
+    if not target:
+        return None
+    doc = None
+    try:
+        doc = await ContentItem.get(target)
+    except Exception:
+        doc = None
+    if not doc:
+        doc = await ContentItem.find_one({
+            "status": "published",
+            "$or": [
+                {"file_ids": target},
+                {"files.file_id": target},
+            ],
+        })
+    if not doc:
+        return None
+    return await _content_doc_to_group(doc, include_all_items=True)
 
 
 async def _find_group_identity(
@@ -627,27 +1066,39 @@ async def _find_group_identity(
     group_year: str = "",
     group_type: str = "",
 ) -> dict | None:
-    group_id = (group_id or "").strip()
-    if group_id:
-        found = await _find_group_by_item_id(group_id)
+    gid = (group_id or "").strip()
+    if gid:
+        found = await _find_group_by_item_id(gid)
         if found:
             return found
 
-    title = (group_title or "").strip().lower()
+    title = (group_title or "").strip()
     year = (group_year or "").strip()
     ctype = (group_type or "").strip().lower()
     if not title:
         return None
-    groups = await _group_published_catalog()
-    for g in groups:
-        if (g.get("title", "") or "").strip().lower() != title:
-            continue
-        if year and (g.get("year", "") or "").strip() != year:
-            continue
-        if ctype and (g.get("type", "") or "").strip().lower() != ctype:
-            continue
-        return g
-    return None
+    query_exact = [
+        ContentItem.status == "published",
+        ContentItem.title == title,
+    ]
+    if year:
+        query_exact.append(ContentItem.year == year)
+    if ctype:
+        query_exact.append(ContentItem.content_type == ctype)
+    doc = await ContentItem.find(*query_exact).first_or_none()
+    if not doc:
+        query_regex: dict = {
+            "status": "published",
+            "title": {"$regex": f"^{re.escape(title)}$", "$options": "i"},
+        }
+        if year:
+            query_regex["year"] = year
+        if ctype:
+            query_regex["content_type"] = ctype
+        doc = await ContentItem.find_one(query_regex)
+    if not doc:
+        return None
+    return await _content_doc_to_group(doc, include_all_items=True)
 
 
 def _build_request_content_options(published_groups: list[dict]) -> list[dict]:
@@ -690,6 +1141,7 @@ def _hydrate_request_links(rows: list[ContentRequest], published_groups: list[di
                 setattr(row, "fulfilled_content_title", g.get("title") or "")
             if not getattr(row, "fulfilled_content_type", ""):
                 setattr(row, "fulfilled_content_type", g.get("type") or "")
+
 
 @router.get("/admin")
 async def admin_redirect(request: Request):
@@ -1606,36 +2058,10 @@ async def publish_content(request: Request, q: str = ""):
     if not _is_admin(user):
         raise HTTPException(status_code=403, detail="Not authorized.")
 
-    all_groups = await _group_published_catalog()
-    base_ctx = await _admin_context_base(user, all_groups)
+    base_ctx = await _admin_context_base(user)
     query = (q or "").strip()
+    filtered_groups = await _group_published_catalog_summary(query)
 
-    filtered_groups = all_groups
-    if query:
-        regex = _build_search_regex(query)
-        if regex:
-            needle = re.compile(regex, re.I)
-            matched = []
-            for group in all_groups:
-                searchable = [
-                    group.get("title", ""),
-                    group.get("year", ""),
-                    group.get("type", ""),
-                ]
-                searchable.extend([(row.get("name") or "") for row in group.get("items", [])])
-                if any(needle.search(text or "") for text in searchable):
-                    matched.append(group)
-            filtered_groups = matched
-        else:
-            filtered_groups = []
-
-    if settings.TMDB_API_KEY:
-        for g in filtered_groups[:80]:
-            try:
-                if not g.get("poster") or not g.get("backdrop"):
-                    await _ensure_group_assets(g)
-            except Exception:
-                pass
     base_url = str(request.base_url).rstrip("/")
     for g in filtered_groups:
         g["content_full_url"] = f"{base_url}{g.get('content_path', '')}"
@@ -1769,21 +2195,43 @@ async def publish_content_update(
             FileSystemItem.catalog_type == group_type,
             Or(FileSystemItem.title == group_title, FileSystemItem.series_title == group_title)
         ).to_list()
-    for item in items:
-        item.title = new_title
-        if group_type == "series":
-            item.series_title = new_title
-        item.year = new_year
-        item.description = desc
-        item.genres = genres_list
-        item.actors = actors_list
-        item.director = director
-        item.trailer_url = trailer_url
-        item.trailer_key = trailer_key
-        item.poster_url = poster_url
-        item.backdrop_url = backdrop_url
-        item.release_date = release_date
-        await item.save()
+    if items:
+        update_ops: list[UpdateOne] = []
+        for item in items:
+            set_payload = {
+                "title": new_title,
+                "year": new_year,
+                "description": desc,
+                "genres": genres_list,
+                "actors": actors_list,
+                "director": director,
+                "trailer_url": trailer_url,
+                "trailer_key": trailer_key,
+                "poster_url": poster_url,
+                "backdrop_url": backdrop_url,
+                "release_date": release_date,
+            }
+            if group_type == "series":
+                set_payload["series_title"] = new_title
+            update_ops.append(UpdateOne({"_id": item.id}, {"$set": set_payload}))
+        try:
+            await FileSystemItem.get_motor_collection().bulk_write(update_ops, ordered=False)
+        except Exception:
+            for item in items:
+                item.title = new_title
+                if group_type == "series":
+                    item.series_title = new_title
+                item.year = new_year
+                item.description = desc
+                item.genres = genres_list
+                item.actors = actors_list
+                item.director = director
+                item.trailer_url = trailer_url
+                item.trailer_key = trailer_key
+                item.poster_url = poster_url
+                item.backdrop_url = backdrop_url
+                item.release_date = release_date
+                await item.save()
 
     # Keep the content document in sync so admin edits reflect immediately.
     target_doc = None
@@ -1824,7 +2272,19 @@ async def publish_content_update(
                 target_folder.name = new_title
                 await target_folder.save()
 
-    await sync_content_catalog(force=True)
+    await _refresh_content_doc_for_group(
+        group_title=new_title,
+        group_type=group_type,
+        group_year=new_year,
+        known_doc_id=str(group.get("id") or "") if group else "",
+    )
+    if old_title and old_title != new_title:
+        await _refresh_content_doc_for_group(
+            group_title=old_title,
+            group_type=group_type,
+            group_year=group_year,
+        )
+    invalidate_public_catalog_cache()
     _invalidate_admin_caches()
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
@@ -1894,8 +2354,17 @@ async def publish_content_add_files(
         trailer_key=trailer_key,
         cast_profiles=cast_profiles_list,
         tmdb_id=tmdb_id_val,
-        overrides=override_map
+        overrides=override_map,
+        sync_force=None,
     )
+    await _refresh_content_doc_for_group(
+        group_title=title,
+        group_type=catalog_type,
+        group_year=year,
+        known_doc_id=str(group.get("id") or ""),
+    )
+    invalidate_public_catalog_cache()
+    _invalidate_admin_caches()
 
     return RedirectResponse(f"/dashboard/publish-content/edit/{group.get('id')}", status_code=303)
 
@@ -1967,12 +2436,8 @@ async def publish_content_delete(
                 except Exception:
                     pass
 
-    # Remove stale file refs from content docs.
-    for fid in list(deleted_file_ids):
-        try:
-            await _remove_file_from_content_docs(fid)
-        except Exception:
-            pass
+    if deleted_file_ids:
+        await _remove_files_from_content_docs(list(deleted_file_ids))
 
     # Remove matching content docs so the publish list updates immediately.
     if group and group.get("id"):
@@ -1990,7 +2455,13 @@ async def publish_content_delete(
         doc_filters.append(ContentItem.year == group_year)
     await ContentItem.find(*doc_filters).delete()
 
-    await sync_content_catalog(force=True)
+    await _refresh_content_doc_for_group(
+        group_title=group_title,
+        group_type=group_type,
+        group_year=group_year,
+        known_doc_id=str(group.get("id") or "") if group else "",
+    )
+    invalidate_public_catalog_cache()
     _invalidate_admin_caches()
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
@@ -2010,13 +2481,18 @@ async def publish_content_delete_file(
         return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
     parent_id = item.parent_id
     removed_id = str(item.id)
+    group_title = (item.series_title or item.title or "").strip()
+    group_type = (item.catalog_type or ("series" if item.season else "movie") or "movie").strip().lower()
+    group_year = (item.year or "").strip()
     await item.delete()
     await _cleanup_parents(parent_id)
-    try:
-        await _remove_file_from_content_docs(removed_id)
-    except Exception:
-        pass
-    await sync_content_catalog(force=True)
+    await _remove_files_from_content_docs([removed_id])
+    await _refresh_content_doc_for_group(
+        group_title=group_title,
+        group_type=group_type,
+        group_year=group_year,
+    )
+    invalidate_public_catalog_cache()
     _invalidate_admin_caches()
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
@@ -2086,7 +2562,12 @@ async def publish_content_update_file(
     await item.save()
     if old_parent_id and old_parent_id != item.parent_id:
         await _cleanup_parents(old_parent_id)
-    await sync_content_catalog(force=True)
+    await _refresh_content_doc_for_group(
+        group_title=(item.series_title or item.title or "").strip(),
+        group_type=(item.catalog_type or ("series" if item.season else "movie") or "movie").strip().lower(),
+        group_year=(item.year or "").strip(),
+    )
+    invalidate_public_catalog_cache()
     _invalidate_admin_caches()
     return RedirectResponse(return_to or "/dashboard/publish-content", status_code=303)
 
@@ -2321,7 +2802,7 @@ async def _publish_items(
     release_date: str = "",
     tmdb_id: int | None = None,
     overrides: dict | None = None,
-    sync_force: bool = True,
+    sync_force: bool | None = True,
 ) -> None:
     admin_phone = getattr(settings, "ADMIN_PHONE", "") or ""
     if not admin_phone:
@@ -2523,9 +3004,10 @@ async def _publish_items(
     # Sync strategy:
     # - sync_force=True: keep strict synchronous consistency.
     # - sync_force=False: trigger a forced sync in background so publish path stays responsive.
-    if sync_force:
+    # - sync_force=None: skip global sync (caller handles targeted content doc refresh).
+    if sync_force is True:
         await sync_content_catalog(force=True)
-    else:
+    elif sync_force is False:
         try:
             asyncio.create_task(sync_content_catalog(force=True))
         except Exception:
