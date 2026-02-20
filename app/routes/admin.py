@@ -77,6 +77,14 @@ def _is_admin(user: User | None) -> bool:
     return _normalize_phone(user.phone_number) == _normalize_phone(getattr(settings, "ADMIN_PHONE", ""))
 
 
+def _collection_for(model_cls):
+    for attr in ("get_motor_collection", "get_pymongo_collection", "get_collection"):
+        getter = getattr(model_cls, attr, None)
+        if callable(getter):
+            return getter()
+    raise AttributeError(f"No collection getter found for {model_cls!r}")
+
+
 DEFAULT_HEADER_MENU = [
     {"label": "Home", "url": "/", "icon": "fas fa-house"},
     {"label": "Content", "url": "/content", "icon": "fas fa-film"},
@@ -226,7 +234,7 @@ async def _catalog_counts(groups: list[dict] | None = None) -> dict:
         movie_files = 0
         series_files = 0
         try:
-            coll = ContentItem.get_motor_collection()
+            coll = _collection_for(ContentItem)
             pipeline = [
                 {"$match": {"status": "published"}},
                 {
@@ -456,7 +464,7 @@ async def _remove_files_from_content_docs(file_ids: list[str]) -> None:
     if not targets:
         return
     now_dt = datetime.now()
-    coll = ContentItem.get_motor_collection()
+    coll = _collection_for(ContentItem)
     try:
         await coll.update_many(
             {
@@ -831,7 +839,7 @@ async def _group_published_catalog_summary(q: str = "") -> list[dict]:
         {"$sort": {"updated_at": -1}},
         {"$limit": 2500},
     ]
-    rows = await ContentItem.get_motor_collection().aggregate(pipeline).to_list(length=2500)
+    rows = await _collection_for(ContentItem).aggregate(pipeline).to_list(length=2500)
     groups: list[dict] = []
     for row in rows:
         items = []
@@ -1025,7 +1033,7 @@ async def _refresh_content_doc_for_group(
         await doc.save()
 
     try:
-        await ContentItem.get_motor_collection().delete_many(
+        await _collection_for(ContentItem).delete_many(
             {
                 "_id": {"$ne": doc.id},
                 "status": "published",
@@ -2215,7 +2223,7 @@ async def publish_content_update(
                 set_payload["series_title"] = new_title
             update_ops.append(UpdateOne({"_id": item.id}, {"$set": set_payload}))
         try:
-            await FileSystemItem.get_motor_collection().bulk_write(update_ops, ordered=False)
+            await _collection_for(FileSystemItem).bulk_write(update_ops, ordered=False)
         except Exception:
             for item in items:
                 item.title = new_title
@@ -2971,7 +2979,7 @@ async def _publish_items(
             continue
     if update_ops:
         try:
-            await FileSystemItem.get_motor_collection().bulk_write(update_ops, ordered=False)
+            await _collection_for(FileSystemItem).bulk_write(update_ops, ordered=False)
         except Exception:
             # Fallback path keeps behavior safe.
             for item in items:
