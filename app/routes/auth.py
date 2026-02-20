@@ -100,6 +100,9 @@ def _google_auth_url(state: str) -> str:
 def _normalize_phone(phone: str) -> str:
     return phone.replace(" ", "")
 
+def _normalize_phone(phone: str) -> str:
+    return phone.replace(" ", "")
+
 def _is_admin_phone(phone: str) -> bool:
     admin_phone = _normalize_phone(getattr(settings, "ADMIN_PHONE", "") or "")
     return bool(admin_phone) and _normalize_phone(phone) == admin_phone
@@ -210,7 +213,21 @@ async def login_page(request: Request):
 @router.get("/admin-login")
 async def admin_login_page(request: Request):
     """Admin login page (Telegram OTP)."""
-    return templates.TemplateResponse("admin_login.html", {"request": request, "step": "phone"})
+    user = await get_current_user(request)
+    if user and _user_role(user) == "admin":
+        return RedirectResponse("/dashboard")
+    
+    state = secrets.token_urlsafe(16)
+    oauth_states[state] = {"created_at": time.time(), "return_url": "/dashboard", "admin_login": True}
+
+    return templates.TemplateResponse(
+        "admin_login.html", 
+        {
+            "request": request, 
+            "step": "phone",
+            "google_auth_url": _google_auth_url(state)
+        }
+    )
 
 @router.get("/register")
 async def register_page(request: Request):
@@ -247,6 +264,7 @@ async def google_callback(request: Request, response: Response, code: str = "", 
         return RedirectResponse("/login")
     # simple state expiry (10 min)
     state_info = oauth_states.get(state) or {}
+    admin_login = False
     app_mode = False
     if isinstance(state_info, (int, float)):
         created_at = float(state_info)
@@ -255,6 +273,8 @@ async def google_callback(request: Request, response: Response, code: str = "", 
         created_at = float(state_info.get("created_at") or 0)
         return_url = _sanitize_return_url(state_info.get("return_url") or "")
         app_mode = bool(state_info.get("app_mode"))
+        admin_login = bool(state_info.get("admin_login"))
+
     if time.time() - created_at > 600:
         oauth_states.pop(state, None)
         return RedirectResponse("/login")
@@ -281,36 +301,50 @@ async def google_callback(request: Request, response: Response, code: str = "", 
         )
         with urllib.request.urlopen(userinfo_req) as resp:
             userinfo = json.loads(resp.read().decode("utf-8"))
-        email = userinfo.get("email")
+        email = (userinfo.get("email") or "").strip().lower()
         name = userinfo.get("name") or userinfo.get("given_name") or "User"
         if not email:
             return RedirectResponse("/login")
-        # Store Google users as approved users; use email as phone_number key.
+
         existing = await User.find_one(User.phone_number == email)
-        if existing:
+
+        if admin_login:
+            if not existing or _user_role(existing) != "admin":
+                # Security: if not a recognized admin, reject login.
+                return RedirectResponse("/admin-login?error=not_admin")
+            
+            # Ensure their record is up-to-date
             existing.first_name = name
-            existing.status = "approved"
-            existing.requested_name = name
-            existing.email = email
             existing.auth_provider = "google"
-            # Keep elevated role if user was promoted (e.g., admin from panel).
-            current_role = str(getattr(existing, "role", "") or "").strip().lower()
-            if current_role != "admin":
-                existing.role = "user"
             await existing.save()
+            return_url = "/dashboard" # Admins always go to dashboard
         else:
-            await User(
-                phone_number=email,
-                session_string="",
-                first_name=name,
-                telegram_user_id=None,
-                status="approved",
-                requested_name=name,
-                requested_at=datetime.now(),
-                email=email,
-                auth_provider="google",
-                role="user",
-            ).insert()
+            # Store Google users as approved users; use email as phone_number key.
+            if existing:
+                existing.first_name = name
+                existing.status = "approved"
+                existing.requested_name = name
+                existing.email = email
+                existing.auth_provider = "google"
+                # Keep elevated role if user was promoted (e.g., admin from panel).
+                current_role = str(getattr(existing, "role", "") or "").strip().lower()
+                if current_role != "admin":
+                    existing.role = "user"
+                await existing.save()
+            else:
+                await User(
+                    phone_number=email,
+                    session_string="",
+                    first_name=name,
+                    telegram_user_id=None,
+                    status="approved",
+                    requested_name=name,
+                    requested_at=datetime.now(),
+                    email=email,
+                    auth_provider="google",
+                    role="user",
+                ).insert()
+        
         if app_mode:
             app_token = await _issue_app_user_token(email, name)
             deep_link = "mysticmovies://auth?token=" + urllib.parse.quote(app_token, safe="")

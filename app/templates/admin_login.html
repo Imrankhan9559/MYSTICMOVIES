@@ -78,6 +78,19 @@
             </form>
         </div>
 
+        <div class="my-6 flex items-center">
+            <hr class="w-full border-t border-gray-600">
+            <span class="px-2 text-xs text-gray-500 bg-gray-800">OR</span>
+            <hr class="w-full border-t border-gray-600">
+        </div>
+
+        <div>
+            <a href="{{ google_auth_url }}" class="w-full flex items-center justify-center bg-white hover:bg-gray-200 text-gray-800 font-bold py-3 px-4 rounded-lg transition transform hover:scale-[1.02] shadow-lg">
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" class="w-5 h-5 mr-3">
+                Sign in with Google
+            </a>
+        </div>
+        
         <div id="statusMessage" class="mt-4 text-center text-sm font-bold min-h-[20px]"></div>
 
         <div class="mt-6 text-center text-xs text-gray-500">
@@ -87,6 +100,14 @@
     </div>
 
     <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const error = urlParams.get('error');
+            if (error === 'not_admin') {
+                showStatus("You are not authorized to log in as an admin.", "error");
+            }
+        });
+
         let userPhone = "";
 
         // Helper to show status
