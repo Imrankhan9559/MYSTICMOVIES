@@ -7,7 +7,9 @@ import json
 import asyncio
 import re
 import html
+import time
 from datetime import datetime
+from collections import OrderedDict
 from difflib import SequenceMatcher
 from itertools import cycle
 from pyrogram import Client, filters
@@ -46,6 +48,11 @@ _bot_api_task: asyncio.Task | None = None
 _telegram_lifecycle_lock = asyncio.Lock()
 _telegram_started = False
 _catalog_cache_lock = asyncio.Lock()
+_bot_api_poll_always = str(os.getenv("BOT_API_POLL_ALWAYS", "true")).strip().lower() in {"1", "true", "yes", "on"}
+_bot_api_skip_pending = str(os.getenv("BOT_API_SKIP_PENDING", "true")).strip().lower() in {"1", "true", "yes", "on"}
+_handled_update_ttl_sec = max(10.0, float(os.getenv("BOT_HANDLED_UPDATE_TTL_SEC", "120")))
+_handled_update_max = max(500, int(os.getenv("BOT_HANDLED_UPDATE_MAX", "8000")))
+_handled_updates: OrderedDict[str, float] = OrderedDict()
 
 if settings.SESSION_STRING:
     user_client = Client(
@@ -127,6 +134,41 @@ def _collection_for(model_cls):
         if callable(getter):
             return getter()
     raise AttributeError(f"No collection getter found for {model_cls!r}")
+
+
+def _remember_update(chat_id: int | str | None, message_id: int | str | None) -> bool:
+    """Return True if this message was already handled recently."""
+    if chat_id is None or message_id is None:
+        return False
+    try:
+        key = f"{int(chat_id)}:{int(message_id)}"
+    except Exception:
+        key = f"{chat_id}:{message_id}"
+
+    now = time.monotonic()
+    prev = _handled_updates.get(key)
+    if prev is not None and (now - float(prev)) <= _handled_update_ttl_sec:
+        _handled_updates.move_to_end(key, last=True)
+        return True
+
+    _handled_updates[key] = now
+    _handled_updates.move_to_end(key, last=True)
+
+    # Trim by size.
+    while len(_handled_updates) > _handled_update_max:
+        _handled_updates.popitem(last=False)
+
+    # Opportunistic TTL cleanup from oldest side.
+    stale_cutoff = now - (_handled_update_ttl_sec * 2.0)
+    while _handled_updates:
+        first_key = next(iter(_handled_updates))
+        first_ts = _handled_updates.get(first_key, now)
+        if float(first_ts) < stale_cutoff:
+            _handled_updates.popitem(last=False)
+        else:
+            break
+
+    return False
 
 
 def _normalize_phone(phone: str) -> str:
@@ -1894,6 +1936,10 @@ async def handle_bot_message(client: Client, message):
         chat_type = getattr(getattr(message, "chat", None), "type", "")
         if chat_type != "private":
             return
+        chat_id = getattr(getattr(message, "chat", None), "id", None)
+        msg_id = getattr(message, "id", None) or getattr(message, "message_id", None)
+        if _remember_update(chat_id, msg_id):
+            return
         if message.text:
             cmd, args = _parse_command(message.text)
             if cmd == "start":
@@ -2002,6 +2048,8 @@ async def _handle_bot_api_message(message: dict):
 
         chat_id = chat.get("id")
         msg_id = message.get("message_id")
+        if _remember_update(chat_id, msg_id):
+            return
         text = (message.get("text") or "").strip()
         from_user = message.get("from") or {}
         linked_user = await _linked_user_from_tg_id(from_user.get("id"))
@@ -2368,6 +2416,22 @@ async def _bot_api_poll_loop():
     if not settings.BOT_TOKEN:
         return
     offset = 0
+    if _bot_api_skip_pending:
+        try:
+            resp = await _bot_api_call(
+                settings.BOT_TOKEN,
+                "getUpdates",
+                {
+                    "timeout": 0,
+                    "limit": 1,
+                    "allowed_updates": json.dumps(["message", "edited_message"]),
+                },
+            )
+            if resp.get("ok") and resp.get("result"):
+                offset = int(resp["result"][-1].get("update_id", 0)) + 1
+                logger.info("Bot API polling skipped stale pending updates.")
+        except Exception as e:
+            logger.warning(f"Bot API preflight update scan failed: {e}")
     while True:
         try:
             resp = await _bot_api_call(
@@ -2501,15 +2565,23 @@ async def start_telegram():
                 if token != settings.BOT_TOKEN:
                     await _set_bot_commands_http(token)
 
-            # Start Bot API polling only as fallback (never together with Pyrogram polling).
-            if has_pyrogram_update_receiver:
+            # Keep Bot API polling as backup for reliability.
+            # Duplicate responses are prevented by _remember_update().
+            if not settings.BOT_TOKEN:
                 await _stop_bot_api_task()
-                logger.info("Bot API polling disabled (Pyrogram update receiver active).")
-            elif settings.BOT_TOKEN and (_bot_api_task is None or _bot_api_task.done()):
-                _bot_api_task = asyncio.create_task(_bot_api_poll_loop(), name="bot_api_poll_loop")
-                logger.info("Bot API polling fallback started")
-            elif not settings.BOT_TOKEN:
                 logger.warning("No BOT_TOKEN configured; bot commands will be unavailable.")
+            else:
+                should_run_polling = _bot_api_poll_always or (not has_pyrogram_update_receiver)
+                if should_run_polling:
+                    if _bot_api_task is None or _bot_api_task.done():
+                        _bot_api_task = asyncio.create_task(_bot_api_poll_loop(), name="bot_api_poll_loop")
+                        if has_pyrogram_update_receiver:
+                            logger.info("Bot API polling backup started alongside Pyrogram receiver.")
+                        else:
+                            logger.info("Bot API polling fallback started")
+                else:
+                    await _stop_bot_api_task()
+                    logger.info("Bot API polling disabled (Pyrogram update receiver active).")
 
             _telegram_started = True
         except Exception:
@@ -2534,6 +2606,7 @@ async def stop_telegram():
         await _safe_stop_client(tg_client, "tg_client")
         _forget_bot_handlers(tg_client)
         _bot_handler_clients.clear()
+        _handled_updates.clear()
         _telegram_started = False
         # Allow pending cancel callbacks to drain before process exit.
         await asyncio.sleep(0.05)
