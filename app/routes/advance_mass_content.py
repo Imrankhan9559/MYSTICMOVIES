@@ -111,7 +111,7 @@ _TITLE_STOP_TOKENS = {
 _FILE_NOISE_TOKENS = {
     "webrip", "web", "webdl", "webd", "bluray", "brrip", "hdrip", "dvdrip", "cam", "ts",
     "proper", "repack", "internal", "remux", "extended", "uncut", "multi", "audio", "dub",
-    "subs", "sub", "english", "hindi", "tamil", "telugu", "malayalam", "bengali", "korean",
+    "subs", "sub", "esub", "english", "hindi", "tamil", "telugu", "malayalam", "bengali", "korean",
     "japanese", "nf", "amzn", "dsnp", "hdr", "hdr10", "dv", "x264", "x265", "h264", "h265",
     "hevc", "aac", "ac3", "ddp", "atmos", "bit", "mkv", "mp4", "avi", "webm", "m4v",
 }
@@ -124,6 +124,10 @@ def _clean_match_tokens(text: str, *, for_file_name: bool = False) -> set[str]:
         if not tok:
             continue
         if tok in _TITLE_STOP_TOKENS:
+            continue
+        # Ignore common release/noise tokens on both sides so noisy source titles
+        # (e.g. "WebRip Hindi English ESub") don't block strict matching.
+        if tok in _FILE_NOISE_TOKENS:
             continue
         # Ignore common season/episode marker tokens on both sides
         # (e.g., season2, episode08, s02, e08, 2x08), so noisy titles still match.
@@ -146,8 +150,6 @@ def _clean_match_tokens(text: str, *, for_file_name: bool = False) -> set[str]:
         if tok in {"4k", "2k", "8k", "uhd", "fhd", "hd"}:
             continue
         if for_file_name:
-            if tok in _FILE_NOISE_TOKENS:
-                continue
             if re.fullmatch(r"[xh]\d{3,4}", tok):
                 continue
             if re.fullmatch(r"\d{1,2}bit", tok):
