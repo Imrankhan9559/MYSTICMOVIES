@@ -253,8 +253,10 @@ def _best_title(text: str, fallback: str = "") -> str:
     if not raw:
         return fallback
     line = raw.split("\n")[0].strip()
-    line = re.sub(r"^\s*\d+\s*[\.\)]\s*", "", line)
+    # Strip numbered prefixes like "1. " / "2) ", but do not damage decimal sizes like "3.72 GB".
+    line = re.sub(r"^\s*\d+\s*[\.\)]\s+", "", line)
     line = re.sub(r"^\s*[-\u2022]\s*", "", line).strip()
+    line = re.sub(r"\s+\d+\.\s*\[$", "", line).strip()
     if len(line) > 220:
         line = line[:220].rstrip()
     return line or fallback
@@ -498,6 +500,7 @@ def _clean_title_without_url(raw: str) -> str:
     text = re.sub(r"^[\(\[]\s*", "", text)
     text = re.sub(r"\s*[\)\]]$", "", text)
     text = re.sub(r"\s{2,}", " ", text).strip()
+    text = re.sub(r"\s+\d+\.\s*\[$", "", text).strip()
     return text
 
 
@@ -811,12 +814,41 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
     numbered_entries = _extract_numbered_entries_with_urls(body_text)
     numbered_lines = [str(x.get("title") or "").strip() for x in numbered_entries if str(x.get("title") or "").strip()]
     numbered_by_url: dict[str, str] = {}
+    numbered_consumed_urls: set[str] = set()
     for row in numbered_entries:
         u = str(row.get("url") or "").strip()
         t = str(row.get("title") or "").strip()
         if not u or not t:
             continue
         numbered_by_url[u.lower()] = t
+
+    # Prefer exact numbered-row pairs first (most accurate for "1. [size] title + link on next line" format).
+    for row in numbered_entries:
+        t = str(row.get("title") or "").strip()
+        u = str(row.get("url") or "").strip()
+        if not t or not u:
+            continue
+        parsed = _parse_tme_action(u)
+        kind = str(parsed.get("kind") or "")
+        if kind == "join":
+            continue
+        if kind == "bot_start" and not _is_file_start_payload(str(parsed.get("start") or "")):
+            continue
+        size_bytes, size_label = _extract_size(t or body_text)
+        payload = {
+            "source_bot": source_label,
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "action_type": "line_url",
+            "action": {"url": u},
+            "title": _best_title(t, fallback=f"Link from {source_label}"),
+            "size_bytes": int(size_bytes or 0),
+            "size_label": size_label,
+        }
+        payload["id"] = _candidate_id(payload)
+        items.append(payload)
+        numbered_consumed_urls.add(u.lower())
+
     numbered_idx = 0
     url_rows: list[dict[str, str]] = []
     for row in _extract_entity_url_rows(msg, body_text):
@@ -834,6 +866,8 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
 
     for row in url_rows:
         url = str(row.get("url") or "").strip()
+        if url.lower() in numbered_consumed_urls:
+            continue
         frag = str(row.get("frag") or "").strip()
         parsed = _parse_tme_action(url)
         kind = str(parsed.get("kind") or "")
