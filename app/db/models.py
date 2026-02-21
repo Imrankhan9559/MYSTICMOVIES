@@ -408,6 +408,7 @@ class AppDeviceSession(Document):
 
 class FileFetcherSettings(Document):
     key: str = Field(unique=True)
+    source_chat_id: str = ""
     source_bots: List[str] = []
     destination_bot: str = "mysticmovies_bot"
     force_sub_channels: List[str] = []

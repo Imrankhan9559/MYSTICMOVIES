@@ -6,7 +6,7 @@
         <div class="d-flex justify-content-between align-items-center">
             <div>
                 <h1 class="mb-1">File Fetcher</h1>
-                <div class="admin-section-note">Search source bots, merge replies, select files, fetch and forward directly to @mysticmovies_bot.</div>
+                <div class="admin-section-note">Send query to your Telegram group, read bot replies, paginate with Next buttons, then fetch selected files and forward to destination bot.</div>
             </div>
         </div>
     </div>
@@ -21,15 +21,20 @@
             <div class="card-body">
                 <form id="ff-settings-form">
                     <div class="form-row">
-                        <div class="form-group col-md-5">
-                            <label>Source Bots (one per line)</label>
-                            <textarea name="source_bots_text" class="form-control" rows="4" placeholder="@bot_one&#10;@bot_two">{{ "\n".join(cfg.source_bots or []) }}</textarea>
-                        </div>
                         <div class="form-group col-md-3">
+                            <label>Source Query Group/Chat ID</label>
+                            <input name="source_chat_id" class="form-control" value="{{ cfg.source_chat_id or '' }}" placeholder="-1001234567890 or @groupname" required>
+                        </div>
+                        <div class="form-group col-md-4">
+                            <label>Source Bots (one per line)</label>
+                            <textarea name="source_bots_text" class="form-control" rows="4" placeholder="@rrbzmovies_bot&#10;@PeruchazhiX1bot">{{ "\n".join(cfg.source_bots or []) }}</textarea>
+                            <small class="text-muted">Optional. Keep empty to read all bot replies in the group.</small>
+                        </div>
+                        <div class="form-group col-md-2">
                             <label>Destination Bot</label>
                             <input name="destination_bot" class="form-control" value="{{ cfg.destination_bot or 'mysticmovies_bot' }}" placeholder="mysticmovies_bot">
                         </div>
-                        <div class="form-group col-md-4">
+                        <div class="form-group col-md-3">
                             <label>Known Force-Sub Channels (one per line)</label>
                             <textarea name="force_sub_channels_text" class="form-control" rows="4" placeholder="@channel_or_link">{{ "\n".join(cfg.force_sub_channels or []) }}</textarea>
                         </div>
@@ -46,9 +51,20 @@
             <div class="card-body">
                 <form id="ff-search-form" class="form-inline">
                     <input type="text" name="query" class="form-control mr-2 mb-2 mb-md-0" style="min-width:340px;" placeholder="Type content name (example: sita ramam)" required>
-                    <button type="submit" class="btn btn-info btn-sm"><i class="fas fa-search mr-1"></i>Search Bots</button>
+                    <button type="submit" class="btn btn-info btn-sm"><i class="fas fa-search mr-1"></i>Search Group</button>
                     <button type="button" id="ff-fetch-btn" class="btn btn-success btn-sm ml-2"><i class="fas fa-download mr-1"></i>Fetch Selected</button>
                 </form>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-forward mr-2"></i>Bot Page Controls</h3>
+            </div>
+            <div class="card-body">
+                <div id="ff-pagers-wrap" class="d-flex flex-wrap" style="gap:8px;">
+                    <span class="text-muted">No page controls yet.</span>
+                </div>
             </div>
         </div>
 
@@ -68,8 +84,8 @@
                                 <th style="width:40px;"></th>
                                 <th>Title</th>
                                 <th style="width:120px;">Size</th>
-                                <th style="width:120px;">Source Bot</th>
-                                <th style="width:120px;">Action</th>
+                                <th style="width:160px;">Source Bot</th>
+                                <th style="width:140px;">Action</th>
                             </tr>
                         </thead>
                         <tbody id="ff-results-body">
@@ -96,8 +112,10 @@
 <script>
 const logEl = document.getElementById("ff-log");
 const resultsBody = document.getElementById("ff-results-body");
+const pagersWrap = document.getElementById("ff-pagers-wrap");
 
 let currentResults = [];
+let currentPagers = [];
 
 function logLine(text) {
     const line = String(text || "").trim();
@@ -122,7 +140,7 @@ function actionLabel(actionType) {
     if (t === "direct_media") return "Direct File";
     if (t === "button_url") return "Button URL";
     if (t === "button_callback") return "Button Callback";
-    if (t === "line_url") return "Line URL";
+    if (t === "line_url") return "Link";
     return t || "-";
 }
 
@@ -140,6 +158,39 @@ function renderResults() {
             <td>${esc(actionLabel(item.action_type))}</td>
         </tr>
     `).join("");
+}
+
+function renderPagers() {
+    if (!Array.isArray(currentPagers) || !currentPagers.length) {
+        pagersWrap.innerHTML = `<span class="text-muted">No page controls available.</span>`;
+        return;
+    }
+    pagersWrap.innerHTML = currentPagers.map(pg => `
+        <button type="button" class="btn btn-sm btn-outline-info ff-pager-btn" data-pager-id="${esc(pg.id || "")}">
+            ${esc(pg.source_bot || "bot")} : ${esc(pg.button_text || "Next")}
+        </button>
+    `).join("");
+    document.querySelectorAll(".ff-pager-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            const pagerId = String(btn.getAttribute("data-pager-id") || "").trim();
+            if (!pagerId) return;
+            btn.disabled = true;
+            btn.textContent = "Loading...";
+            const out = await postJson("/file-fetcher/page", { pager_id: pagerId });
+            btn.disabled = false;
+            if (!out.ok || !out.data.ok) {
+                replaceLog([out.data.error || `Next page failed (HTTP ${out.status})`]);
+                renderPagers();
+                return;
+            }
+            currentResults = Array.isArray(out.data.items) ? out.data.items : currentResults;
+            currentPagers = Array.isArray(out.data.pagers) ? out.data.pagers : currentPagers;
+            renderResults();
+            renderPagers();
+            replaceLog(out.data.logs || []);
+            logLine(`Updated results: ${currentResults.length}`);
+        });
+    });
 }
 
 async function postForm(url, formData) {
@@ -163,7 +214,7 @@ document.getElementById("ff-settings-form").addEventListener("submit", async (e)
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     const out = await postForm("/file-fetcher/settings", fd);
-    if (!out.ok) {
+    if (!out.ok || !out.data.ok) {
         logLine(out.data.error || `Settings save failed (HTTP ${out.status})`);
         return;
     }
@@ -173,7 +224,7 @@ document.getElementById("ff-settings-form").addEventListener("submit", async (e)
 document.getElementById("ff-search-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
-    replaceLog(["Searching source bots..."]);
+    replaceLog(["Searching source group..."]);
     resultsBody.innerHTML = `<tr><td colspan="5" class="text-info text-center p-3">Searching...</td></tr>`;
     const out = await postForm("/file-fetcher/search", fd);
     if (!out.ok || !out.data.ok) {
@@ -182,7 +233,9 @@ document.getElementById("ff-search-form").addEventListener("submit", async (e) =
         return;
     }
     currentResults = Array.isArray(out.data.items) ? out.data.items : [];
+    currentPagers = Array.isArray(out.data.pagers) ? out.data.pagers : [];
     renderResults();
+    renderPagers();
     replaceLog(out.data.logs || []);
     logLine(`Results ready: ${currentResults.length}`);
 });
