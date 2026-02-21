@@ -232,7 +232,13 @@ document.getElementById("ff-search-form").addEventListener("submit", async (e) =
     resultsBody.innerHTML = `<tr><td colspan="5" class="text-info text-center p-3">Searching...</td></tr>`;
     const out = await postForm("/file-fetcher/search", fd);
     if (!out.ok || !out.data.ok) {
-        replaceLog([out.data.error || `Search failed (HTTP ${out.status})`]);
+        const rows = [];
+        rows.push(out.data.error || `Search failed (HTTP ${out.status})`);
+        if (Array.isArray(out.data.logs) && out.data.logs.length) {
+            rows.push("---- backend logs ----");
+            rows.push(...out.data.logs);
+        }
+        replaceLog(rows);
         resultsBody.innerHTML = `<tr><td colspan="5" class="text-danger text-center p-3">Search failed.</td></tr>`;
         return;
     }

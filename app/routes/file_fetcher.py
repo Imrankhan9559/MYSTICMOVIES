@@ -72,6 +72,10 @@ def _norm_chat_ref(raw: str) -> int | str | None:
     text = str(raw or "").strip()
     if not text:
         return None
+    # Keep first token only if user pasted extra text.
+    text = re.split(r"[\s,]+", text, maxsplit=1)[0].strip()
+    if not text:
+        return None
     if re.fullmatch(r"-?\d+", text):
         try:
             return int(text)
@@ -487,7 +491,20 @@ async def _prepare_source_chat(client, source_chat: int | str, logs: list[str]) 
         logs.append("Joined source group via invite link.")
         return source_chat
     except Exception as e:
-        logs.append(f"Invite-link join failed: {e}")
+        text = str(e or "")
+        logs.append(f"Invite-link join failed: {text}")
+        # If already joined, try resolving chat id via invite metadata.
+        try:
+            lower = text.lower()
+            if "already participant" in lower or "already_member" in lower or "already joined" in lower:
+                invite = await client.check_chat_invite(raw)
+                inv_chat = getattr(invite, "chat", None)
+                inv_id = getattr(inv_chat, "id", None)
+                if inv_id is not None:
+                    logs.append(f"Resolved source group id via invite -> {inv_id}")
+                    return int(inv_id)
+        except Exception:
+            pass
         return source_chat
 
 
@@ -925,6 +942,10 @@ async def file_fetcher_search(
 
     logs: list[str] = []
     source_chat = await _prepare_source_chat(client, source_chat, logs)
+    try:
+        _ = await client.get_chat(source_chat)
+    except Exception as e:
+        logs.append(f"Source chat resolve failed: {e}")
     try:
         sent = await client.send_message(source_chat, q)
         since_ts = max(0.0, _msg_ts(sent) - 2.0)
