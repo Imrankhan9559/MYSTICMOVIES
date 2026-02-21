@@ -321,6 +321,36 @@ def _sender_matches_filter(msg, sender_label: str, filters: list[str]) -> bool:
     return False
 
 
+def _slice_tg_entity_text(text: str, offset: int, length: int) -> str:
+    # Telegram entity offsets are UTF-16 code-unit based.
+    raw = str(text or "")
+    if not raw or length <= 0:
+        return ""
+    try:
+        encoded = raw.encode("utf-16-le")
+        start = max(0, int(offset) * 2)
+        end = max(start, (int(offset) + int(length)) * 2)
+        return encoded[start:end].decode("utf-16-le", errors="ignore")
+    except Exception:
+        # safe fallback
+        try:
+            return raw[int(offset): int(offset) + int(length)]
+        except Exception:
+            return ""
+
+
+def _normalize_tme_url(raw: str) -> str:
+    url = str(raw or "").strip()
+    if not url:
+        return ""
+    url = url.strip("()[]<> \t\r\n")
+    while url and url[-1] in {".", ",", ";"}:
+        url = url[:-1].rstrip()
+    if url.startswith("t.me/"):
+        url = f"https://{url}"
+    return url
+
+
 def _extract_entity_urls(msg, text: str) -> list[str]:
     urls: list[str] = []
     entities = []
@@ -339,14 +369,14 @@ def _extract_entity_urls(msg, text: str) -> list[str]:
         try:
             offset = int(getattr(ent, "offset", 0) or 0)
             length = int(getattr(ent, "length", 0) or 0)
-            frag = text[offset: offset + length].strip()
+            frag = _slice_tg_entity_text(text, offset, length).strip()
             if frag.startswith("http://") or frag.startswith("https://") or frag.startswith("t.me/"):
                 if frag.startswith("t.me/"):
                     frag = f"https://{frag}"
-                urls.append(frag)
+                urls.append(_normalize_tme_url(frag))
         except Exception:
             continue
-    return _dedupe_keep_order(urls)
+    return _dedupe_keep_order([_normalize_tme_url(x) for x in urls if _normalize_tme_url(x)])
 
 
 def _extract_entity_url_rows(msg, text: str) -> list[dict[str, str]]:
@@ -366,17 +396,17 @@ def _extract_entity_url_rows(msg, text: str) -> list[dict[str, str]]:
         frag = ""
         if offset >= 0 and length > 0:
             try:
-                frag = str(text[offset: offset + length] or "").strip()
+                frag = str(_slice_tg_entity_text(text, offset, length) or "").strip()
             except Exception:
                 frag = ""
-        url = str(getattr(ent, "url", "") or "").strip()
+        url = _normalize_tme_url(str(getattr(ent, "url", "") or "").strip())
         if not url:
             etype = str(getattr(ent, "type", "")).lower()
             if "url" in etype and frag:
                 if frag.startswith("t.me/"):
-                    url = f"https://{frag}"
+                    url = _normalize_tme_url(f"https://{frag}")
                 elif frag.startswith("http://") or frag.startswith("https://"):
-                    url = frag
+                    url = _normalize_tme_url(frag)
         if not url:
             continue
         rows.append({"url": url, "frag": frag, "offset": str(offset)})
@@ -386,7 +416,7 @@ def _extract_entity_url_rows(msg, text: str) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     seen: set[str] = set()
     for row in rows:
-        url = str(row.get("url") or "").strip()
+        url = _normalize_tme_url(str(row.get("url") or "").strip())
         if not url:
             continue
         key = url.lower()
@@ -497,8 +527,9 @@ def _clean_title_without_url(raw: str) -> str:
         return ""
     text = _TME_URL_RE.sub("", text)
     text = text.strip()
-    text = re.sub(r"^[\(\[]\s*", "", text)
-    text = re.sub(r"\s*[\)\]]$", "", text)
+    # keep square brackets for sizes like "[985.77 MB] ..."
+    text = re.sub(r"^\(\s*", "", text)
+    text = re.sub(r"\s*\)$", "", text)
     text = re.sub(r"\s{2,}", " ", text).strip()
     text = re.sub(r"\s+\d+\.\s*\[$", "", text).strip()
     return text
@@ -520,7 +551,7 @@ def _extract_numbered_entries_with_urls(text: str) -> list[dict[str, str]]:
         url = ""
         um = _TME_URL_RE.search(body)
         if um:
-            url = str(um.group(0) or "").strip()
+            url = _normalize_tme_url(str(um.group(0) or "").strip())
         else:
             # URL often comes on immediate next line in parentheses.
             j = i
@@ -531,7 +562,7 @@ def _extract_numbered_entries_with_urls(text: str) -> list[dict[str, str]]:
                     continue
                 um2 = _TME_URL_RE.search(nxt)
                 if um2:
-                    url = str(um2.group(0) or "").strip()
+                    url = _normalize_tme_url(str(um2.group(0) or "").strip())
                     i = j + 1
                 break
         title = _clean_title_without_url(body)
@@ -551,11 +582,13 @@ def _extract_numbered_entries_with_urls(text: str) -> list[dict[str, str]]:
 
 
 def _message_line_for_url(text: str, url: str) -> str:
+    norm_url = _normalize_tme_url(url)
     lines = [x.strip() for x in str(text or "").splitlines() if x.strip()]
     for idx, line in enumerate(lines):
-        if url in line:
+        line_norm = _normalize_tme_url(line)
+        if (norm_url and norm_url in line) or (norm_url and norm_url == line_norm):
             cleaned = line.strip("()[] ")
-            if cleaned == url and idx > 0:
+            if _normalize_tme_url(cleaned) == norm_url and idx > 0:
                 prev = lines[idx - 1].strip()
                 if prev:
                     return prev
@@ -816,7 +849,7 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
     numbered_by_url: dict[str, str] = {}
     numbered_consumed_urls: set[str] = set()
     for row in numbered_entries:
-        u = str(row.get("url") or "").strip()
+        u = _normalize_tme_url(str(row.get("url") or "").strip())
         t = str(row.get("title") or "").strip()
         if not u or not t:
             continue
@@ -825,7 +858,7 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
     # Prefer exact numbered-row pairs first (most accurate for "1. [size] title + link on next line" format).
     for row in numbered_entries:
         t = str(row.get("title") or "").strip()
-        u = str(row.get("url") or "").strip()
+        u = _normalize_tme_url(str(row.get("url") or "").strip())
         if not t or not u:
             continue
         parsed = _parse_tme_action(u)
@@ -852,20 +885,21 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
     numbered_idx = 0
     url_rows: list[dict[str, str]] = []
     for row in _extract_entity_url_rows(msg, body_text):
-        url = str(row.get("url") or "").strip()
+        url = _normalize_tme_url(str(row.get("url") or "").strip())
         if not url:
             continue
         url_rows.append({"url": url, "frag": str(row.get("frag") or "").strip()})
     # add plain urls missing from entity map
-    seen_url_keys = {str(x.get("url") or "").lower() for x in url_rows}
+    seen_url_keys = {_normalize_tme_url(str(x.get("url") or "")).lower() for x in url_rows}
     for raw_url in _TME_URL_RE.findall(body_text):
-        key = str(raw_url or "").lower()
+        normalized = _normalize_tme_url(raw_url)
+        key = str(normalized or "").lower()
         if key and key not in seen_url_keys:
             seen_url_keys.add(key)
-            url_rows.append({"url": raw_url, "frag": ""})
+            url_rows.append({"url": normalized, "frag": ""})
 
     for row in url_rows:
-        url = str(row.get("url") or "").strip()
+        url = _normalize_tme_url(str(row.get("url") or "").strip())
         if url.lower() in numbered_consumed_urls:
             continue
         frag = str(row.get("frag") or "").strip()
