@@ -552,11 +552,11 @@ section.content .card-header {
                     <label class="mb-1 text-xs">Quality</label>
                     <select id="storage-picker-quality" class="custom-select custom-select-sm">
                         <option>4K</option>
+                        <option>2K</option>
                         <option>1080P</option>
                         <option selected>720P</option>
                         <option>480P</option>
                         <option>360P</option>
-                        <option>HD</option>
                     </select>
                 </div>
                 <div class="form-group col-md-2 mb-1">
@@ -622,7 +622,7 @@ let wsPingTimer = null;
 let wsReconnectTimer = null;
 let wsReconnectAttempts = 0;
 let wsConnected = false;
-const qualityOrder = ["4K", "1080P", "720P", "480P", "360P", "HD"];
+const qualityOrder = ["4K", "2K", "1080P", "720P", "480P", "360P"];
 const panelNames = {
     processing: "Panel 1: Searching / Processing",
     tmdb_not_found: "Panel 2: TMDB Not Found",
@@ -691,12 +691,16 @@ function badge(text, cls = "secondary") {
 
 function normalizeQuality(value) {
     const raw = String(value || "").trim().toUpperCase().replace(/\s+/g, "");
-    if (!raw) return "HD";
+    if (!raw) return "720P";
     const map = {
         "2160": "4K",
         "2160P": "4K",
         "4K": "4K",
         "4KP": "4K",
+        "1440": "2K",
+        "1440P": "2K",
+        "2K": "2K",
+        "2KP": "2K",
         "1080": "1080P",
         "1080P": "1080P",
         "720": "720P",
@@ -707,7 +711,7 @@ function normalizeQuality(value) {
         "360P": "360P",
         "380": "360P",
         "380P": "360P",
-        "HD": "HD"
+        "HD": "720P"
     };
     return map[raw] || raw;
 }
@@ -759,7 +763,7 @@ function seriesCoverageHtml(item) {
             const selectedQuality = String(coverageDetailState.get(seasonStateKey) || "").toUpperCase();
             let selectedRow = null;
             const chips = qualities.map((qRow) => {
-                const quality = normalizeQuality(qRow && qRow.quality ? qRow.quality : "HD");
+                const quality = normalizeQuality(qRow && qRow.quality ? qRow.quality : "720P");
                 const found = Number(qRow && qRow.found ? qRow.found : 0);
                 const expected = Number(qRow && qRow.expected ? qRow.expected : 0);
                 const isComplete = expected > 0 && found >= expected;
@@ -826,7 +830,7 @@ function seriesCoverageHtml(item) {
         return seasonMap.get(key);
     };
     const ensureQuality = (seasonObj, q) => {
-        const quality = normalizeQuality(q || "HD");
+        const quality = normalizeQuality(q || "720P");
         if (!seasonObj.byQuality.has(quality)) seasonObj.byQuality.set(quality, new Set());
         return seasonObj.byQuality.get(quality);
     };
@@ -912,13 +916,14 @@ function notesHtml(item, panelKey, options = {}) {
         const meta = [];
         if (season > 0) meta.push(`<span class="note-pill">Season ${season}</span>`);
         if (episode > 0) meta.push(`<span class="note-pill">Episode ${episode}</span>`);
-        if (quality && quality !== "HD") meta.push(`<span class="note-pill">${esc(quality)}</span>`);
+        if (quality) meta.push(`<span class="note-pill">${esc(quality)}</span>`);
         meta.push(statePill);
         const text = String((n && (n.text || n.note)) || "").trim();
+        const cleanText = text.replace(/\bHD\b/gi, "720P");
         return `
             <div class="note-row ${rowCls}">
                 <div class="note-meta">${meta.join("")}</div>
-                <div class="note-text">${esc(text || "No detail.")}</div>
+                <div class="note-text">${esc(cleanText || "No detail.")}</div>
             </div>
         `;
     };
@@ -948,7 +953,8 @@ function matchedFilesHtml(item) {
                 ${list.map(f => {
                     const seText = seasonEpisodeTextFromRaw(f.se || "");
                     const se = seText ? `${esc(seText)} ` : "";
-                    const q = f.quality ? `${esc(f.quality)} ` : "";
+                    const qNorm = normalizeQuality(f.quality || "");
+                    const q = qNorm ? `${esc(qNorm)} ` : "";
                     const src = f.source_label ? ` | ${esc(f.source_label)}` : "";
                     const size = f.size_label ? ` (${esc(f.size_label)})` : "";
                     const rmBtn = f.file_id
@@ -965,10 +971,10 @@ function matchedFilesHtml(item) {
 function fileChoicesHtml(item) {
     const groups = Array.isArray(item.file_choice_groups) ? item.file_choice_groups : [];
     if (!groups.length) return "";
+    const isSeries = String(item && item.content_type || "").toLowerCase() === "series";
     const view = groups.slice(0, 16);
-    return `
-        <div class="choice-groups mt-2">
-            <div class="text-xs text-warning mb-1">Duplicate File Choices</div>
+    const inner = `
+        <div class="choice-groups ${isSeries ? "mt-2" : ""}">
             ${view.map(group => `
                 <div class="choice-item">
                     <div class="text-xs font-weight-bold mb-1">${esc(group.label || "")}</div>
@@ -993,15 +999,30 @@ function fileChoicesHtml(item) {
             ${(groups.length > view.length) ? `<div class="text-xs text-muted">+ ${groups.length - view.length} more groups</div>` : ""}
         </div>
     `;
+    if (!isSeries) {
+        return `
+            <div class="mt-2">
+                <div class="text-xs text-warning mb-1">Duplicate File Choices</div>
+                ${inner}
+            </div>
+        `;
+    }
+    return `
+        <details class="mt-2">
+            <summary class="text-xs text-warning" style="cursor:pointer;">Duplicate File Choices (${groups.length}) - Click to show</summary>
+            ${inner}
+        </details>
+    `;
 }
 
 function qualityBoardHtml(item, panelKey) {
     if (!["incomplete", "complete"].includes(panelKey)) return "";
+    const isSeries = String(item && item.content_type || "").toLowerCase() === "series";
     const files = Array.isArray(item.matched_files) ? item.matched_files : [];
     const id = esc(item.id || "");
     const grouped = {};
     for (const row of files) {
-        const quality = normalizeQuality(row.quality || "HD");
+        const quality = normalizeQuality(row.quality || "720P");
         if (!grouped[quality]) grouped[quality] = [];
         grouped[quality].push(row);
     }
@@ -1053,11 +1074,18 @@ function qualityBoardHtml(item, panelKey) {
             </div>
         `;
     }).join("");
-    return `
+    const boardBody = `
         <div class="quality-board mt-2">
             <div class="text-xs text-info mb-2">Quality Board: drag file cards between qualities to reassign.</div>
             <div class="quality-lanes">${laneHtml}</div>
         </div>
+    `;
+    if (!isSeries) return boardBody;
+    return `
+        <details class="mt-2">
+            <summary class="text-xs text-info" style="cursor:pointer;">Quality Board - Click to show</summary>
+            ${boardBody}
+        </details>
     `;
 }
 
@@ -1425,13 +1453,13 @@ function renderStoragePickerRows(items, reset = false) {
         <div class="border border-secondary rounded p-2 mb-2 d-flex justify-content-between align-items-center">
             <div class="mr-2" style="min-width:0;">
                 <div class="text-sm" title="${esc(x.name || "")}" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(x.name || "")}</div>
-                <div class="text-xs text-muted">${esc(x.size_label || "")} | Guess: ${esc(normalizeQuality(x.quality_guess || "HD"))}${(x.season_guess && x.episode_guess) ? ` | S${String(x.season_guess).padStart(2, "0")}E${String(x.episode_guess).padStart(2, "0")}` : ""}</div>
+                <div class="text-xs text-muted">${esc(x.size_label || "")} | Guess: ${esc(normalizeQuality(x.quality_guess || "720P"))}${(x.season_guess && x.episode_guess) ? ` | S${String(x.season_guess).padStart(2, "0")}E${String(x.episode_guess).padStart(2, "0")}` : ""}</div>
             </div>
             <button class="btn btn-sm btn-outline-warning action-btn"
                 data-action="attach-storage"
                 data-id="${esc(storagePickerState.itemId)}"
                 data-file="${esc(x.id || "")}"
-                data-qguess="${esc(normalizeQuality(x.quality_guess || "HD"))}"
+                data-qguess="${esc(normalizeQuality(x.quality_guess || "720P"))}"
                 data-sguess="${esc(x.season_guess || "")}"
                 data-eguess="${esc(x.episode_guess || "")}">
                 Attach
@@ -1876,7 +1904,7 @@ document.addEventListener("dragstart", (e) => {
     const payload = {
         itemId: String(chip.dataset.itemId || ""),
         fileId: String(chip.dataset.fileId || ""),
-        fromQuality: normalizeQuality(chip.dataset.quality || "HD"),
+        fromQuality: normalizeQuality(chip.dataset.quality || "720P"),
     };
     if (!payload.itemId || !payload.fileId) return;
     try {

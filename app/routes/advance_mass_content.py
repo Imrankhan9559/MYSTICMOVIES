@@ -121,6 +121,7 @@ _CAPTION_SKIP_RE = re.compile(
     re.I,
 )
 _BOT_CAPTION_NAME_CACHE: dict[str, str] = {}
+_DEFAULT_QUALITY = "720P"
 
 
 def _clean_match_tokens(text: str, *, for_file_name: bool = False) -> set[str]:
@@ -523,7 +524,16 @@ def _guess_type(raw_title: str, hint: str) -> str:
 
 def _quality_rank(label: str) -> int:
     q = (label or "").upper().replace(" ", "")
-    order = {"4K": 6, "2160P": 6, "1440P": 5, "1080P": 4, "720P": 3, "480P": 2, "360P": 1, "HD": 0}
+    order = {
+        "4K": 7,
+        "2160P": 7,
+        "2K": 6,
+        "1440P": 6,
+        "1080P": 5,
+        "720P": 4,
+        "480P": 3,
+        "360P": 2,
+    }
     return order.get(q, 0)
 
 
@@ -531,6 +541,8 @@ def _series_quality_from_name(name: str) -> str:
     lower = (name or "").lower()
     if "2160" in lower or "4k" in lower:
         return "4K"
+    if "1440" in lower or "2k" in lower:
+        return "2K"
     if "1080" in lower:
         return "1080P"
     if "720" in lower:
@@ -539,7 +551,10 @@ def _series_quality_from_name(name: str) -> str:
         return "480P"
     if "360" in lower or "380" in lower:
         return "360P"
-    return "HD"
+    # Legacy "HD" labels are normalized to 720P everywhere.
+    if re.search(r"\bhd\b", lower):
+        return "720P"
+    return ""
 
 
 def _movie_quality_from_size(size: int) -> str:
@@ -564,12 +579,16 @@ def _movie_quality_from_name_or_size(name: str, size: int) -> str:
 def _normalize_quality_label(value: str) -> str:
     raw = (value or "").strip().upper().replace(" ", "")
     if not raw:
-        return "HD"
+        return _DEFAULT_QUALITY
     aliases = {
         "2160": "4K",
         "2160P": "4K",
         "4KP": "4K",
         "4K": "4K",
+        "1440": "2K",
+        "1440P": "2K",
+        "2K": "2K",
+        "2KP": "2K",
         "1080": "1080P",
         "1080P": "1080P",
         "720": "720P",
@@ -580,7 +599,8 @@ def _normalize_quality_label(value: str) -> str:
         "360P": "360P",
         "380": "360P",
         "380P": "360P",
-        "HD": "HD",
+        # Legacy persisted labels from old runs:
+        "HD": "720P",
     }
     return aliases.get(raw, raw)
 
@@ -625,7 +645,7 @@ def _caption_best_name(caption_text: str) -> str:
         score = 0
         if _series_season_episode(clean) != (None, None):
             score += 4
-        if _series_quality_from_name(clean) != "HD":
+        if _series_quality_from_name(clean):
             score += 2
         if len(re.findall(r"[a-zA-Z]{2,}", clean)) >= 3:
             score += 1
@@ -824,7 +844,7 @@ def _series_quality_coverage(row: MassContentState) -> list[dict]:
         episode_no = _int_or_none(item.get("episode"))
         if not season_no or not episode_no:
             continue
-        quality = _normalize_quality_label(item.get("quality") or "HD")
+        quality = _normalize_quality_label(item.get("quality") or _DEFAULT_QUALITY)
         _ensure_quality_bucket(quality_hits, season_no, quality).add(episode_no)
         season_expected.setdefault(season_no, set()).add(episode_no)
 
@@ -834,7 +854,7 @@ def _series_quality_coverage(row: MassContentState) -> list[dict]:
         if not season_no:
             continue
         season_expected.setdefault(season_no, set())
-        quality = _normalize_quality_label(item.get("quality") or "HD")
+        quality = _normalize_quality_label(item.get("quality") or _DEFAULT_QUALITY)
         _ensure_quality_bucket(quality_hits, season_no, quality)
         _ensure_quality_bucket(quality_missing, season_no, quality)
         if episode_no:
@@ -850,7 +870,7 @@ def _series_quality_coverage(row: MassContentState) -> list[dict]:
         if not season_no:
             continue
         season_expected.setdefault(season_no, set())
-        quality = _normalize_quality_label(note.get("quality") or "HD")
+        quality = _normalize_quality_label(note.get("quality") or _DEFAULT_QUALITY)
         state = str(note.get("state") or "").strip().lower()
         _ensure_quality_bucket(quality_hits, season_no, quality)
         _ensure_quality_bucket(quality_missing, season_no, quality)
@@ -1353,11 +1373,11 @@ def _best_row(
 
 
 def _series_choice_bucket(season: int, episode: int, quality: str) -> str:
-    return f"series:s{int(season)}:e{int(episode)}:q{(quality or 'HD').upper()}"
+    return f"series:s{int(season)}:e{int(episode)}:q{_normalize_quality_label(quality or _DEFAULT_QUALITY).upper()}"
 
 
 def _movie_choice_bucket(quality: str) -> str:
-    return f"movie:q{(quality or 'HD').upper()}"
+    return f"movie:q{_normalize_quality_label(quality or _DEFAULT_QUALITY).upper()}"
 
 
 async def _scan_files_for_state(
@@ -1425,7 +1445,7 @@ async def _scan_files_for_state(
                 episode = int(override_se.get("episode") or episode or 0)
                 if season <= 0 or episode <= 0:
                     continue
-                quality = quality_overrides.get(file_id) or _series_quality_from_name(file_name)
+                quality = quality_overrides.get(file_id) or _series_quality_from_name(file_name) or _DEFAULT_QUALITY
                 found_rows.append(
                     {
                         "file_id": file_id,
@@ -1549,7 +1569,7 @@ async def _scan_files_for_state(
     if state.content_type == "movie":
         by_quality_rows: dict[str, list[dict]] = {}
         for row in found_rows:
-            quality = (row.get("quality") or "HD").upper()
+            quality = _normalize_quality_label(row.get("quality") or _DEFAULT_QUALITY).upper()
             by_quality_rows.setdefault(quality, []).append(row)
 
         by_quality: dict[str, dict] = {}
@@ -1638,7 +1658,7 @@ async def _scan_files_for_state(
             upload_plan.append(
                 {
                     "file_id": row.get("file_id"),
-                    "quality": (row.get("quality") or "HD").upper(),
+                    "quality": _normalize_quality_label(row.get("quality") or _DEFAULT_QUALITY).upper(),
                     "season": None,
                     "episode": None,
                     "episode_title": "",
@@ -1689,14 +1709,14 @@ async def _scan_files_for_state(
         season_found = [r for r in found_rows if int(r.get("season") or 0) == season_no]
         quality_to_episodes: dict[str, set[int]] = {}
         for row in season_found:
-            quality = (row.get("quality") or "HD").upper()
+            quality = _normalize_quality_label(row.get("quality") or _DEFAULT_QUALITY).upper()
             quality_to_episodes.setdefault(quality, set()).add(int(row.get("episode") or 0))
 
         # Build duplicate-choice groups for admin (same season/episode/quality with multiple files).
         season_bucket_rows: dict[str, list[dict]] = {}
         for row in season_found:
             episode_no = int(row.get("episode") or 0)
-            quality = (row.get("quality") or "HD").upper()
+            quality = _normalize_quality_label(row.get("quality") or _DEFAULT_QUALITY).upper()
             if episode_no <= 0:
                 continue
             bucket_key = _series_choice_bucket(season_no, episode_no, quality)
@@ -1886,7 +1906,7 @@ async def _scan_files_for_state(
                     }
                 )
             elif any_quality:
-                quality = (any_quality.get("quality") or "HD").upper()
+                quality = _normalize_quality_label(any_quality.get("quality") or _DEFAULT_QUALITY).upper()
                 notes.append(
                     {
                         "season": season_no,
@@ -3579,7 +3599,7 @@ def _build_upload_payload(row: MassContentState) -> tuple[list[str], dict[str, d
         if not file_id:
             continue
         raw_file_ids.append(file_id)
-        payload = {"quality": (entry.get("quality") or "HD").upper()}
+        payload = {"quality": _normalize_quality_label(entry.get("quality") or _DEFAULT_QUALITY).upper()}
         if row.content_type == "series":
             payload["season"] = int(entry.get("season") or 1)
             payload["episode"] = int(entry.get("episode") or 1)
