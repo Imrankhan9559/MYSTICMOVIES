@@ -489,6 +489,64 @@ def _extract_numbered_file_lines(text: str) -> list[str]:
     return out
 
 
+def _clean_title_without_url(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    text = _TME_URL_RE.sub("", text)
+    text = text.strip()
+    text = re.sub(r"^[\(\[]\s*", "", text)
+    text = re.sub(r"\s*[\)\]]$", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return text
+
+
+def _extract_numbered_entries_with_urls(text: str) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    lines = [str(x or "") for x in str(text or "").splitlines()]
+    i = 0
+    while i < len(lines):
+        raw_line = " ".join(lines[i].split()).strip()
+        i += 1
+        if not raw_line:
+            continue
+        m = _NUMBERED_LINE_RE.match(raw_line)
+        if not m:
+            continue
+        body = str(m.group(2) or "").strip()
+        url = ""
+        um = _TME_URL_RE.search(body)
+        if um:
+            url = str(um.group(0) or "").strip()
+        else:
+            # URL often comes on immediate next line in parentheses.
+            j = i
+            while j < len(lines):
+                nxt = " ".join(lines[j].split()).strip()
+                if not nxt:
+                    j += 1
+                    continue
+                um2 = _TME_URL_RE.search(nxt)
+                if um2:
+                    url = str(um2.group(0) or "").strip()
+                    i = j + 1
+                break
+        title = _clean_title_without_url(body)
+        title = _best_title(title, fallback="")
+        if not title:
+            continue
+        if not _looks_like_file_text(title):
+            continue
+        entries.append(
+            {
+                "n": str(m.group(1) or "").strip(),
+                "title": title,
+                "url": url,
+            }
+        )
+    return entries
+
+
 def _message_line_for_url(text: str, url: str) -> str:
     lines = [x.strip() for x in str(text or "").splitlines() if x.strip()]
     for idx, line in enumerate(lines):
@@ -750,7 +808,15 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                 payload["id"] = _candidate_id(payload)
                 items.append(payload)
 
-    numbered_lines = _extract_numbered_file_lines(body_text)
+    numbered_entries = _extract_numbered_entries_with_urls(body_text)
+    numbered_lines = [str(x.get("title") or "").strip() for x in numbered_entries if str(x.get("title") or "").strip()]
+    numbered_by_url: dict[str, str] = {}
+    for row in numbered_entries:
+        u = str(row.get("url") or "").strip()
+        t = str(row.get("title") or "").strip()
+        if not u or not t:
+            continue
+        numbered_by_url[u.lower()] = t
     numbered_idx = 0
     url_rows: list[dict[str, str]] = []
     for row in _extract_entity_url_rows(msg, body_text):
@@ -795,13 +861,21 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
             continue
 
         line = ""
-        if frag and _looks_like_file_text(frag):
-            line = frag
+        by_url_title = numbered_by_url.get(url.lower(), "")
+        if by_url_title:
+            line = by_url_title
+        elif line_for_url and _looks_like_file_text(line_for_url) and line_for_url.lower() != url.lower():
+            line = line_for_url
         elif numbered_idx < len(numbered_lines):
             line = numbered_lines[numbered_idx]
             numbered_idx += 1
         else:
-            line = line_for_url or _message_line_for_url(body_text, url)
+            # only use entity fragment when line lookup failed and fragment clearly looks like full file row
+            frag_clean = _clean_title_without_url(frag)
+            if frag_clean and _looks_like_file_text(frag_clean) and len(frag_clean) >= 20:
+                line = frag_clean
+            else:
+                line = _message_line_for_url(body_text, url)
         line = _best_title(line, fallback="")
         if not _looks_like_file_text(line):
             continue
