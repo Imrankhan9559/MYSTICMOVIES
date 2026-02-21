@@ -228,6 +228,11 @@ document.getElementById("ff-settings-form").addEventListener("submit", async (e)
 document.getElementById("ff-search-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
+    // Always use current Source Chat field value from settings UI (even if not saved yet)
+    const srcInput = document.querySelector('#ff-settings-form [name="source_chat_id"]');
+    if (srcInput && String(srcInput.value || "").trim()) {
+        fd.set("source_chat_id", String(srcInput.value || "").trim());
+    }
     replaceLog(["Searching source group..."]);
     resultsBody.innerHTML = `<tr><td colspan="5" class="text-info text-center p-3">Searching...</td></tr>`;
     const out = await postForm("/file-fetcher/search", fd);

@@ -931,6 +931,7 @@ async def file_fetcher_save_settings(
 async def file_fetcher_search(
     request: Request,
     query: str = Form(""),
+    source_chat_id: str = Form(""),
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
@@ -941,9 +942,26 @@ async def file_fetcher_search(
         return JSONResponse({"ok": False, "error": "Enter a content name."}, status_code=400)
 
     cfg = await _ensure_settings()
-    source_chat = _norm_chat_ref(cfg.source_chat_id)
+    # Search uses explicit runtime source chat (from UI) first to avoid stale saved settings.
+    runtime_source_raw = str(source_chat_id or "").strip()
+    source_chat = _norm_chat_ref(runtime_source_raw) if runtime_source_raw else _norm_chat_ref(cfg.source_chat_id)
     if source_chat is None:
         return JSONResponse({"ok": False, "error": "Configure Source Query Group/Chat ID first."}, status_code=400)
+    if isinstance(source_chat, str):
+        sref = source_chat.strip().lower()
+        if sref.startswith("@") and sref.endswith("bot"):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": "Source Query Group/Chat ID points to a bot. Set a group/chat id (e.g. -100...) or group username.",
+                },
+                status_code=400,
+            )
+    # Persist runtime override so next actions/page calls keep same target.
+    if runtime_source_raw:
+        cfg.source_chat_id = str(source_chat)
+        cfg.updated_at = datetime.now()
+        await cfg.save()
     source_bots = _dedupe_keep_order([_norm_bot(x) for x in (cfg.source_bots or []) if _norm_bot(x)])
 
     client, err = await _ensure_user_session_client()
@@ -952,6 +970,7 @@ async def file_fetcher_search(
 
     logs: list[str] = []
     source_chat = await _prepare_source_chat(client, source_chat, logs)
+    logs.append(f"Using source chat: {source_chat}")
     try:
         sent = await client.send_message(source_chat, q)
         since_ts = max(0.0, _msg_ts(sent) - 2.0)
