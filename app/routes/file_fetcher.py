@@ -96,6 +96,23 @@ def _norm_chat_ref(raw: str) -> int | str | None:
     return _norm_bot(text)
 
 
+def _chat_id_variants(chat_ref: int | str) -> list[int | str]:
+    if not isinstance(chat_ref, int):
+        return [chat_ref]
+    out: list[int] = [int(chat_ref)]
+    s_abs = str(abs(int(chat_ref)))
+    # Convert supergroup/full form <-> short negative form when needed.
+    if s_abs.startswith("100") and len(s_abs) > 3:
+        short_form = -int(s_abs[3:])
+        if short_form not in out:
+            out.append(short_form)
+    else:
+        full_form = -int(f"100{s_abs}")
+        if full_form not in out:
+            out.append(full_form)
+    return out
+
+
 def _is_valid_bot_username(raw: str) -> bool:
     return bool(_BOT_USERNAME_RE.fullmatch(str(raw or "").strip()))
 
@@ -511,6 +528,26 @@ async def _prepare_source_chat(client, source_chat: int | str, logs: list[str]) 
         except Exception:
             pass
         return source_chat
+
+
+async def _warm_peer_cache_for_chat(client, source_chat: int, logs: list[str], limit: int = 240) -> int | None:
+    target_variants = {int(x) for x in _chat_id_variants(source_chat) if isinstance(x, int)}
+    try:
+        async for dlg in client.get_dialogs(limit=limit):
+            chat = getattr(dlg, "chat", None)
+            if not chat:
+                continue
+            cid = int(getattr(chat, "id", 0) or 0)
+            if not cid:
+                continue
+            if cid in target_variants:
+                title = str(getattr(chat, "title", "") or getattr(chat, "first_name", "") or "").strip()
+                logs.append(f"Resolved source chat from dialogs: {cid}" + (f" ({title})" if title else ""))
+                return cid
+    except Exception as e:
+        logs.append(f"Dialog peer warmup failed: {e}")
+    logs.append("Source chat id not found in user-session dialogs.")
+    return None
 
 
 def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -971,14 +1008,38 @@ async def file_fetcher_search(
     logs: list[str] = []
     source_chat = await _prepare_source_chat(client, source_chat, logs)
     logs.append(f"Using source chat: {source_chat}")
-    try:
-        sent = await client.send_message(source_chat, q)
-        since_ts = max(0.0, _msg_ts(sent) - 2.0)
-        logs.append(f"Sent query to {source_chat}: {q}")
-        group_send_ok = True
-    except Exception as e:
-        logs.append(f"Failed to send query to source chat: {e}")
-        group_send_ok = False
+    group_send_ok = False
+    sent = None
+    since_ts = _now_ts() - 90.0
+    send_candidates = _chat_id_variants(source_chat)
+    send_errors: list[str] = []
+
+    async def _attempt_send(target: int | str) -> bool:
+        nonlocal sent, since_ts, source_chat
+        try:
+            sent = await client.send_message(target, q)
+            since_ts = max(0.0, _msg_ts(sent) - 2.0)
+            source_chat = target
+            logs.append(f"Sent query to {target}: {q}")
+            return True
+        except Exception as ex:
+            send_errors.append(str(ex))
+            logs.append(f"Send failed [{target}]: {ex}")
+            return False
+
+    for cand in send_candidates:
+        if await _attempt_send(cand):
+            group_send_ok = True
+            break
+
+    if (not group_send_ok) and isinstance(source_chat, int):
+        if any("peer id invalid" in x.lower() for x in send_errors):
+            warmed = await _warm_peer_cache_for_chat(client, source_chat, logs)
+            retry_candidates = _chat_id_variants(int(warmed)) if isinstance(warmed, int) else send_candidates
+            for cand in retry_candidates:
+                if await _attempt_send(cand):
+                    group_send_ok = True
+                    break
 
     items: list[dict[str, Any]] = []
     pagers: list[dict[str, Any]] = []
