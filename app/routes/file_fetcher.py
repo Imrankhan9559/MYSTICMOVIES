@@ -26,6 +26,7 @@ _SIZE_RE = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>TB|GB|MB|KB)\b", re.I)
 _TME_URL_RE = re.compile(r"https?://t\.me/[^\s)>\]]+", re.I)
 _CHANNEL_MENTION_RE = re.compile(r"(?<![\w@])@([A-Za-z0-9_]{4,})")
 _FORCE_SUB_RE = re.compile(r"(join|subscribe|updates?\s+channel|force\s*sub|important)", re.I)
+_BOT_USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{4,}$")
 
 
 def _now_ts() -> float:
@@ -85,6 +86,10 @@ def _norm_chat_ref(raw: str) -> int | str | None:
     if text.startswith("@"):
         return text.lower()
     return _norm_bot(text)
+
+
+def _is_valid_bot_username(raw: str) -> bool:
+    return bool(_BOT_USERNAME_RE.fullmatch(str(raw or "").strip()))
 
 
 def _dedupe_keep_order(rows: list[str]) -> list[str]:
@@ -251,15 +256,28 @@ def _msg_sender_is_bot(msg) -> bool:
     return label.endswith("_bot") or label.endswith("bot")
 
 
+def _canon_sender(value: str) -> str:
+    raw = str(value or "").lower().strip()
+    raw = raw.lstrip("@")
+    raw = re.sub(r"[^a-z0-9]+", "", raw)
+    if raw.endswith("bot"):
+        raw = raw[:-3]
+    return raw
+
+
 def _sender_matches_filter(msg, sender_label: str, filters: list[str]) -> bool:
     if not filters:
         return _msg_sender_is_bot(msg)
     if sender_label in filters:
         return True
     sender_low = sender_label.lower().lstrip("@")
+    sender_canon = _canon_sender(sender_label)
     for fil in filters:
         check = str(fil or "").lower().lstrip("@")
+        check_canon = _canon_sender(fil)
         if check and (check == sender_low or check in sender_low):
+            return True
+        if check_canon and (check_canon == sender_canon or check_canon in sender_canon or sender_canon in check_canon):
             return True
     return False
 
@@ -292,6 +310,20 @@ def _extract_entity_urls(msg, text: str) -> list[str]:
     return _dedupe_keep_order(urls)
 
 
+def _extract_button_urls(msg) -> list[str]:
+    urls: list[str] = []
+    reply_markup = getattr(msg, "reply_markup", None)
+    inline = getattr(reply_markup, "inline_keyboard", None) if reply_markup else None
+    if not inline:
+        return urls
+    for row in inline:
+        for btn in row or []:
+            burl = str(getattr(btn, "url", "") or "").strip()
+            if burl:
+                urls.append(burl)
+    return _dedupe_keep_order(urls)
+
+
 def _is_pager_button(text: str) -> bool:
     raw = str(text or "").strip().lower()
     if not raw:
@@ -313,6 +345,18 @@ def _message_line_for_url(text: str, url: str) -> str:
         if url in line:
             return line
     return lines[0] if lines else ""
+
+
+def _extract_size_lines(text: str) -> list[tuple[str, int, str]]:
+    rows: list[tuple[str, int, str]] = []
+    for raw_line in str(text or "").splitlines():
+        line = " ".join(raw_line.split()).strip()
+        if not line:
+            continue
+        b, l = _extract_size(line)
+        if b > 0:
+            rows.append((line, b, l))
+    return rows
 
 
 def _dedupe_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -501,6 +545,22 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
         }
         payload["id"] = _candidate_id(payload)
         items.append(payload)
+
+    # show size+title rows from text list replies (even if no direct link on each line)
+    # keeps UI visibility for bots that return plain numbered lists
+    for line, size_bytes, size_label in _extract_size_lines(body_text):
+        payload = {
+            "source_bot": source_label,
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "action_type": "text_result",
+            "action": {},
+            "title": _best_title(line, fallback=f"Text result from {source_label}"),
+            "size_bytes": int(size_bytes or 0),
+            "size_label": size_label,
+        }
+        payload["id"] = _candidate_id(payload)
+        items.append(payload)
     return items, pagers
 
 
@@ -524,8 +584,14 @@ async def _collect_from_group(
             if getattr(msg, "outgoing", False):
                 continue
             sender = _msg_sender_label(msg)
-            if not _sender_matches_filter(msg, sender, source_bots_filter):
-                continue
+            allowed = _sender_matches_filter(msg, sender, source_bots_filter)
+            if not allowed:
+                # fallback: keep likely bot-generated result messages even if sender label format differs
+                has_markup = bool(getattr(getattr(msg, "reply_markup", None), "inline_keyboard", None))
+                text = str(getattr(msg, "text", "") or getattr(msg, "caption", "") or "")
+                has_links = bool(_TME_URL_RE.search(text))
+                if not (_msg_sender_is_bot(msg) or has_markup or has_links or _has_media(msg)):
+                    continue
             msg_items, msg_pagers = _extract_from_message(msg, sender)
             items.extend(msg_items)
             pagers.extend(msg_pagers)
@@ -686,6 +752,63 @@ async def _click_message_button(client, chat_id: int | str, message_id: int, act
         return False
 
 
+async def _resolve_start_actions_from_recent(
+    client,
+    *,
+    chats: list[int | str],
+    since_ts: float,
+    cfg: FileFetcherSettings,
+    logs: list[str],
+) -> tuple[list[str], list[str]]:
+    start_actions: list[tuple[str, str]] = []
+    joined_total: list[str] = []
+    for chat in _dedupe_chat_refs(chats):
+        try:
+            async for msg in client.get_chat_history(chat, limit=35):
+                if _msg_ts(msg) < since_ts:
+                    break
+                text = str(getattr(msg, "text", "") or getattr(msg, "caption", "") or "")
+                urls: list[str] = []
+                urls.extend(_TME_URL_RE.findall(text))
+                urls.extend(_extract_entity_urls(msg, text))
+                urls.extend(_extract_button_urls(msg))
+                urls = _dedupe_keep_order([x for x in urls if x])
+                for url in urls:
+                    parsed = _parse_tme_action(url)
+                    kind = str(parsed.get("kind") or "")
+                    if kind == "join":
+                        joined = await _join_channels_and_save(client, cfg, [str(parsed.get("target") or "")], logs)
+                        joined_total.extend(joined)
+                        continue
+                    if kind == "bot_start":
+                        target = str(parsed.get("target") or "").strip()
+                        start = str(parsed.get("start") or "").strip()
+                        if _is_valid_bot_username(target):
+                            start_actions.append((target, start))
+        except Exception:
+            continue
+
+    started_targets: list[str] = []
+    seen: set[str] = set()
+    for target, start in start_actions:
+        key = f"{target}|{start}"
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            if start:
+                await client.send_message(target, f"/start {start}")
+                logs.append(f"Sent /start payload to {target}")
+            else:
+                await client.send_message(target, "/start")
+                logs.append(f"Sent /start to {target}")
+            started_targets.append(target)
+        except Exception as e:
+            logs.append(f"/start send failed for {target}: {e}")
+
+    return _dedupe_keep_order(started_targets), _dedupe_keep_order(joined_total)
+
+
 @router.get("/file-fetcher")
 async def file_fetcher_page(request: Request):
     user = await get_current_user(request)
@@ -768,18 +891,12 @@ async def file_fetcher_search(
     except Exception as e:
         return JSONResponse({"ok": False, "error": f"Failed to send query to source chat: {e}"}, status_code=500)
 
-    await asyncio.sleep(2.8)
-    items, pagers = await _collect_from_group(
-        client,
-        source_chat=source_chat,
-        query=q,
-        since_ts=since_ts,
-        source_bots_filter=source_bots,
-        logs=logs,
-    )
-    if not items:
-        await asyncio.sleep(2.2)
-        items, pagers = await _collect_from_group(
+    items: list[dict[str, Any]] = []
+    pagers: list[dict[str, Any]] = []
+    target_bot_count = max(1, len(source_bots))
+    for attempt in range(1, 6):
+        await asyncio.sleep(2.0)
+        scan_items, scan_pagers = await _collect_from_group(
             client,
             source_chat=source_chat,
             query=q,
@@ -787,6 +904,12 @@ async def file_fetcher_search(
             source_bots_filter=source_bots,
             logs=logs,
         )
+        items = _dedupe_candidates([*items, *scan_items])
+        pagers = _dedupe_pagers([*pagers, *scan_pagers])
+        bot_seen = len(set([str(x.get("source_bot") or "") for x in items if str(x.get("source_bot") or "")]))
+        logs.append(f"Scan {attempt}/5 -> files={len(items)} bots={bot_seen} pagers={len(pagers)}")
+        if len(items) >= 1 and bot_seen >= target_bot_count:
+            break
 
     _put_cache(
         _user_cache_key(user),
@@ -937,28 +1060,31 @@ async def file_fetcher_fetch(
     seen_keys: set[str] = set()
     source_chat = cache.get("source_chat")
 
-    try:
-        await client.send_message(destination_bot, "/start")
-    except Exception:
-        pass
+    # do not send /start to destination bot on each fetch; forward directly
 
     for item in chosen:
         action_type = str(item.get("action_type") or "")
-        source_bot = _norm_bot(item.get("source_bot") or "")
+        source_bot_label = str(item.get("source_bot") or "")
+        source_bot = _norm_bot(source_bot_label)
         chat_id = item.get("chat_id")
         message_id = int(item.get("message_id") or 0)
         action = item.get("action") if isinstance(item.get("action"), dict) else {}
-        logs.append(f"Fetching: {item.get('title') or 'Untitled'} [{source_bot}]")
+        logs.append(f"Fetching: {item.get('title') or 'Untitled'} [{source_bot_label or source_bot}]")
 
         if action_type == "direct_media":
             forwarded_total += await _forward_message(client, destination_bot, chat_id, message_id, logs)
+            continue
+        if action_type == "text_result":
+            logs.append("This row is a text-only result without direct link/button. Use linked/button rows to fetch.")
             continue
 
         start_ts = _now_ts() - 1.5
         watch_chats: list[int | str] = []
         if source_chat not in (None, ""):
             watch_chats.append(source_chat)
-        if source_bot:
+        if chat_id not in (None, ""):
+            watch_chats.append(chat_id)
+        if source_bot and _is_valid_bot_username(source_bot):
             watch_chats.append(source_bot)
 
         clicked = False
@@ -995,6 +1121,17 @@ async def file_fetcher_fetch(
         if not clicked:
             logs.append("Action not clickable for this row.")
 
+        started_targets, joined_from_links = await _resolve_start_actions_from_recent(
+            client,
+            chats=watch_chats,
+            since_ts=start_ts,
+            cfg=cfg,
+            logs=logs,
+        )
+        for t in started_targets:
+            watch_chats.append(t)
+        joined_total.extend(joined_from_links)
+
         forwarded_now, joined_now = await _collect_new_media_and_force_sub(
             client=client,
             destination_bot=destination_bot,
@@ -1012,6 +1149,16 @@ async def file_fetcher_fetch(
             retry_ts = _now_ts() - 1.0
             retry_click = await _click_message_button(client, chat_id, message_id, action, logs)
             if retry_click:
+                retry_started, retry_joined_from_links = await _resolve_start_actions_from_recent(
+                    client,
+                    chats=watch_chats,
+                    since_ts=retry_ts,
+                    cfg=cfg,
+                    logs=logs,
+                )
+                for t in retry_started:
+                    watch_chats.append(t)
+                joined_total.extend(retry_joined_from_links)
                 retry_forwarded, retry_joined = await _collect_new_media_and_force_sub(
                     client=client,
                     destination_bot=destination_bot,
