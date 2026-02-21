@@ -82,7 +82,11 @@ def _norm_chat_ref(raw: str) -> int | str | None:
         segs = [x for x in parsed.path.split("/") if x]
         if not segs:
             return None
+        if segs[0].startswith("+") or segs[0] == "joinchat":
+            return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
         return _norm_bot(segs[0])
+    if text.startswith("t.me/+") or text.startswith("t.me/joinchat/"):
+        return f"https://{text}"
     if text.startswith("@"):
         return text.lower()
     return _norm_bot(text)
@@ -122,10 +126,11 @@ def _dedupe_chat_refs(rows: list[int | str]) -> list[int | str]:
 def _parse_multiline_refs(raw: str, *, channel: bool = False) -> list[str]:
     parts: list[str] = []
     for line in str(raw or "").replace(",", "\n").splitlines():
-        val = line.strip()
-        if not val:
-            continue
-        parts.append(_norm_channel(val) if channel else _norm_bot(val))
+        for token in line.split():
+            val = token.strip()
+            if not val:
+                continue
+            parts.append(_norm_channel(val) if channel else _norm_bot(val))
     return _dedupe_keep_order([x for x in parts if x])
 
 
@@ -452,6 +457,27 @@ async def _ensure_user_session_client() -> tuple[Any, str]:
     return client, ""
 
 
+async def _prepare_source_chat(client, source_chat: int | str, logs: list[str]) -> int | str:
+    if not isinstance(source_chat, str):
+        return source_chat
+    raw = source_chat.strip()
+    if not raw:
+        return source_chat
+    if not ("t.me/+" in raw or "t.me/joinchat/" in raw):
+        return source_chat
+    try:
+        joined = await client.join_chat(raw)
+        joined_id = getattr(joined, "id", None)
+        if joined_id is not None:
+            logs.append(f"Joined source group via invite link -> {joined_id}")
+            return int(joined_id)
+        logs.append("Joined source group via invite link.")
+        return source_chat
+    except Exception as e:
+        logs.append(f"Invite-link join failed: {e}")
+        return source_chat
+
+
 def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     items: list[dict[str, Any]] = []
     pagers: list[dict[str, Any]] = []
@@ -607,6 +633,42 @@ async def _collect_from_group(
             ),
             reverse=True,
         )
+    return _dedupe_candidates(items), _dedupe_pagers(pagers)
+
+
+async def _collect_from_direct_bots(
+    client,
+    *,
+    query: str,
+    source_bots: list[str],
+    logs: list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    items: list[dict[str, Any]] = []
+    pagers: list[dict[str, Any]] = []
+    sent_marks: dict[str, float] = {}
+    for bot in source_bots:
+        try:
+            sent = await client.send_message(bot, query)
+            sent_marks[bot] = max(0.0, _msg_ts(sent) - 2.0)
+            logs.append(f"Fallback sent to {bot}")
+        except Exception as e:
+            logs.append(f"Fallback send failed {bot}: {e}")
+            sent_marks[bot] = _now_ts() - 90.0
+
+    for _ in range(3):
+        await asyncio.sleep(2.0)
+        for bot in source_bots:
+            try:
+                async for msg in client.get_chat_history(bot, limit=60):
+                    if _msg_ts(msg) < sent_marks.get(bot, _now_ts() - 90.0):
+                        break
+                    if getattr(msg, "outgoing", False):
+                        continue
+                    msg_items, msg_pagers = _extract_from_message(msg, _msg_sender_label(msg) or bot)
+                    items.extend(msg_items)
+                    pagers.extend(msg_pagers)
+            except Exception:
+                continue
     return _dedupe_candidates(items), _dedupe_pagers(pagers)
 
 
@@ -884,32 +946,47 @@ async def file_fetcher_search(
         return JSONResponse({"ok": False, "error": err}, status_code=500)
 
     logs: list[str] = []
+    source_chat = await _prepare_source_chat(client, source_chat, logs)
     try:
         sent = await client.send_message(source_chat, q)
         since_ts = max(0.0, _msg_ts(sent) - 2.0)
         logs.append(f"Sent query to {source_chat}: {q}")
+        group_send_ok = True
     except Exception as e:
-        return JSONResponse({"ok": False, "error": f"Failed to send query to source chat: {e}"}, status_code=500)
+        logs.append(f"Failed to send query to source chat: {e}")
+        group_send_ok = False
+        since_ts = _now_ts() - 90.0
 
     items: list[dict[str, Any]] = []
     pagers: list[dict[str, Any]] = []
-    target_bot_count = max(1, len(source_bots))
-    for attempt in range(1, 6):
-        await asyncio.sleep(2.0)
-        scan_items, scan_pagers = await _collect_from_group(
+    if group_send_ok:
+        target_bot_count = max(1, len(source_bots))
+        for attempt in range(1, 6):
+            await asyncio.sleep(2.0)
+            scan_items, scan_pagers = await _collect_from_group(
+                client,
+                source_chat=source_chat,
+                query=q,
+                since_ts=since_ts,
+                source_bots_filter=source_bots,
+                logs=logs,
+            )
+            items = _dedupe_candidates([*items, *scan_items])
+            pagers = _dedupe_pagers([*pagers, *scan_pagers])
+            bot_seen = len(set([str(x.get("source_bot") or "") for x in items if str(x.get("source_bot") or "")]))
+            logs.append(f"Scan {attempt}/5 -> files={len(items)} bots={bot_seen} pagers={len(pagers)}")
+            if len(items) >= 1 and bot_seen >= target_bot_count:
+                break
+    elif source_bots:
+        logs.append("Using fallback: direct bot query mode.")
+        items, pagers = await _collect_from_direct_bots(
             client,
-            source_chat=source_chat,
             query=q,
-            since_ts=since_ts,
-            source_bots_filter=source_bots,
+            source_bots=source_bots,
             logs=logs,
         )
-        items = _dedupe_candidates([*items, *scan_items])
-        pagers = _dedupe_pagers([*pagers, *scan_pagers])
-        bot_seen = len(set([str(x.get("source_bot") or "") for x in items if str(x.get("source_bot") or "")]))
-        logs.append(f"Scan {attempt}/5 -> files={len(items)} bots={bot_seen} pagers={len(pagers)}")
-        if len(items) >= 1 and bot_seen >= target_bot_count:
-            break
+    else:
+        return JSONResponse({"ok": False, "error": "Source group send failed and no source bots configured.", "logs": logs}, status_code=500)
 
     _put_cache(
         _user_cache_key(user),
