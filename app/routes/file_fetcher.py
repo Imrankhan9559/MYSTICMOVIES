@@ -344,6 +344,19 @@ def _is_pager_button(text: str) -> bool:
     return False
 
 
+def _is_next_button(text: str) -> bool:
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return False
+    if raw in {"next", "next >", "next >", ">", ">>", "⏭", "➡", "➡️", "next ⏩"}:
+        return True
+    if "next" in raw:
+        return True
+    if raw.endswith(">") or raw.endswith(">>"):
+        return True
+    return False
+
+
 def _message_line_for_url(text: str, url: str) -> str:
     lines = [x.strip() for x in str(text or "").splitlines() if x.strip()]
     for line in lines:
@@ -636,42 +649,6 @@ async def _collect_from_group(
     return _dedupe_candidates(items), _dedupe_pagers(pagers)
 
 
-async def _collect_from_direct_bots(
-    client,
-    *,
-    query: str,
-    source_bots: list[str],
-    logs: list[str],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    items: list[dict[str, Any]] = []
-    pagers: list[dict[str, Any]] = []
-    sent_marks: dict[str, float] = {}
-    for bot in source_bots:
-        try:
-            sent = await client.send_message(bot, query)
-            sent_marks[bot] = max(0.0, _msg_ts(sent) - 2.0)
-            logs.append(f"Fallback sent to {bot}")
-        except Exception as e:
-            logs.append(f"Fallback send failed {bot}: {e}")
-            sent_marks[bot] = _now_ts() - 90.0
-
-    for _ in range(3):
-        await asyncio.sleep(2.0)
-        for bot in source_bots:
-            try:
-                async for msg in client.get_chat_history(bot, limit=60):
-                    if _msg_ts(msg) < sent_marks.get(bot, _now_ts() - 90.0):
-                        break
-                    if getattr(msg, "outgoing", False):
-                        continue
-                    msg_items, msg_pagers = _extract_from_message(msg, _msg_sender_label(msg) or bot)
-                    items.extend(msg_items)
-                    pagers.extend(msg_pagers)
-            except Exception:
-                continue
-    return _dedupe_candidates(items), _dedupe_pagers(pagers)
-
-
 async def _join_channels_and_save(
     client,
     cfg: FileFetcherSettings,
@@ -723,7 +700,8 @@ def _parse_tme_action(url: str) -> dict[str, Any]:
     if raw.startswith("t.me/"):
         raw = f"https://{raw}"
     parsed = urlparse(raw)
-    if "t.me" not in (parsed.netloc or ""):
+    netloc = str(parsed.netloc or "").lower()
+    if ("t.me" not in netloc) and ("telegram.me" not in netloc):
         return {"kind": "none"}
     path = (parsed.path or "").strip("/")
     if not path:
@@ -977,16 +955,15 @@ async def file_fetcher_search(
             logs.append(f"Scan {attempt}/5 -> files={len(items)} bots={bot_seen} pagers={len(pagers)}")
             if len(items) >= 1 and bot_seen >= target_bot_count:
                 break
-    elif source_bots:
-        logs.append("Using fallback: direct bot query mode.")
-        items, pagers = await _collect_from_direct_bots(
-            client,
-            query=q,
-            source_bots=source_bots,
-            logs=logs,
-        )
     else:
-        return JSONResponse({"ok": False, "error": "Source group send failed and no source bots configured.", "logs": logs}, status_code=500)
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Failed to send query in source group. Check Source Query Group/Chat ID and user-session access.",
+                "logs": logs,
+            },
+            status_code=500,
+        )
 
     _put_cache(
         _user_cache_key(user),
@@ -1096,6 +1073,100 @@ async def file_fetcher_page_next(
         source_chat=source_chat,
     )
     logs.append(f"Page updated: +{len(_dedupe_candidates(new_items))} new file choices")
+    return JSONResponse({"ok": True, "items": merged_items, "pagers": merged_pagers, "logs": logs})
+
+
+@router.post("/file-fetcher/page-all")
+async def file_fetcher_page_next_all(request: Request):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        return JSONResponse({"ok": False, "error": "Not allowed."}, status_code=403)
+
+    cache = _get_cache(_user_cache_key(user))
+    if not cache:
+        return JSONResponse({"ok": False, "error": "Search cache expired. Search again."}, status_code=400)
+
+    pagers = cache.get("pagers") if isinstance(cache.get("pagers"), list) else []
+    if not pagers:
+        return JSONResponse({"ok": False, "error": "No page controls available."}, status_code=400)
+
+    client, err = await _ensure_user_session_client()
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=500)
+
+    logs: list[str] = []
+    source_chat = cache.get("source_chat")
+    query = str(cache.get("query") or "")
+    cfg = await _ensure_settings()
+    source_bots_filter = _dedupe_keep_order([_norm_bot(x) for x in (cfg.source_bots or []) if _norm_bot(x)])
+
+    next_pagers = [p for p in pagers if _is_next_button(str(p.get("button_text") or ""))]
+    if not next_pagers:
+        # fallback: one pager per source bot
+        seen_bot: set[str] = set()
+        for p in pagers:
+            bot = str(p.get("source_bot") or "")
+            if bot in seen_bot:
+                continue
+            seen_bot.add(bot)
+            next_pagers.append(p)
+
+    clicked_count = 0
+    for pager in next_pagers:
+        action_type = str(pager.get("action_type") or "")
+        action = pager.get("action") if isinstance(pager.get("action"), dict) else {}
+        chat_id = pager.get("chat_id")
+        message_id = int(pager.get("message_id") or 0)
+        source_bot = str(pager.get("source_bot") or "")
+        button_text = str(pager.get("button_text") or "").strip()
+
+        clicked = False
+        if action_type == "pager_callback":
+            clicked = await _click_message_button(client, chat_id, message_id, action, logs)
+        elif action_type == "pager_url":
+            raw_url = str(action.get("url") or "").strip()
+            parsed = _parse_tme_action(raw_url)
+            if parsed.get("kind") == "bot_start" and parsed.get("target"):
+                try:
+                    target = parsed.get("target")
+                    start = str(parsed.get("start") or "").strip()
+                    if start:
+                        await client.send_message(target, f"/start {start}")
+                    else:
+                        await client.send_message(target, "/start")
+                    clicked = True
+                except Exception as e:
+                    logs.append(f"Next link open failed for {target}: {e}")
+        if clicked:
+            clicked_count += 1
+            logs.append(f"Next clicked: {source_bot} [{button_text}]")
+        else:
+            logs.append(f"Next skipped/failed: {source_bot} [{button_text}]")
+
+    if clicked_count <= 0:
+        return JSONResponse({"ok": False, "error": "Failed to click any Next button.", "logs": logs}, status_code=400)
+
+    await asyncio.sleep(2.4)
+    scan_items, scan_pagers = await _collect_from_group(
+        client,
+        source_chat=source_chat,
+        query=query,
+        since_ts=_now_ts() - 14.0,
+        source_bots_filter=source_bots_filter,
+        logs=logs,
+        limit=120,
+    )
+    cached_items = cache.get("items") if isinstance(cache.get("items"), list) else []
+    merged_items = _dedupe_candidates([*cached_items, *scan_items])
+    merged_pagers = _dedupe_pagers(scan_pagers)
+    _put_cache(
+        _user_cache_key(user),
+        items=merged_items,
+        pagers=merged_pagers,
+        query=query,
+        source_chat=source_chat,
+    )
+    logs.append(f"Next-All update: +{len(scan_items)} file rows")
     return JSONResponse({"ok": True, "items": merged_items, "pagers": merged_pagers, "logs": logs})
 
 

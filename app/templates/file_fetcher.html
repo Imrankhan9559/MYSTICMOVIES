@@ -58,8 +58,11 @@
         </div>
 
         <div class="card">
-            <div class="card-header">
+            <div class="card-header d-flex justify-content-between align-items-center">
                 <h3 class="card-title"><i class="fas fa-forward mr-2"></i>Bot Page Controls</h3>
+                <button type="button" id="ff-next-all-btn" class="btn btn-sm btn-outline-warning">
+                    <i class="fas fa-angles-right mr-1"></i>Next (All Bots)
+                </button>
             </div>
             <div class="card-body">
                 <div id="ff-pagers-wrap" class="d-flex flex-wrap" style="gap:8px;">
@@ -152,7 +155,7 @@ function renderResults() {
     }
     resultsBody.innerHTML = currentResults.map(item => `
         <tr>
-            <td><input type="checkbox" class="ff-item-check" value="${esc(item.id || "")}"></td>
+            <td><input type="checkbox" class="ff-item-check" value="${esc(item.id || "")}" ${item.action_type === "text_result" ? "disabled" : ""}></td>
             <td title="${esc(item.title || "")}">${esc(item.title || "")}</td>
             <td>${esc(item.size_label || "-")}</td>
             <td>${esc(item.source_bot || "-")}</td>
@@ -247,6 +250,21 @@ document.getElementById("ff-select-all").addEventListener("click", () => {
 
 document.getElementById("ff-clear-all").addEventListener("click", () => {
     document.querySelectorAll(".ff-item-check").forEach(el => el.checked = false);
+});
+
+document.getElementById("ff-next-all-btn").addEventListener("click", async () => {
+    replaceLog(["Going to next page for all source bots..."]);
+    const out = await postJson("/file-fetcher/page-all", {});
+    if (!out.ok || !out.data.ok) {
+        replaceLog([out.data.error || `Next-all failed (HTTP ${out.status})`]);
+        return;
+    }
+    currentResults = Array.isArray(out.data.items) ? out.data.items : currentResults;
+    currentPagers = Array.isArray(out.data.pagers) ? out.data.pagers : currentPagers;
+    renderResults();
+    renderPagers();
+    replaceLog(out.data.logs || []);
+    logLine(`Updated results: ${currentResults.length}`);
 });
 
 document.getElementById("ff-fetch-btn").addEventListener("click", async () => {
