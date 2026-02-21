@@ -3,6 +3,7 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -445,6 +446,8 @@ def _is_pager_button(text: str) -> bool:
     raw = str(text or "").strip().lower()
     if not raw:
         return False
+    if _is_next_button(raw):
+        return True
     if raw in {">", ">>", "<", "<<", "next", "prev", "previous", "back"}:
         return True
     if re.search(r"\b(next|prev|previous)\b", raw):
@@ -457,14 +460,23 @@ def _is_pager_button(text: str) -> bool:
 
 
 def _is_next_button(text: str) -> bool:
-    raw = str(text or "").strip().lower()
+    raw = str(text or "").strip()
     if not raw:
         return False
-    if raw in {"next", "next >", "next >", ">", ">>", "⏭", "➡", "➡️", "next ⏩"}:
+    folded = (
+        unicodedata.normalize("NFKD", raw)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .strip()
+        .lower()
+    )
+    if folded in {"next", "next >", "next >>", ">", ">>"}:
         return True
-    if "next" in raw:
+    if "next" in folded:
         return True
-    if raw.endswith(">") or raw.endswith(">>"):
+    if folded.endswith(">") or folded.endswith(">>"):
+        return True
+    if re.search(r"[>?????]+", raw):
         return True
     return False
 
@@ -794,8 +806,6 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                 bcb = str(getattr(btn, "callback_data", "") or "").strip()
                 if not btxt and not burl and not bcb:
                     continue
-                if _is_noisy_button(btxt):
-                    continue
                 action = {
                     "row": r_idx,
                     "col": c_idx,
@@ -804,9 +814,6 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                     "callback_data": bcb,
                 }
                 if _is_pager_button(btxt):
-                    # keep only true "next" controls as pager actions
-                    if not _is_next_button(btxt):
-                        continue
                     pager_payload = {
                         "source_bot": source_label,
                         "chat_id": chat_id,
@@ -818,6 +825,8 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                     }
                     pager_payload["id"] = _candidate_id(pager_payload)
                     pagers.append(pager_payload)
+                    continue
+                if _is_noisy_button(btxt):
                     continue
                 size_bytes, size_label = _extract_size(f"{btxt} {body_text}")
                 action_type = "button_url" if burl else "button_callback"
