@@ -168,6 +168,12 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a href="/file-fetcher" class="nav-link {% if request.url.path.startswith('/file-fetcher') %}active{% endif %}">
+                            <i class="nav-icon fas fa-robot"></i>
+                            <p>File Fetcher</p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a href="/publish-content" class="nav-link {% if request.url.path.startswith('/dashboard/publish-content') or request.url.path.startswith('/publish-content') %}active{% endif %}">
                             <i class="nav-icon fas fa-folder-open"></i>
                             <p>Publish Content</p>

@@ -406,6 +406,22 @@ class AppDeviceSession(Document):
         ]
 
 
+class FileFetcherSettings(Document):
+    key: str = Field(unique=True)
+    source_bots: List[str] = []
+    destination_bot: str = "mysticmovies_bot"
+    force_sub_channels: List[str] = []
+    created_at: datetime = datetime.now()
+    updated_at: datetime = datetime.now()
+    model_config = ConfigDict(extra='allow')
+    class Settings:
+        name = "file_fetcher_settings"
+        indexes = [
+            [("updated_at", -1)],
+            [("destination_bot", 1)],
+        ]
+
+
 class MassContentState(Document):
     key: str = Field(unique=True)
     title: str
@@ -486,6 +502,7 @@ async def init_db():
             AppRelease,
             AppBroadcast,
             AppDeviceSession,
+            FileFetcherSettings,
             MassContentState,
         ],
     )

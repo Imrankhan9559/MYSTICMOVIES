@@ -1,0 +1,218 @@
+{% extends "admin_base.html" %}
+
+{% block content %}
+<section class="content-header">
+    <div class="container-fluid">
+        <div class="d-flex justify-content-between align-items-center">
+            <div>
+                <h1 class="mb-1">File Fetcher</h1>
+                <div class="admin-section-note">Search source bots, merge replies, select files, fetch and forward directly to @mysticmovies_bot.</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="content">
+    <div class="container-fluid">
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-cogs mr-2"></i>Fetcher Settings</h3>
+            </div>
+            <div class="card-body">
+                <form id="ff-settings-form">
+                    <div class="form-row">
+                        <div class="form-group col-md-5">
+                            <label>Source Bots (one per line)</label>
+                            <textarea name="source_bots_text" class="form-control" rows="4" placeholder="@bot_one&#10;@bot_two">{{ "\n".join(cfg.source_bots or []) }}</textarea>
+                        </div>
+                        <div class="form-group col-md-3">
+                            <label>Destination Bot</label>
+                            <input name="destination_bot" class="form-control" value="{{ cfg.destination_bot or 'mysticmovies_bot' }}" placeholder="mysticmovies_bot">
+                        </div>
+                        <div class="form-group col-md-4">
+                            <label>Known Force-Sub Channels (one per line)</label>
+                            <textarea name="force_sub_channels_text" class="form-control" rows="4" placeholder="@channel_or_link">{{ "\n".join(cfg.force_sub_channels or []) }}</textarea>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-warning btn-sm"><i class="fas fa-save mr-1"></i>Save Settings</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-magnifying-glass mr-2"></i>Search</h3>
+            </div>
+            <div class="card-body">
+                <form id="ff-search-form" class="form-inline">
+                    <input type="text" name="query" class="form-control mr-2 mb-2 mb-md-0" style="min-width:340px;" placeholder="Type content name (example: sita ramam)" required>
+                    <button type="submit" class="btn btn-info btn-sm"><i class="fas fa-search mr-1"></i>Search Bots</button>
+                    <button type="button" id="ff-fetch-btn" class="btn btn-success btn-sm ml-2"><i class="fas fa-download mr-1"></i>Fetch Selected</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h3 class="card-title"><i class="fas fa-list-check mr-2"></i>Merged Results</h3>
+                <div>
+                    <button type="button" id="ff-select-all" class="btn btn-xs btn-outline-light">Select All</button>
+                    <button type="button" id="ff-clear-all" class="btn btn-xs btn-outline-secondary ml-1">Clear</button>
+                </div>
+            </div>
+            <div class="card-body p-2">
+                <div class="table-responsive" style="max-height: 46vh; overflow:auto;">
+                    <table class="table table-sm table-hover mb-0">
+                        <thead>
+                            <tr>
+                                <th style="width:40px;"></th>
+                                <th>Title</th>
+                                <th style="width:120px;">Size</th>
+                                <th style="width:120px;">Source Bot</th>
+                                <th style="width:120px;">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ff-results-body">
+                            <tr><td colspan="5" class="text-muted text-center p-3">No results yet.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title"><i class="fas fa-terminal mr-2"></i>Temporary Log</h3>
+            </div>
+            <div class="card-body p-2">
+                <pre id="ff-log" style="max-height:280px; overflow:auto; margin:0; white-space:pre-wrap;">Ready.</pre>
+            </div>
+        </div>
+    </div>
+</section>
+{% endblock %}
+
+{% block page_scripts %}
+<script>
+const logEl = document.getElementById("ff-log");
+const resultsBody = document.getElementById("ff-results-body");
+
+let currentResults = [];
+
+function logLine(text) {
+    const line = String(text || "").trim();
+    if (!line) return;
+    const ts = new Date().toLocaleTimeString();
+    logEl.textContent += `\n[${ts}] ${line}`;
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+function replaceLog(lines) {
+    const rows = Array.isArray(lines) ? lines : [];
+    logEl.textContent = rows.length ? rows.map(x => String(x || "")).join("\n") : "No log.";
+    logEl.scrollTop = logEl.scrollHeight;
+}
+
+function esc(v) {
+    return String(v || "").replace(/[&<>"']/g, s => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;" }[s]));
+}
+
+function actionLabel(actionType) {
+    const t = String(actionType || "");
+    if (t === "direct_media") return "Direct File";
+    if (t === "button_url") return "Button URL";
+    if (t === "button_callback") return "Button Callback";
+    if (t === "line_url") return "Line URL";
+    return t || "-";
+}
+
+function renderResults() {
+    if (!Array.isArray(currentResults) || !currentResults.length) {
+        resultsBody.innerHTML = `<tr><td colspan="5" class="text-muted text-center p-3">No results found.</td></tr>`;
+        return;
+    }
+    resultsBody.innerHTML = currentResults.map(item => `
+        <tr>
+            <td><input type="checkbox" class="ff-item-check" value="${esc(item.id || "")}"></td>
+            <td title="${esc(item.title || "")}">${esc(item.title || "")}</td>
+            <td>${esc(item.size_label || "-")}</td>
+            <td>${esc(item.source_bot || "-")}</td>
+            <td>${esc(actionLabel(item.action_type))}</td>
+        </tr>
+    `).join("");
+}
+
+async function postForm(url, formData) {
+    const res = await fetch(url, { method: "POST", body: formData, credentials: "same-origin" });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, data, status: res.status };
+}
+
+async function postJson(url, payload) {
+    const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload || {}),
+        credentials: "same-origin",
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, data, status: res.status };
+}
+
+document.getElementById("ff-settings-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    const out = await postForm("/file-fetcher/settings", fd);
+    if (!out.ok) {
+        logLine(out.data.error || `Settings save failed (HTTP ${out.status})`);
+        return;
+    }
+    logLine("Settings saved.");
+});
+
+document.getElementById("ff-search-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    replaceLog(["Searching source bots..."]);
+    resultsBody.innerHTML = `<tr><td colspan="5" class="text-info text-center p-3">Searching...</td></tr>`;
+    const out = await postForm("/file-fetcher/search", fd);
+    if (!out.ok || !out.data.ok) {
+        replaceLog([out.data.error || `Search failed (HTTP ${out.status})`]);
+        resultsBody.innerHTML = `<tr><td colspan="5" class="text-danger text-center p-3">Search failed.</td></tr>`;
+        return;
+    }
+    currentResults = Array.isArray(out.data.items) ? out.data.items : [];
+    renderResults();
+    replaceLog(out.data.logs || []);
+    logLine(`Results ready: ${currentResults.length}`);
+});
+
+document.getElementById("ff-select-all").addEventListener("click", () => {
+    document.querySelectorAll(".ff-item-check").forEach(el => el.checked = true);
+});
+
+document.getElementById("ff-clear-all").addEventListener("click", () => {
+    document.querySelectorAll(".ff-item-check").forEach(el => el.checked = false);
+});
+
+document.getElementById("ff-fetch-btn").addEventListener("click", async () => {
+    const ids = [...document.querySelectorAll(".ff-item-check:checked")].map(el => String(el.value || "").trim()).filter(Boolean);
+    if (!ids.length) {
+        logLine("Select at least one result.");
+        return;
+    }
+    replaceLog([`Fetching ${ids.length} selected item(s)...`]);
+    const out = await postJson("/file-fetcher/fetch", { ids });
+    if (!out.ok || !out.data.ok) {
+        replaceLog([out.data.error || `Fetch failed (HTTP ${out.status})`]);
+        return;
+    }
+    replaceLog(out.data.logs || []);
+    logLine(`Forwarded files: ${Number(out.data.forwarded_count || 0)}`);
+    const joined = Array.isArray(out.data.joined_channels) ? out.data.joined_channels : [];
+    if (joined.length) {
+        logLine(`Joined channels: ${joined.join(", ")}`);
+    }
+});
+</script>
+{% endblock %}
