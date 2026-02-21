@@ -363,8 +363,13 @@ def _is_next_button(text: str) -> bool:
 
 def _message_line_for_url(text: str, url: str) -> str:
     lines = [x.strip() for x in str(text or "").splitlines() if x.strip()]
-    for line in lines:
+    for idx, line in enumerate(lines):
         if url in line:
+            cleaned = line.strip("()[] ")
+            if cleaned == url and idx > 0:
+                prev = lines[idx - 1].strip()
+                if prev:
+                    return prev
             return line
     return lines[0] if lines else ""
 
@@ -666,58 +671,6 @@ async def _collect_from_group(
     return _dedupe_candidates(items), _dedupe_pagers(pagers)
 
 
-async def _discover_source_chat_from_dialogs(
-    client,
-    *,
-    source_bots_filter: list[str],
-    logs: list[str],
-    dialogs_limit: int = 140,
-) -> int | str | None:
-    if not source_bots_filter:
-        return None
-    best: tuple[int, int | str, str] | None = None
-    try:
-        async for dlg in client.get_dialogs(limit=dialogs_limit):
-            chat = getattr(dlg, "chat", None)
-            if not chat:
-                continue
-            chat_id = getattr(chat, "id", None)
-            if chat_id is None:
-                continue
-            title = str(getattr(chat, "title", "") or getattr(chat, "first_name", "") or "")
-            # Skip direct user chats.
-            ctype = str(getattr(chat, "type", "")).lower()
-            if ctype == "private":
-                continue
-
-            hits: set[str] = set()
-            try:
-                async for msg in client.get_chat_history(chat_id, limit=60):
-                    if getattr(msg, "outgoing", False):
-                        continue
-                    sender = _msg_sender_label(msg)
-                    if _sender_matches_filter(msg, sender, source_bots_filter):
-                        hits.add(_canon_sender(sender))
-                    if len(hits) >= len(source_bots_filter):
-                        break
-            except Exception:
-                continue
-
-            score = len(hits)
-            if score <= 0:
-                continue
-            if not best or score > best[0]:
-                best = (score, int(chat_id), title)
-    except Exception as e:
-        logs.append(f"Dialog scan failed: {e}")
-        return None
-
-    if not best:
-        return None
-    logs.append(f"Auto-discovered source group: {best[2] or best[1]} ({best[1]})")
-    return best[1]
-
-
 async def _join_channels_and_save(
     client,
     cfg: FileFetcherSettings,
@@ -813,8 +766,9 @@ async def _collect_new_media_and_force_sub(
     forwarded = 0
     joined_total: list[str] = []
     chats = [x for x in watch_chats if x not in ("", None)]
-    for _ in range(7):
-        await asyncio.sleep(1.5)
+    logged_chat_errors: set[str] = set()
+    for _ in range(10):
+        await asyncio.sleep(1.2)
         for chat in chats:
             try:
                 async for msg in client.get_chat_history(chat, limit=35):
@@ -837,7 +791,11 @@ async def _collect_new_media_and_force_sub(
                         msg_id = int(getattr(msg, "id", 0) or 0)
                         if msg_chat_id and msg_id:
                             forwarded += await _forward_message(client, destination_bot, msg_chat_id, msg_id, logs)
-            except Exception:
+            except Exception as e:
+                key = str(chat)
+                if key not in logged_chat_errors:
+                    logged_chat_errors.add(key)
+                    logs.append(f"Read chat failed [{chat}]: {e}")
                 continue
     return forwarded, _dedupe_keep_order(joined_total)
 
@@ -995,10 +953,6 @@ async def file_fetcher_search(
     logs: list[str] = []
     source_chat = await _prepare_source_chat(client, source_chat, logs)
     try:
-        _ = await client.get_chat(source_chat)
-    except Exception as e:
-        logs.append(f"Source chat resolve failed: {e}")
-    try:
         sent = await client.send_message(source_chat, q)
         since_ts = max(0.0, _msg_ts(sent) - 2.0)
         logs.append(f"Sent query to {source_chat}: {q}")
@@ -1006,34 +960,13 @@ async def file_fetcher_search(
     except Exception as e:
         logs.append(f"Failed to send query to source chat: {e}")
         group_send_ok = False
-        since_ts = _now_ts() - 90.0
-        err_text = str(e or "").lower()
-        if "peer id invalid" in err_text:
-            discovered_chat = await _discover_source_chat_from_dialogs(
-                client,
-                source_bots_filter=source_bots,
-                logs=logs,
-            )
-            if discovered_chat is not None:
-                source_chat = discovered_chat
-                try:
-                    sent = await client.send_message(source_chat, q)
-                    since_ts = max(0.0, _msg_ts(sent) - 2.0)
-                    logs.append(f"Sent query to discovered group {source_chat}: {q}")
-                    group_send_ok = True
-                    # persist corrected chat id for next searches
-                    cfg.source_chat_id = str(source_chat)
-                    cfg.updated_at = datetime.now()
-                    await cfg.save()
-                except Exception as e2:
-                    logs.append(f"Send to discovered group failed: {e2}")
 
     items: list[dict[str, Any]] = []
     pagers: list[dict[str, Any]] = []
     if group_send_ok:
         target_bot_count = max(1, len(source_bots))
         for attempt in range(1, 6):
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(1.5)
             scan_items, scan_pagers = await _collect_from_group(
                 client,
                 source_chat=source_chat,
@@ -1041,6 +974,7 @@ async def file_fetcher_search(
                 since_ts=since_ts,
                 source_bots_filter=source_bots,
                 logs=logs,
+                limit=180,
             )
             items = _dedupe_candidates([*items, *scan_items])
             pagers = _dedupe_pagers([*pagers, *scan_pagers])
@@ -1049,10 +983,18 @@ async def file_fetcher_search(
             if len(items) >= 1 and bot_seen >= target_bot_count:
                 break
     else:
+        err_hint = ""
+        err_low = " ".join(logs).lower()
+        if "peer id invalid" in err_low:
+            err_hint = (
+                " Telegram user-session cannot access this source group id. "
+                "Use @groupusername or invite link in Source Query Group/Chat ID, "
+                "and ensure SESSION_STRING account is a member."
+            )
         return JSONResponse(
             {
                 "ok": False,
-                "error": "Failed to send query in source group. Check Source Query Group/Chat ID and user-session access.",
+                "error": "Failed to send query in source group. Check Source Query Group/Chat ID and user-session access." + err_hint,
                 "logs": logs,
             },
             status_code=500,
@@ -1346,8 +1288,10 @@ async def file_fetcher_fetch(
                     try:
                         if start_payload:
                             await client.send_message(target, f"/start {start_payload}")
+                            logs.append(f"Sent /start payload to {target}")
                         else:
                             await client.send_message(target, "/start")
+                            logs.append(f"Sent /start to {target}")
                         watch_chats.append(target)
                         clicked = True
                     except Exception as e:
