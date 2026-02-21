@@ -27,6 +27,17 @@ _TME_URL_RE = re.compile(r"https?://t\.me/[^\s)>\]]+", re.I)
 _CHANNEL_MENTION_RE = re.compile(r"(?<![\w@])@([A-Za-z0-9_]{4,})")
 _FORCE_SUB_RE = re.compile(r"(join|subscribe|updates?\s+channel|force\s*sub|important)", re.I)
 _BOT_USERNAME_RE = re.compile(r"^@[A-Za-z0-9_]{4,}$")
+_NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\s*[\.\)]\s*(.+?)\s*$")
+_NOISY_BUTTON_RE = re.compile(
+    r"(remove\s*ads?|send[\s_]*all|quality|language|season|page|pages|filters?)",
+    re.I,
+)
+_NOISY_TEXT_RE = re.compile(
+    r"(title\s*:|total\s*files|result\s*in|requested\s*by|powered\s*by|your\s*requested\s*files|join\s*updates\s*channel|important)",
+    re.I,
+)
+_MEDIA_EXT_RE = re.compile(r"\.(mkv|mp4|avi|m4v|webm|ts|mov)\b", re.I)
+_QUALITY_HINT_RE = re.compile(r"\b(4k|2k|2160p?|1440p?|1080p?|720p?|540p?|480p?|360p?|240p?|144p?)\b", re.I)
 
 
 def _now_ts() -> float:
@@ -336,6 +347,54 @@ def _extract_entity_urls(msg, text: str) -> list[str]:
     return _dedupe_keep_order(urls)
 
 
+def _extract_entity_url_rows(msg, text: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    entities = []
+    for name in ("entities", "caption_entities"):
+        vals = getattr(msg, name, None)
+        if isinstance(vals, list):
+            entities.extend(vals)
+    for ent in entities:
+        try:
+            offset = int(getattr(ent, "offset", 0) or 0)
+            length = int(getattr(ent, "length", 0) or 0)
+        except Exception:
+            offset = 0
+            length = 0
+        frag = ""
+        if offset >= 0 and length > 0:
+            try:
+                frag = str(text[offset: offset + length] or "").strip()
+            except Exception:
+                frag = ""
+        url = str(getattr(ent, "url", "") or "").strip()
+        if not url:
+            etype = str(getattr(ent, "type", "")).lower()
+            if "url" in etype and frag:
+                if frag.startswith("t.me/"):
+                    url = f"https://{frag}"
+                elif frag.startswith("http://") or frag.startswith("https://"):
+                    url = frag
+        if not url:
+            continue
+        rows.append({"url": url, "frag": frag, "offset": str(offset)})
+
+    # stable order by offset when available
+    rows.sort(key=lambda x: int(x.get("offset") or "0"))
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        url = str(row.get("url") or "").strip()
+        if not url:
+            continue
+        key = url.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"url": url, "frag": str(row.get("frag") or "").strip()})
+    return out
+
+
 def _extract_button_urls(msg) -> list[str]:
     urls: list[str] = []
     reply_markup = getattr(msg, "reply_markup", None)
@@ -376,6 +435,58 @@ def _is_next_button(text: str) -> bool:
     if raw.endswith(">") or raw.endswith(">>"):
         return True
     return False
+
+
+def _is_noisy_button(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return True
+    if _is_next_button(raw):
+        return False
+    return bool(_NOISY_BUTTON_RE.search(raw))
+
+
+def _is_file_start_payload(start_payload: str) -> bool:
+    raw = str(start_payload or "").strip().lower()
+    if not raw:
+        return False
+    return raw.startswith("file_") or raw.startswith("file-") or raw.startswith("file")
+
+
+def _looks_like_file_text(text: str) -> bool:
+    raw = " ".join(str(text or "").split()).strip()
+    if not raw:
+        return False
+    if _NOISY_TEXT_RE.search(raw):
+        return False
+    if _SIZE_RE.search(raw):
+        return True
+    if _MEDIA_EXT_RE.search(raw):
+        return True
+    if _QUALITY_HINT_RE.search(raw):
+        return True
+    if re.search(r"\bS\d{1,2}\s*E\d{1,3}\b", raw, re.I):
+        return True
+    if re.search(r"\bSeason\s*\d+\b", raw, re.I) and re.search(r"\bEpisode\s*\d+\b", raw, re.I):
+        return True
+    if _NUMBERED_LINE_RE.match(raw):
+        return True
+    return False
+
+
+def _extract_numbered_file_lines(text: str) -> list[str]:
+    out: list[str] = []
+    for raw_line in str(text or "").splitlines():
+        line = " ".join(raw_line.split()).strip()
+        if not line:
+            continue
+        m = _NUMBERED_LINE_RE.match(line)
+        if not m:
+            continue
+        body = str(m.group(2) or "").strip()
+        if _looks_like_file_text(body):
+            out.append(body)
+    return out
 
 
 def _message_line_for_url(text: str, url: str) -> str:
@@ -589,6 +700,8 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                 bcb = str(getattr(btn, "callback_data", "") or "").strip()
                 if not btxt and not burl and not bcb:
                     continue
+                if _is_noisy_button(btxt):
+                    continue
                 action = {
                     "row": r_idx,
                     "col": c_idx,
@@ -597,6 +710,9 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                     "callback_data": bcb,
                 }
                 if _is_pager_button(btxt):
+                    # keep only true "next" controls as pager actions
+                    if not _is_next_button(btxt):
+                        continue
                     pager_payload = {
                         "source_bot": source_label,
                         "chat_id": chat_id,
@@ -611,6 +727,16 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                     continue
                 size_bytes, size_label = _extract_size(f"{btxt} {body_text}")
                 action_type = "button_url" if burl else "button_callback"
+                if action_type == "button_url":
+                    parsed = _parse_tme_action(burl)
+                    kind = str(parsed.get("kind") or "")
+                    if kind == "join":
+                        continue
+                    if kind == "bot_start" and not _is_file_start_payload(str(parsed.get("start") or "")):
+                        # skip non-file starts (ads/menu/etc.)
+                        continue
+                if not _looks_like_file_text(btxt) and action_type != "button_url":
+                    continue
                 payload = {
                     "source_bot": source_label,
                     "chat_id": chat_id,
@@ -624,12 +750,61 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                 payload["id"] = _candidate_id(payload)
                 items.append(payload)
 
-    urls = []
-    urls.extend(_TME_URL_RE.findall(body_text))
-    urls.extend(_extract_entity_urls(msg, body_text))
-    urls = _dedupe_keep_order([x for x in urls if x])
-    for url in urls:
-        line = _message_line_for_url(body_text, url)
+    numbered_lines = _extract_numbered_file_lines(body_text)
+    numbered_idx = 0
+    url_rows: list[dict[str, str]] = []
+    for row in _extract_entity_url_rows(msg, body_text):
+        url = str(row.get("url") or "").strip()
+        if not url:
+            continue
+        url_rows.append({"url": url, "frag": str(row.get("frag") or "").strip()})
+    # add plain urls missing from entity map
+    seen_url_keys = {str(x.get("url") or "").lower() for x in url_rows}
+    for raw_url in _TME_URL_RE.findall(body_text):
+        key = str(raw_url or "").lower()
+        if key and key not in seen_url_keys:
+            seen_url_keys.add(key)
+            url_rows.append({"url": raw_url, "frag": ""})
+
+    for row in url_rows:
+        url = str(row.get("url") or "").strip()
+        frag = str(row.get("frag") or "").strip()
+        parsed = _parse_tme_action(url)
+        kind = str(parsed.get("kind") or "")
+        line_for_url = frag or _message_line_for_url(body_text, url)
+        line_for_url = _best_title(line_for_url, fallback="")
+
+        # Some bots provide page controls as deep links in message text.
+        if line_for_url and _is_pager_button(line_for_url):
+            pager_payload = {
+                "source_bot": source_label,
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "action_type": "pager_url",
+                "action": {"url": url},
+                "button_text": line_for_url,
+                "scope": f"{chat_id}:{message_id}:{source_label}",
+            }
+            pager_payload["id"] = _candidate_id(pager_payload)
+            pagers.append(pager_payload)
+            continue
+
+        if kind == "join":
+            continue
+        if kind == "bot_start" and not _is_file_start_payload(str(parsed.get("start") or "")):
+            continue
+
+        line = ""
+        if frag and _looks_like_file_text(frag):
+            line = frag
+        elif numbered_idx < len(numbered_lines):
+            line = numbered_lines[numbered_idx]
+            numbered_idx += 1
+        else:
+            line = line_for_url or _message_line_for_url(body_text, url)
+        line = _best_title(line, fallback="")
+        if not _looks_like_file_text(line):
+            continue
         size_bytes, size_label = _extract_size(line or body_text)
         payload = {
             "source_bot": source_label,
@@ -644,21 +819,7 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
         payload["id"] = _candidate_id(payload)
         items.append(payload)
 
-    # show size+title rows from text list replies (even if no direct link on each line)
-    # keeps UI visibility for bots that return plain numbered lists
-    for line, size_bytes, size_label in _extract_size_lines(body_text):
-        payload = {
-            "source_bot": source_label,
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "action_type": "text_result",
-            "action": {},
-            "title": _best_title(line, fallback=f"Text result from {source_label}"),
-            "size_bytes": int(size_bytes or 0),
-            "size_label": size_label,
-        }
-        payload["id"] = _candidate_id(payload)
-        items.append(payload)
+    # Only expose actionable rows (file links/buttons/direct media). Plain text-only rows are hidden.
     return items, pagers
 
 
@@ -1215,16 +1376,37 @@ async def file_fetcher_page_next_all(request: Request):
     cfg = await _ensure_settings()
     source_bots_filter = _dedupe_keep_order([_norm_bot(x) for x in (cfg.source_bots or []) if _norm_bot(x)])
 
-    next_pagers = [p for p in pagers if _is_next_button(str(p.get("button_text") or ""))]
-    if not next_pagers:
-        # fallback: one pager per source bot
-        seen_bot: set[str] = set()
-        for p in pagers:
-            bot = str(p.get("source_bot") or "")
-            if bot in seen_bot:
-                continue
-            seen_bot.add(bot)
-            next_pagers.append(p)
+    # choose one pager per source bot:
+    # prefer explicit "Next", else fallback to pager_url that looks like next/page start payload.
+    next_pagers: list[dict[str, Any]] = []
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for p in pagers:
+        bot = str(p.get("source_bot") or "").strip() or "unknown"
+        grouped.setdefault(bot, []).append(p)
+
+    for bot, rows in grouped.items():
+        picked: dict[str, Any] | None = None
+        for p in rows:
+            if _is_next_button(str(p.get("button_text") or "")):
+                picked = p
+                break
+        if not picked:
+            for p in rows:
+                if str(p.get("action_type") or "") != "pager_url":
+                    continue
+                action = p.get("action") if isinstance(p.get("action"), dict) else {}
+                raw_url = str(action.get("url") or "").strip()
+                parsed = _parse_tme_action(raw_url)
+                if str(parsed.get("kind") or "") != "bot_start":
+                    continue
+                start = str(parsed.get("start") or "").strip().lower()
+                if ("next" in start) or ("page" in start):
+                    picked = p
+                    break
+        if not picked and rows:
+            picked = rows[0]
+        if picked:
+            next_pagers.append(picked)
 
     clicked_count = 0
     for pager in next_pagers:
@@ -1354,6 +1536,9 @@ async def file_fetcher_fetch(
         if action_type == "button_callback":
             clicked = await _click_message_button(client, chat_id, message_id, action, logs)
         elif action_type in {"button_url", "line_url"}:
+            if action_type == "button_url":
+                # Prefer real button click first (for bots that rely on callback/url interaction state).
+                _ = await _click_message_button(client, chat_id, message_id, action, logs)
             raw_url = str(action.get("url") or "").strip()
             parsed = _parse_tme_action(raw_url)
             kind = str(parsed.get("kind") or "")
