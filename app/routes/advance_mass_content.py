@@ -751,29 +751,32 @@ def _title_match(target_titles: list[str], file_name: str, row_title: str = "", 
     if not target_sets:
         return False
 
-    max_len = max(len(toks) for _, toks in target_sets)
+    # Evaluate all variants (longest first), but do not force only the longest
+    # one to match. This avoids false negatives when source input contains extra
+    # noisy tokens (e.g., "season 1 480") while canonical title still matches.
+    ordered_targets = sorted(target_sets, key=lambda x: len(x[1]), reverse=True)
     filename_norm = _norm_title(file_name or "")
     parsed_norm = _norm_title(parsed_title)
 
-    # Strict policy: all important words from the strongest title variant must be present.
-    for raw, toks in target_sets:
-        if len(toks) != max_len:
-            continue
-        if toks.issubset(candidate_tokens):
+    # First pass: exact subset match for any multi-token variant.
+    for _raw, toks in ordered_targets:
+        if len(toks) >= 2 and toks.issubset(candidate_tokens):
             return True
-        # Single-token title fallback for very short names.
-        if len(toks) == 1:
-            token = next(iter(toks))
-            if token in candidate_tokens:
-                raw_norm = _norm_title(raw)
-                if raw_norm and (raw_norm in filename_norm or (parsed_norm and raw_norm in parsed_norm)):
-                    return True
+
+    # Second pass: single-token title fallback (guarded by normalized containment).
+    for raw, toks in ordered_targets:
+        if len(toks) != 1:
+            continue
+        token = next(iter(toks))
+        if token in candidate_tokens:
+            raw_norm = _norm_title(raw)
+            if raw_norm and (raw_norm in filename_norm or (parsed_norm and raw_norm in parsed_norm)):
+                return True
 
     # Secondary fallback for short names only (2 tokens max), still strict subset.
-    if max_len <= 2:
-        for _, toks in target_sets:
-            if toks and toks.issubset(candidate_tokens):
-                return True
+    for _raw, toks in ordered_targets:
+        if 0 < len(toks) <= 2 and toks.issubset(candidate_tokens):
+            return True
     return False
 
 
