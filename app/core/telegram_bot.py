@@ -115,6 +115,11 @@ BOT_COMMANDS = [
 QUALITY_RE = re.compile(r"(2160p|1440p|1080p|720p|480p|380p|360p)", re.I)
 YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2})\b")
 SE_RE = re.compile(r"[Ss](\d{1,2})[Ee](\d{1,3})")
+SE_ALT_RE = re.compile(r"\b(\d{1,2})x(\d{1,3})\b", re.I)
+CAPTION_SKIP_RE = re.compile(
+    r"(?:^@|https?://|t\.me/|powered\s*by|main\s*channel|main\s*group|backup|support|join\s+|group\s+|channel\s+)",
+    re.I,
+)
 
 QUALITY_ORDER = {
     "2160P": 7,
@@ -126,6 +131,121 @@ QUALITY_ORDER = {
     "360P": 1,
     "HD": 0,
 }
+
+
+def _sanitize_filename_text(value: str) -> str:
+    text = html.unescape(str(value or ""))
+    text = text.replace("\u200b", " ").replace("\xa0", " ")
+    text = re.sub(r"[\\/:*?\"<>|]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .-_")
+    return text[:220]
+
+
+def _name_parse_score(value: str) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return -1
+    score = 0
+    if SE_RE.search(text) or SE_ALT_RE.search(text):
+        score += 4
+    if QUALITY_RE.search(text):
+        score += 2
+    alpha_words = re.findall(r"[a-zA-Z]{2,}", text)
+    if len(alpha_words) >= 3:
+        score += 1
+    if len(text) >= 20:
+        score += 1
+    return score
+
+
+def _caption_name_candidate(caption: str) -> str:
+    raw = str(caption or "")
+    if not raw:
+        return ""
+    lines: list[str] = []
+    for line in raw.splitlines():
+        clean = _sanitize_filename_text(line)
+        if not clean:
+            continue
+        if CAPTION_SKIP_RE.search(clean):
+            continue
+        lines.append(clean)
+    if not lines:
+        return ""
+    best = ""
+    best_score = -1
+    for line in lines:
+        score = _name_parse_score(line)
+        if score > best_score or (score == best_score and len(line) > len(best)):
+            best = line
+            best_score = score
+    return best
+
+
+def _ext_from_mime(mime_type: str, media_kind: str) -> str:
+    mime = (mime_type or "").lower()
+    if "matroska" in mime:
+        return ".mkv"
+    if "webm" in mime:
+        return ".webm"
+    if "mp4" in mime:
+        return ".mp4"
+    if "quicktime" in mime or "mov" in mime:
+        return ".mov"
+    if "x-msvideo" in mime or "avi" in mime:
+        return ".avi"
+    if "mpeg" in mime or "mp3" in mime:
+        return ".mp3"
+    if "image/jpeg" in mime:
+        return ".jpg"
+    if "image/png" in mime:
+        return ".png"
+    kind = (media_kind or "").lower()
+    if kind == "video":
+        return ".mp4"
+    if kind == "audio":
+        return ".mp3"
+    if kind == "photo":
+        return ".jpg"
+    return ""
+
+
+def _normalize_filename_tail(name: str) -> str:
+    text = str(name or "")
+    text = re.sub(r"\s+\.(mkv|mp4|avi|mov|webm|m4v|mp3|jpg|jpeg|png)$", r".\1", text, flags=re.I)
+    text = re.sub(r"\s+(mkv|mp4|avi|mov|webm|m4v|mp3|jpg|jpeg|png)$", r".\1", text, flags=re.I)
+    return text
+
+
+def _build_ingest_filename(
+    provided_name: str,
+    *,
+    caption: str = "",
+    mime_type: str = "",
+    media_kind: str = "",
+) -> str:
+    base = _sanitize_filename_text(provided_name or "")
+    caption_candidate = _caption_name_candidate(caption or "")
+
+    # Prefer caption-derived name when provided filename is generic or low quality.
+    generic_names = {"", "file", "video", "audio", "document", "photo", "photo.jpg", "video.mp4", "audio.mp3"}
+    base_key = base.lower()
+    if base_key in generic_names or _name_parse_score(caption_candidate) > _name_parse_score(base):
+        if caption_candidate:
+            base = caption_candidate
+
+    if not base:
+        base = {"photo": "photo", "audio": "audio", "video": "video", "document": "file"}.get(
+            (media_kind or "").lower(),
+            "file",
+        )
+
+    base = _normalize_filename_tail(base)
+    if not re.search(r"\.(mkv|mp4|avi|mov|webm|m4v|mp3|jpg|jpeg|png)$", base, re.I):
+        ext = _ext_from_mime(mime_type, media_kind)
+        if ext:
+            base = f"{base}{ext}"
+    return _sanitize_filename_text(base)
 
 
 def _collection_for(model_cls):
@@ -1510,6 +1630,7 @@ async def handle_private_upload(client: Client, message):
         if not (message.document or message.video or message.audio or message.photo):
             return
 
+        incoming_caption = getattr(message, "caption", "") or ""
         storage_target = get_storage_chat_id()
         storage_chat_id = normalize_chat_id(storage_target)
         if not storage_chat_id or storage_chat_id == "me":
@@ -1597,7 +1718,12 @@ async def handle_private_upload(client: Client, message):
             elif message.audio:
                 original_name = message.audio.file_name
             if not original_name:
-                original_name = "file"
+                original_name = _build_ingest_filename(
+                    "",
+                    caption=incoming_caption,
+                    mime_type=(getattr(message.document, "mime_type", None) if message.document else (getattr(message.video, "mime_type", None) if message.video else (getattr(message.audio, "mime_type", None) if message.audio else ""))) or "",
+                    media_kind=("document" if message.document else ("video" if message.video else ("audio" if message.audio else ""))),
+                )
 
             fd, tmp_path = tempfile.mkstemp()
             os.close(fd)
@@ -1633,22 +1759,42 @@ async def handle_private_upload(client: Client, message):
                 file_id = forwarded.document.file_id
                 size = forwarded.document.file_size
                 mime_type = forwarded.document.mime_type or "application/octet-stream"
-                name = forwarded.document.file_name or "file"
+                name = _build_ingest_filename(
+                    forwarded.document.file_name or "",
+                    caption=incoming_caption,
+                    mime_type=mime_type,
+                    media_kind="document",
+                )
             elif forwarded.video:
                 file_id = forwarded.video.file_id
                 size = forwarded.video.file_size
                 mime_type = forwarded.video.mime_type or "video/mp4"
-                name = forwarded.video.file_name or "video"
+                name = _build_ingest_filename(
+                    forwarded.video.file_name or "",
+                    caption=incoming_caption,
+                    mime_type=mime_type,
+                    media_kind="video",
+                )
             elif forwarded.audio:
                 file_id = forwarded.audio.file_id
                 size = forwarded.audio.file_size
                 mime_type = forwarded.audio.mime_type or "audio/mpeg"
-                name = forwarded.audio.file_name or "audio"
+                name = _build_ingest_filename(
+                    forwarded.audio.file_name or "",
+                    caption=incoming_caption,
+                    mime_type=mime_type,
+                    media_kind="audio",
+                )
             elif forwarded.photo:
                 file_id = forwarded.photo.file_id
                 size = 0
                 mime_type = "image/jpeg"
-                name = "photo.jpg"
+                name = _build_ingest_filename(
+                    "photo.jpg",
+                    caption=incoming_caption,
+                    mime_type=mime_type,
+                    media_kind="photo",
+                )
             else:
                 return
         else:
@@ -1656,7 +1802,12 @@ async def handle_private_upload(client: Client, message):
             file_id = str(forwarded.id)
             size = getattr(forwarded.file, "size", 0)
             mime_type = getattr(forwarded.file, "mime_type", None) or "application/octet-stream"
-            name = getattr(forwarded.file, "name", None) or "file"
+            name = _build_ingest_filename(
+                getattr(forwarded.file, "name", None) or "",
+                caption=incoming_caption,
+                mime_type=mime_type,
+                media_kind="document",
+            )
 
         # Ensure Bot Uploads folder exists for this user (rename legacy if needed)
         folder = await FileSystemItem.find_one(
@@ -2369,9 +2520,14 @@ async def _handle_bot_api_message(message: dict):
             await folder.insert()
 
         file_id = media.get("file_id", "")
-        file_name = media.get("file_name") or ("photo.jpg" if media_type == "photo" else "file")
         file_size = media.get("file_size", 0) or 0
         mime_type = media.get("mime_type") or ("image/jpeg" if media_type == "photo" else "application/octet-stream")
+        file_name = _build_ingest_filename(
+            media.get("file_name") or "",
+            caption=(message.get("caption") or ""),
+            mime_type=mime_type,
+            media_kind=media_type or "",
+        )
 
         new_file = FileSystemItem(
             name=file_name,

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 from app.core.config import settings
+from app.core.telethon_storage import get_message as tl_get_message
 from app.db.models import ContentItem, FileSystemItem, MassContentState, User
 from app.routes.admin import _admin_context_base, _build_title_regex, _is_admin, _publish_items
 from app.routes.content import _parse_name, _tmdb_details, _tmdb_get, _tmdb_search
@@ -115,6 +116,11 @@ _FILE_NOISE_TOKENS = {
     "japanese", "nf", "amzn", "dsnp", "hdr", "hdr10", "dv", "x264", "x265", "h264", "h265",
     "hevc", "aac", "ac3", "ddp", "atmos", "bit", "mkv", "mp4", "avi", "webm", "m4v",
 }
+_CAPTION_SKIP_RE = re.compile(
+    r"(?:^@|https?://|t\.me/|powered\s*by|main\s*channel|main\s*group|backup|support|join\s+|group\s+|channel\s+)",
+    re.I,
+)
+_BOT_CAPTION_NAME_CACHE: dict[str, str] = {}
 
 
 def _clean_match_tokens(text: str, *, for_file_name: bool = False) -> set[str]:
@@ -591,6 +597,69 @@ def _series_season_episode(name: str) -> tuple[int | None, int | None]:
     if match:
         return int(match.group(1)), int(match.group(2))
     return None, None
+
+
+def _is_generic_bot_filename(name: str) -> bool:
+    text = " ".join(str(name or "").split()).strip().lower()
+    if not text:
+        return True
+    simple = re.sub(r"\.(mkv|mp4|avi|mov|webm|m4v|mp3|jpg|jpeg|png)$", "", text, flags=re.I).strip()
+    if simple in {"file", "video", "audio", "document", "photo"}:
+        return True
+    tokens = _clean_match_tokens(text, for_file_name=True)
+    return len(tokens) < 2
+
+
+def _caption_best_name(caption_text: str) -> str:
+    raw = str(caption_text or "")
+    if not raw:
+        return ""
+    best = ""
+    best_score = -1
+    for line in raw.splitlines():
+        clean = " ".join(str(line or "").split()).strip()
+        if not clean:
+            continue
+        if _CAPTION_SKIP_RE.search(clean):
+            continue
+        score = 0
+        if _series_season_episode(clean) != (None, None):
+            score += 4
+        if _series_quality_from_name(clean) != "HD":
+            score += 2
+        if len(re.findall(r"[a-zA-Z]{2,}", clean)) >= 3:
+            score += 1
+        if len(clean) >= 20:
+            score += 1
+        if score > best_score or (score == best_score and len(clean) > len(best)):
+            best = clean
+            best_score = score
+    if not best:
+        return ""
+    best = re.sub(r"[\\/:*?\"<>|]+", " ", best).strip(" .-_")
+    best = re.sub(r"\s+\.(mkv|mp4|avi|mov|webm|m4v|mp3)$", r".\1", best, flags=re.I)
+    best = re.sub(r"\s+(mkv|mp4|avi|mov|webm|m4v|mp3)$", r".\1", best, flags=re.I)
+    return " ".join(best.split()).strip()[:220]
+
+
+async def _recover_bot_name_from_storage(item: FileSystemItem) -> str:
+    try:
+        parts = list(getattr(item, "parts", []) or [])
+        if not parts:
+            return ""
+        msg_id = int(getattr(parts[0], "message_id", 0) or 0)
+        if msg_id <= 0:
+            return ""
+        key = str(msg_id)
+        if key in _BOT_CAPTION_NAME_CACHE:
+            return _BOT_CAPTION_NAME_CACHE.get(key) or ""
+        msg = await tl_get_message(msg_id)
+        caption = str(getattr(msg, "message", "") or "").strip()
+        guessed = _caption_best_name(caption)
+        _BOT_CAPTION_NAME_CACHE[key] = guessed or ""
+        return guessed
+    except Exception:
+        return ""
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -1216,16 +1285,36 @@ async def _fetch_storage_candidates_multi(search_titles: list[str]) -> list[File
                 merged[str(item.id)] = item
             rows = list(merged.values())
 
-    filtered = [
-        row for row in rows
-        if _is_video_row(row)
-        and _title_match(
+    filtered: list[FileSystemItem] = []
+    for row in rows:
+        if not _is_video_row(row):
+            continue
+        row_name = row.name or ""
+        matched = _title_match(
             title_variants,
-            row.name or "",
+            row_name,
             row_title=(getattr(row, "title", "") or ""),
             row_series_title=(getattr(row, "series_title", "") or ""),
         )
-    ]
+        # Recovery path for older bot-ingested rows that were saved with generic
+        # names (e.g., "video"/"file"). Try reading caption from storage message.
+        if not matched and (row.source or "").strip().lower() == "bot" and _is_generic_bot_filename(row_name):
+            recovered_name = await _recover_bot_name_from_storage(row)
+            if recovered_name:
+                matched = _title_match(
+                    title_variants,
+                    recovered_name,
+                    row_title=(getattr(row, "title", "") or ""),
+                    row_series_title=(getattr(row, "series_title", "") or ""),
+                )
+                if matched:
+                    # Use recovered caption-derived name for downstream season/episode/quality parsing.
+                    try:
+                        row.name = recovered_name
+                    except Exception:
+                        pass
+        if matched:
+            filtered.append(row)
     # Keep newest first
     filtered.sort(key=lambda x: getattr(x, "created_at", None) or datetime.min, reverse=True)
     return filtered
@@ -2942,6 +3031,7 @@ async def advance_mass_content_adder_retry_files(request: Request, item_id: str)
     await row.save()
     _STORAGE_POOL_CACHE["rows"] = []
     _STORAGE_POOL_CACHE["expires_at"] = datetime.min
+    _BOT_CAPTION_NAME_CACHE.clear()
     _schedule_process(str(row.id), mode="files")
     await _mass_broadcast_snapshot()
     return {"ok": True}
