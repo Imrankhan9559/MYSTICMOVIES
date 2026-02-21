@@ -476,7 +476,7 @@ def _is_next_button(text: str) -> bool:
         return True
     if folded.endswith(">") or folded.endswith(">>"):
         return True
-    if re.search(r"[>?????]+", raw):
+    if re.search(r"[>\u00BB\u2192\u27A1\u279C\u23E9]+", raw):
         return True
     return False
 
@@ -852,6 +852,35 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                 }
                 payload["id"] = _candidate_id(payload)
                 items.append(payload)
+
+    # Some bots use reply keyboard (not inline keyboard) for paging.
+    keyboard = getattr(reply_markup, "keyboard", None) if reply_markup else None
+    if keyboard and isinstance(keyboard, list):
+        for r_idx, row in enumerate(keyboard):
+            for c_idx, btn in enumerate(row or []):
+                if isinstance(btn, str):
+                    btxt = btn.strip()
+                else:
+                    btxt = str(getattr(btn, "text", "") or "").strip()
+                if not btxt:
+                    continue
+                if not _is_pager_button(btxt):
+                    continue
+                pager_payload = {
+                    "source_bot": source_label,
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "action_type": "pager_text",
+                    "action": {
+                        "row": r_idx,
+                        "col": c_idx,
+                        "text": btxt,
+                    },
+                    "button_text": btxt,
+                    "scope": f"{chat_id}:{message_id}:{source_label}",
+                }
+                pager_payload["id"] = _candidate_id(pager_payload)
+                pagers.append(pager_payload)
 
     numbered_entries = _extract_numbered_entries_with_urls(body_text)
     numbered_lines = [str(x.get("title") or "").strip() for x in numbered_entries if str(x.get("title") or "").strip()]
@@ -1443,6 +1472,16 @@ async def file_fetcher_page_next(
         clicked = await _click_message_button(client, chat_id, message_id, action, logs)
         if clicked:
             logs.append(f"Clicked page button on {source_bot}: {action.get('button_text') or ''}")
+    elif action_type == "pager_text":
+        text_cmd = str(action.get("text") or pager.get("button_text") or "").strip()
+        target_chat = source_chat if source_chat not in (None, "") else chat_id
+        if text_cmd and target_chat not in (None, ""):
+            try:
+                await client.send_message(target_chat, text_cmd)
+                clicked = True
+                logs.append(f"Sent pager text to {target_chat}: {text_cmd}")
+            except Exception as e:
+                logs.append(f"Send pager text failed: {e}")
     elif action_type == "pager_url":
         raw_url = str(action.get("url") or "").strip()
         parsed = _parse_tme_action(raw_url)
@@ -1571,6 +1610,15 @@ async def file_fetcher_page_next_all(request: Request):
         clicked = False
         if action_type == "pager_callback":
             clicked = await _click_message_button(client, chat_id, message_id, action, logs)
+        elif action_type == "pager_text":
+            text_cmd = str(action.get("text") or button_text or "").strip()
+            target_chat = source_chat if source_chat not in (None, "") else chat_id
+            if text_cmd and target_chat not in (None, ""):
+                try:
+                    await client.send_message(target_chat, text_cmd)
+                    clicked = True
+                except Exception as e:
+                    logs.append(f"Next text send failed for {target_chat}: {e}")
         elif action_type == "pager_url":
             raw_url = str(action.get("url") or "").strip()
             parsed = _parse_tme_action(raw_url)
