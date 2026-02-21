@@ -666,6 +666,58 @@ async def _collect_from_group(
     return _dedupe_candidates(items), _dedupe_pagers(pagers)
 
 
+async def _discover_source_chat_from_dialogs(
+    client,
+    *,
+    source_bots_filter: list[str],
+    logs: list[str],
+    dialogs_limit: int = 140,
+) -> int | str | None:
+    if not source_bots_filter:
+        return None
+    best: tuple[int, int | str, str] | None = None
+    try:
+        async for dlg in client.get_dialogs(limit=dialogs_limit):
+            chat = getattr(dlg, "chat", None)
+            if not chat:
+                continue
+            chat_id = getattr(chat, "id", None)
+            if chat_id is None:
+                continue
+            title = str(getattr(chat, "title", "") or getattr(chat, "first_name", "") or "")
+            # Skip direct user chats.
+            ctype = str(getattr(chat, "type", "")).lower()
+            if ctype == "private":
+                continue
+
+            hits: set[str] = set()
+            try:
+                async for msg in client.get_chat_history(chat_id, limit=60):
+                    if getattr(msg, "outgoing", False):
+                        continue
+                    sender = _msg_sender_label(msg)
+                    if _sender_matches_filter(msg, sender, source_bots_filter):
+                        hits.add(_canon_sender(sender))
+                    if len(hits) >= len(source_bots_filter):
+                        break
+            except Exception:
+                continue
+
+            score = len(hits)
+            if score <= 0:
+                continue
+            if not best or score > best[0]:
+                best = (score, int(chat_id), title)
+    except Exception as e:
+        logs.append(f"Dialog scan failed: {e}")
+        return None
+
+    if not best:
+        return None
+    logs.append(f"Auto-discovered source group: {best[2] or best[1]} ({best[1]})")
+    return best[1]
+
+
 async def _join_channels_and_save(
     client,
     cfg: FileFetcherSettings,
@@ -955,6 +1007,26 @@ async def file_fetcher_search(
         logs.append(f"Failed to send query to source chat: {e}")
         group_send_ok = False
         since_ts = _now_ts() - 90.0
+        err_text = str(e or "").lower()
+        if "peer id invalid" in err_text:
+            discovered_chat = await _discover_source_chat_from_dialogs(
+                client,
+                source_bots_filter=source_bots,
+                logs=logs,
+            )
+            if discovered_chat is not None:
+                source_chat = discovered_chat
+                try:
+                    sent = await client.send_message(source_chat, q)
+                    since_ts = max(0.0, _msg_ts(sent) - 2.0)
+                    logs.append(f"Sent query to discovered group {source_chat}: {q}")
+                    group_send_ok = True
+                    # persist corrected chat id for next searches
+                    cfg.source_chat_id = str(source_chat)
+                    cfg.updated_at = datetime.now()
+                    await cfg.save()
+                except Exception as e2:
+                    logs.append(f"Send to discovered group failed: {e2}")
 
     items: list[dict[str, Any]] = []
     pagers: list[dict[str, Any]] = []
