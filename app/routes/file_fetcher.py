@@ -40,6 +40,37 @@ _NOISY_TEXT_RE = re.compile(
 _MEDIA_EXT_RE = re.compile(r"\.(mkv|mp4|avi|m4v|webm|ts|mov)\b", re.I)
 _QUALITY_HINT_RE = re.compile(r"\b(4k|2k|2160p?|1440p?|1080p?|720p?|540p?|480p?|360p?|240p?|144p?)\b", re.I)
 
+_SMALL_CAP_TRANSLIT = str.maketrans(
+    {
+        "ᴀ": "a",
+        "ʙ": "b",
+        "ᴄ": "c",
+        "ᴅ": "d",
+        "ᴇ": "e",
+        "ꜰ": "f",
+        "ɢ": "g",
+        "ʜ": "h",
+        "ɪ": "i",
+        "ᴊ": "j",
+        "ᴋ": "k",
+        "ʟ": "l",
+        "ᴍ": "m",
+        "ɴ": "n",
+        "ᴏ": "o",
+        "ᴘ": "p",
+        "ǫ": "q",
+        "ʀ": "r",
+        "ꜱ": "s",
+        "ᴛ": "t",
+        "ᴜ": "u",
+        "ᴠ": "v",
+        "ᴡ": "w",
+        "x": "x",
+        "ʏ": "y",
+        "ᴢ": "z",
+    }
+)
+
 
 def _now_ts() -> float:
     return time.time()
@@ -443,7 +474,7 @@ def _extract_button_urls(msg) -> list[str]:
 
 
 def _is_pager_button(text: str) -> bool:
-    raw = str(text or "").strip().lower()
+    raw = _fold_text_for_match(text)
     if not raw:
         return False
     if _is_next_button(raw):
@@ -459,52 +490,52 @@ def _is_pager_button(text: str) -> bool:
     return False
 
 
+def _fold_text_for_match(text: str) -> str:
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return ""
+    raw = raw.translate(_SMALL_CAP_TRANSLIT)
+    raw = unicodedata.normalize("NFKD", raw)
+    raw = raw.replace("≫", ">>").replace("«", "<<").replace("»", ">>")
+    raw = raw.encode("ascii", "ignore").decode("ascii")
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw
+
+
 def _is_next_button(text: str) -> bool:
-    raw = str(text or "").strip()
+    raw_original = str(text or "").strip()
+    raw = _fold_text_for_match(raw_original)
     if not raw:
         return False
-    folded = (
-        unicodedata.normalize("NFKD", raw)
-        .encode("ascii", "ignore")
-        .decode("ascii")
-        .strip()
-        .lower()
-    )
-    if folded in {"next", "next >", "next >>", ">", ">>"}:
+    if raw in {"next", "next >", "next >>", ">", ">>"}:
         return True
-    if "next" in folded:
+    if "next" in raw:
         return True
-    if folded.endswith(">") or folded.endswith(">>"):
+    if raw.endswith(">") or raw.endswith(">>"):
         return True
-    if re.search(r"[>\u00BB\u2192\u27A1\u279C\u23E9]+", raw):
+    if re.search(r"[>\u00BB\u2192\u27A1\u279C\u23E9\u226B]+", raw_original):
         return True
     return False
 
 
 def _is_prev_button(text: str) -> bool:
-    raw = str(text or "").strip()
+    raw_original = str(text or "").strip()
+    raw = _fold_text_for_match(raw_original)
     if not raw:
         return False
-    folded = (
-        unicodedata.normalize("NFKD", raw)
-        .encode("ascii", "ignore")
-        .decode("ascii")
-        .strip()
-        .lower()
-    )
-    if folded in {"prev", "previous", "back", "<", "<<"}:
+    if raw in {"prev", "previous", "back", "<", "<<"}:
         return True
-    if ("prev" in folded) or ("previous" in folded) or ("back" in folded):
+    if ("prev" in raw) or ("previous" in raw) or ("back" in raw):
         return True
-    if folded.startswith("<") or folded.startswith("<<"):
+    if raw.startswith("<") or raw.startswith("<<"):
         return True
-    if re.search(r"[<\u00AB\u2190\u2B05\u23EA]+", raw):
+    if re.search(r"[<\u00AB\u2190\u2B05\u23EA\u226A]+", raw_original):
         return True
     return False
 
 
 def _is_page_fraction(text: str) -> bool:
-    return bool(re.fullmatch(r"\d+\s*/\s*\d+", str(text or "").strip()))
+    return bool(re.fullmatch(r"\d+\s*/\s*\d+", _fold_text_for_match(text)))
 
 
 def _is_noisy_button(text: str) -> bool:
@@ -557,6 +588,19 @@ def _extract_numbered_file_lines(text: str) -> list[str]:
         if _looks_like_file_text(body):
             out.append(body)
     return out
+
+
+def _looks_like_spelling_suggestion(text: str) -> bool:
+    raw = _fold_text_for_match(text)
+    if not raw:
+        return False
+    if "spelling mistake" in raw:
+        return True
+    if ("choose the correct one" in raw) or ("no worries" in raw and "correct" in raw):
+        return True
+    if "kindly search again" in raw:
+        return True
+    return False
 
 
 def _clean_title_without_url(raw: str) -> str:
@@ -829,8 +873,13 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
             row_texts: list[str] = []
             for btn in row or []:
                 row_texts.append(str(getattr(btn, "text", "") or "").strip())
+            row_texts_folded = [_fold_text_for_match(x) for x in row_texts]
             row_has_fraction = any(_is_page_fraction(x) for x in row_texts)
             row_has_next_prev = any((_is_next_button(x) or _is_prev_button(x)) for x in row_texts)
+            row_has_page_word = any("page" in x for x in row_texts_folded if x)
+            # Some bots use stylized unicode labels (e.g. small caps), so keep a fallback:
+            # if row has a page fraction and 3+ buttons, treat the row as pager controls.
+            row_looks_pager = bool(row_has_fraction and (row_has_next_prev or row_has_page_word or len(row_texts) >= 3))
             for c_idx, btn in enumerate(row or []):
                 btxt = str(getattr(btn, "text", "") or "").strip()
                 burl = str(getattr(btn, "url", "") or "").strip()
@@ -844,8 +893,7 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                     "url": burl,
                     "callback_data": bcb,
                 }
-                is_row_pager = row_has_fraction and (row_has_next_prev or any("page" in str(x or "").lower() for x in row_texts))
-                if _is_pager_button(btxt) or is_row_pager:
+                if _is_pager_button(btxt) or row_looks_pager:
                     pager_payload = {
                         "source_bot": source_label,
                         "chat_id": chat_id,
@@ -895,8 +943,11 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                     row_texts.append(btn.strip())
                 else:
                     row_texts.append(str(getattr(btn, "text", "") or "").strip())
+            row_texts_folded = [_fold_text_for_match(x) for x in row_texts]
             row_has_fraction = any(_is_page_fraction(x) for x in row_texts)
             row_has_next_prev = any((_is_next_button(x) or _is_prev_button(x)) for x in row_texts)
+            row_has_page_word = any("page" in x for x in row_texts_folded if x)
+            row_looks_pager = bool(row_has_fraction and (row_has_next_prev or row_has_page_word or len(row_texts) >= 3))
             for c_idx, btn in enumerate(row or []):
                 if isinstance(btn, str):
                     btxt = btn.strip()
@@ -904,8 +955,7 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                     btxt = str(getattr(btn, "text", "") or "").strip()
                 if not btxt:
                     continue
-                is_row_pager = row_has_fraction and (row_has_next_prev or any("page" in str(x or "").lower() for x in row_texts))
-                if not (_is_pager_button(btxt) or is_row_pager):
+                if not (_is_pager_button(btxt) or row_looks_pager):
                     continue
                 pager_payload = {
                     "source_bot": source_label,
@@ -1362,6 +1412,7 @@ async def file_fetcher_search(
     request: Request,
     query: str = Form(""),
     source_chat_id: str = Form(""),
+    source_bots_text: str = Form(""),
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
@@ -1392,7 +1443,14 @@ async def file_fetcher_search(
         cfg.source_chat_id = str(source_chat)
         cfg.updated_at = datetime.now()
         await cfg.save()
+    runtime_bots_raw = str(source_bots_text or "").strip()
+    if runtime_bots_raw:
+        cfg.source_bots = _parse_multiline_refs(runtime_bots_raw, channel=False)
+        cfg.updated_at = datetime.now()
+        await cfg.save()
     source_bots = _dedupe_keep_order([_norm_bot(x) for x in (cfg.source_bots or []) if _norm_bot(x)])
+    # Always reset this user's old merged state before a new search.
+    _SEARCH_CACHE.pop(_user_cache_key(user), None)
 
     client, err = await _ensure_user_session_client()
     if err:
@@ -1473,6 +1531,22 @@ async def file_fetcher_search(
             status_code=500,
         )
 
+    spelling_hint = False
+    if not items:
+        try:
+            async for msg in client.get_chat_history(source_chat, limit=70):
+                if _msg_ts(msg) < since_ts:
+                    break
+                sender = _msg_sender_label(msg)
+                if source_bots and not _sender_matches_filter(msg, sender, source_bots):
+                    continue
+                text = str(getattr(msg, "text", "") or getattr(msg, "caption", "") or "")
+                if _looks_like_spelling_suggestion(text):
+                    spelling_hint = True
+                    break
+        except Exception:
+            pass
+
     _put_cache(
         _user_cache_key(user),
         items=items,
@@ -1480,6 +1554,8 @@ async def file_fetcher_search(
         query=q,
         source_chat=source_chat,
     )
+    if spelling_hint and not items:
+        logs.append("Bot returned spelling-suggestion reply; no exact files found.")
     logs.append(f"Results: {len(items)} file choices | {len(pagers)} page controls")
     return JSONResponse({"ok": True, "items": items, "pagers": pagers, "logs": logs})
 
@@ -1595,7 +1671,10 @@ async def file_fetcher_page_next(
 
 
 @router.post("/file-fetcher/page-all")
-async def file_fetcher_page_next_all(request: Request):
+async def file_fetcher_page_next_all(
+    request: Request,
+    payload: dict = Body(default={}),
+):
     user = await get_current_user(request)
     if not _is_admin(user):
         return JSONResponse({"ok": False, "error": "Not allowed."}, status_code=403)
@@ -1615,40 +1694,93 @@ async def file_fetcher_page_next_all(request: Request):
     logs: list[str] = []
     source_chat = cache.get("source_chat")
     query = str(cache.get("query") or "")
+    direction = str((payload or {}).get("direction") or "next").strip().lower()
+    if direction not in {"next", "prev"}:
+        direction = "next"
     cfg = await _ensure_settings()
     source_bots_filter = _dedupe_keep_order([_norm_bot(x) for x in (cfg.source_bots or []) if _norm_bot(x)])
 
     # choose one pager per source bot:
-    # prefer explicit "Next", else fallback to pager_url that looks like next/page start payload.
+    # 1) prefer same-row explicit Next/Prev from latest pager scope
+    # 2) fallback to pager_url payload markers
     next_pagers: list[dict[str, Any]] = []
     grouped: dict[str, list[dict[str, Any]]] = {}
     for p in pagers:
         bot = str(p.get("source_bot") or "").strip() or "unknown"
         grouped.setdefault(bot, []).append(p)
 
-    for bot, rows in grouped.items():
-        picked: dict[str, Any] | None = None
+    def _row_is_candidate(row: str) -> bool:
+        return _is_next_button(row) if direction == "next" else _is_prev_button(row)
+
+    def _sort_scope_key(p: dict[str, Any]) -> tuple[int, int]:
+        msg_id = int(p.get("message_id") or 0)
+        action = p.get("action") if isinstance(p.get("action"), dict) else {}
+        row = int(action.get("row", -1) or -1)
+        return (msg_id, row)
+
+    def _pick_from_scope(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+        # explicit textual match first
         for p in rows:
-            if _is_next_button(str(p.get("button_text") or "")):
-                picked = p
-                break
-        if not picked:
+            label = str(p.get("button_text") or "")
+            if _row_is_candidate(label):
+                return p
+
+        # if this looks like a pager row (contains 1/N), choose leftmost/rightmost button.
+        has_fraction = any(_is_page_fraction(str(x.get("button_text") or "")) for x in rows)
+        if has_fraction:
+            candidates = []
             for p in rows:
-                if str(p.get("action_type") or "") != "pager_url":
-                    continue
+                label = str(p.get("button_text") or "")
                 action = p.get("action") if isinstance(p.get("action"), dict) else {}
-                raw_url = str(action.get("url") or "").strip()
-                parsed = _parse_tme_action(raw_url)
-                if str(parsed.get("kind") or "") != "bot_start":
+                col = int(action.get("col", -1) or -1)
+                fold = _fold_text_for_match(label)
+                if _is_page_fraction(label):
                     continue
-                start = str(parsed.get("start") or "").strip().lower()
+                if "page" in fold:
+                    continue
+                # avoid quality/language/season control words
+                if _is_noisy_button(label):
+                    continue
+                candidates.append((col, p))
+            if candidates:
+                # PAGE 1/N NEXT is usually left->right; prev is opposite.
+                chosen = max(candidates, key=lambda x: x[0])[1] if direction == "next" else min(candidates, key=lambda x: x[0])[1]
+                return chosen
+
+        # final fallback: URL start payload markers.
+        for p in rows:
+            if str(p.get("action_type") or "") != "pager_url":
+                continue
+            action = p.get("action") if isinstance(p.get("action"), dict) else {}
+            raw_url = str(action.get("url") or "").strip()
+            parsed = _parse_tme_action(raw_url)
+            if str(parsed.get("kind") or "") != "bot_start":
+                continue
+            start = _fold_text_for_match(str(parsed.get("start") or ""))
+            if direction == "next":
                 if ("next" in start) or ("page" in start):
-                    picked = p
-                    break
+                    return p
+            else:
+                if ("prev" in start) or ("back" in start):
+                    return p
+        return None
+
+    for bot, rows in grouped.items():
+        # Keep only the most recent scope for this bot.
+        scopes: dict[str, list[dict[str, Any]]] = {}
+        for p in rows:
+            scope = str(p.get("scope") or "")
+            scopes.setdefault(scope, []).append(p)
+        ordered_scopes = sorted(scopes.values(), key=lambda chunk: max((_sort_scope_key(x) for x in chunk), default=(0, 0)), reverse=True)
+        picked: dict[str, Any] | None = None
+        for scope_rows in ordered_scopes:
+            picked = _pick_from_scope(scope_rows)
+            if picked:
+                break
         if picked:
             next_pagers.append(picked)
         else:
-            logs.append(f"No Next pager found for {bot}; skipped.")
+            logs.append(f"No {direction.title()} pager found for {bot}; skipped.")
 
     clicked_count = 0
     for pager in next_pagers:
@@ -1687,12 +1819,12 @@ async def file_fetcher_page_next_all(request: Request):
                     logs.append(f"Next link open failed for {target}: {e}")
         if clicked:
             clicked_count += 1
-            logs.append(f"Next clicked: {source_bot} [{button_text}]")
+            logs.append(f"{direction.title()} clicked: {source_bot} [{button_text}]")
         else:
-            logs.append(f"Next skipped/failed: {source_bot} [{button_text}]")
+            logs.append(f"{direction.title()} skipped/failed: {source_bot} [{button_text}]")
 
     if clicked_count <= 0:
-        return JSONResponse({"ok": False, "error": "Failed to click any Next button.", "logs": logs}, status_code=400)
+        return JSONResponse({"ok": False, "error": f"Failed to click any {direction.title()} button.", "logs": logs}, status_code=400)
 
     await asyncio.sleep(2.4)
     scan_items, scan_pagers = await _collect_from_group(
@@ -1714,7 +1846,7 @@ async def file_fetcher_page_next_all(request: Request):
         query=query,
         source_chat=source_chat,
     )
-    logs.append(f"Next-All update: +{len(scan_items)} file rows")
+    logs.append(f"{direction.title()}-All update: +{len(scan_items)} file rows")
     return JSONResponse({"ok": True, "items": merged_items, "pagers": merged_pagers, "logs": logs})
 
 

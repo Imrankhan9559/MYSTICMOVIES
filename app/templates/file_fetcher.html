@@ -27,7 +27,7 @@
                         </div>
                         <div class="form-group col-md-4">
                             <label>Source Bots (one per line)</label>
-                            <textarea name="source_bots_text" class="form-control" rows="4" placeholder="@rrbzmovies_bot&#10;@PeruchazhiX1bot">{{ "\n".join(cfg.source_bots or []) }}</textarea>
+                            <textarea name="source_bots_text" class="form-control" rows="4" placeholder="@rrbzmovies_bot">{{ "\n".join(cfg.source_bots or []) }}</textarea>
                             <small class="text-muted">Optional. Keep empty to read all bot replies in the group.</small>
                         </div>
                         <div class="form-group col-md-2">
@@ -60,9 +60,14 @@
         <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h3 class="card-title"><i class="fas fa-forward mr-2"></i>Bot Page Controls</h3>
-                <button type="button" id="ff-next-all-btn" class="btn btn-sm btn-outline-warning">
-                    <i class="fas fa-angles-right mr-1"></i>Next (All Bots)
-                </button>
+                <div class="d-flex" style="gap:8px;">
+                    <button type="button" id="ff-prev-all-btn" class="btn btn-sm btn-outline-info">
+                        <i class="fas fa-angles-left mr-1"></i>Prev (All Bots)
+                    </button>
+                    <button type="button" id="ff-next-all-btn" class="btn btn-sm btn-outline-warning">
+                        <i class="fas fa-angles-right mr-1"></i>Next (All Bots)
+                    </button>
+                </div>
             </div>
             <div class="card-body">
                 <div id="ff-pagers-wrap" class="d-flex flex-wrap" style="gap:8px;">
@@ -233,10 +238,20 @@ document.getElementById("ff-search-form").addEventListener("submit", async (e) =
     if (srcInput && String(srcInput.value || "").trim()) {
         fd.set("source_chat_id", String(srcInput.value || "").trim());
     }
+    const botsInput = document.querySelector('#ff-settings-form [name="source_bots_text"]');
+    if (botsInput) {
+        fd.set("source_bots_text", String(botsInput.value || "").trim());
+    }
+    currentResults = [];
+    currentPagers = [];
+    renderResults();
+    renderPagers();
     replaceLog(["Searching source group..."]);
     resultsBody.innerHTML = `<tr><td colspan="5" class="text-info text-center p-3">Searching...</td></tr>`;
     const out = await postForm("/file-fetcher/search", fd);
     if (!out.ok || !out.data.ok) {
+        currentResults = [];
+        currentPagers = [];
         const rows = [];
         rows.push(out.data.error || `Search failed (HTTP ${out.status})`);
         if (Array.isArray(out.data.logs) && out.data.logs.length) {
@@ -244,7 +259,8 @@ document.getElementById("ff-search-form").addEventListener("submit", async (e) =
             rows.push(...out.data.logs);
         }
         replaceLog(rows);
-        resultsBody.innerHTML = `<tr><td colspan="5" class="text-danger text-center p-3">Search failed.</td></tr>`;
+        renderResults();
+        renderPagers();
         return;
     }
     currentResults = Array.isArray(out.data.items) ? out.data.items : [];
@@ -265,9 +281,24 @@ document.getElementById("ff-clear-all").addEventListener("click", () => {
 
 document.getElementById("ff-next-all-btn").addEventListener("click", async () => {
     replaceLog(["Going to next page for all source bots..."]);
-    const out = await postJson("/file-fetcher/page-all", {});
+    const out = await postJson("/file-fetcher/page-all", { direction: "next" });
     if (!out.ok || !out.data.ok) {
         replaceLog([out.data.error || `Next-all failed (HTTP ${out.status})`]);
+        return;
+    }
+    currentResults = Array.isArray(out.data.items) ? out.data.items : currentResults;
+    currentPagers = Array.isArray(out.data.pagers) ? out.data.pagers : currentPagers;
+    renderResults();
+    renderPagers();
+    replaceLog(out.data.logs || []);
+    logLine(`Updated results: ${currentResults.length}`);
+});
+
+document.getElementById("ff-prev-all-btn").addEventListener("click", async () => {
+    replaceLog(["Going to previous page for all source bots..."]);
+    const out = await postJson("/file-fetcher/page-all", { direction: "prev" });
+    if (!out.ok || !out.data.ok) {
+        replaceLog([out.data.error || `Prev-all failed (HTTP ${out.status})`]);
         return;
     }
     currentResults = Array.isArray(out.data.items) ? out.data.items : currentResults;
