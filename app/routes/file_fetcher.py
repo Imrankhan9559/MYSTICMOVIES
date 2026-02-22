@@ -1015,11 +1015,11 @@ async def _collect_from_group(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     items: list[dict[str, Any]] = []
     pagers: list[dict[str, Any]] = []
+    # keep scanning a few older messages for pager keyboards (some bots reuse old keyboard messages)
+    old_pager_scan_left = 80
     try:
         async for msg in client.get_chat_history(source_chat, limit=limit):
             ts = _msg_ts(msg)
-            if ts < since_ts:
-                break
             if getattr(msg, "outgoing", False):
                 continue
             sender = _msg_sender_label(msg)
@@ -1032,8 +1032,14 @@ async def _collect_from_group(
                 if not (_msg_sender_is_bot(msg) or has_markup or has_links or _has_media(msg)):
                     continue
             msg_items, msg_pagers = _extract_from_message(msg, sender)
-            items.extend(msg_items)
+            # collect pager controls even from older messages
             pagers.extend(msg_pagers)
+            if ts < since_ts:
+                old_pager_scan_left -= 1
+                if old_pager_scan_left <= 0:
+                    break
+                continue
+            items.extend(msg_items)
     except Exception as e:
         logs.append(f"Read group failed: {e}")
 
@@ -1593,10 +1599,10 @@ async def file_fetcher_page_next_all(request: Request):
                 if ("next" in start) or ("page" in start):
                     picked = p
                     break
-        if not picked and rows:
-            picked = rows[0]
         if picked:
             next_pagers.append(picked)
+        else:
+            logs.append(f"No Next pager found for {bot}; skipped.")
 
     clicked_count = 0
     for pager in next_pagers:
