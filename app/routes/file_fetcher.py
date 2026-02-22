@@ -481,6 +481,32 @@ def _is_next_button(text: str) -> bool:
     return False
 
 
+def _is_prev_button(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    folded = (
+        unicodedata.normalize("NFKD", raw)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .strip()
+        .lower()
+    )
+    if folded in {"prev", "previous", "back", "<", "<<"}:
+        return True
+    if ("prev" in folded) or ("previous" in folded) or ("back" in folded):
+        return True
+    if folded.startswith("<") or folded.startswith("<<"):
+        return True
+    if re.search(r"[<\u00AB\u2190\u2B05\u23EA]+", raw):
+        return True
+    return False
+
+
+def _is_page_fraction(text: str) -> bool:
+    return bool(re.fullmatch(r"\d+\s*/\s*\d+", str(text or "").strip()))
+
+
 def _is_noisy_button(text: str) -> bool:
     raw = str(text or "").strip()
     if not raw:
@@ -800,6 +826,11 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
     inline = getattr(reply_markup, "inline_keyboard", None) if reply_markup else None
     if inline:
         for r_idx, row in enumerate(inline):
+            row_texts: list[str] = []
+            for btn in row or []:
+                row_texts.append(str(getattr(btn, "text", "") or "").strip())
+            row_has_fraction = any(_is_page_fraction(x) for x in row_texts)
+            row_has_next_prev = any((_is_next_button(x) or _is_prev_button(x)) for x in row_texts)
             for c_idx, btn in enumerate(row or []):
                 btxt = str(getattr(btn, "text", "") or "").strip()
                 burl = str(getattr(btn, "url", "") or "").strip()
@@ -813,7 +844,8 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                     "url": burl,
                     "callback_data": bcb,
                 }
-                if _is_pager_button(btxt):
+                is_row_pager = row_has_fraction and (row_has_next_prev or any("page" in str(x or "").lower() for x in row_texts))
+                if _is_pager_button(btxt) or is_row_pager:
                     pager_payload = {
                         "source_bot": source_label,
                         "chat_id": chat_id,
@@ -857,6 +889,14 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
     keyboard = getattr(reply_markup, "keyboard", None) if reply_markup else None
     if keyboard and isinstance(keyboard, list):
         for r_idx, row in enumerate(keyboard):
+            row_texts: list[str] = []
+            for btn in row or []:
+                if isinstance(btn, str):
+                    row_texts.append(btn.strip())
+                else:
+                    row_texts.append(str(getattr(btn, "text", "") or "").strip())
+            row_has_fraction = any(_is_page_fraction(x) for x in row_texts)
+            row_has_next_prev = any((_is_next_button(x) or _is_prev_button(x)) for x in row_texts)
             for c_idx, btn in enumerate(row or []):
                 if isinstance(btn, str):
                     btxt = btn.strip()
@@ -864,7 +904,8 @@ def _extract_from_message(msg, source_label: str) -> tuple[list[dict[str, Any]],
                     btxt = str(getattr(btn, "text", "") or "").strip()
                 if not btxt:
                     continue
-                if not _is_pager_button(btxt):
+                is_row_pager = row_has_fraction and (row_has_next_prev or any("page" in str(x or "").lower() for x in row_texts))
+                if not (_is_pager_button(btxt) or is_row_pager):
                     continue
                 pager_payload = {
                     "source_bot": source_label,
@@ -1025,6 +1066,9 @@ async def _collect_from_group(
             sender = _msg_sender_label(msg)
             allowed = _sender_matches_filter(msg, sender, source_bots_filter)
             if not allowed:
+                if source_bots_filter:
+                    # Strict mode when specific source bots are configured.
+                    continue
                 # fallback: keep likely bot-generated result messages even if sender label format differs
                 has_markup = bool(getattr(getattr(msg, "reply_markup", None), "inline_keyboard", None))
                 text = str(getattr(msg, "text", "") or getattr(msg, "caption", "") or "")
@@ -1308,6 +1352,8 @@ async def file_fetcher_save_settings(
     cfg.force_sub_channels = force_channels
     cfg.updated_at = datetime.now()
     await cfg.save()
+    # Drop stale merged results/pagers for this admin after source-bot/source-chat changes.
+    _SEARCH_CACHE.pop(_user_cache_key(user), None)
     return JSONResponse({"ok": True, "message": "Settings saved."})
 
 
