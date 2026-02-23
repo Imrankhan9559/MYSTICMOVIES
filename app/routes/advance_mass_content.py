@@ -1,6 +1,7 @@
 import asyncio
 import csv
 import io
+import json
 import logging
 import os
 import re
@@ -66,6 +67,7 @@ _MASS_IMPORT_STATUS: dict[str, Any] = {
     "updated_at": "",
     "message": "Idle",
 }
+_MASS_FETCH_AUTO_NEXT_MAX_PAGES = max(0, min(int(os.getenv("MASS_FETCH_AUTO_NEXT_MAX_PAGES", "18")), 80))
 
 
 def _collection_for(model_cls):
@@ -2005,6 +2007,186 @@ async def _recompute_mass_item_files_fast(
     await _mass_broadcast_snapshot()
 
 
+def _response_payload(response: Any) -> tuple[int, dict[str, Any]]:
+    if isinstance(response, JSONResponse):
+        status = int(getattr(response, "status_code", 200) or 200)
+        body = getattr(response, "body", b"") or b""
+        if isinstance(body, (bytes, bytearray)):
+            try:
+                payload = json.loads(body.decode("utf-8", errors="ignore") or "{}")
+            except Exception:
+                payload = {}
+        elif isinstance(body, str):
+            try:
+                payload = json.loads(body or "{}")
+            except Exception:
+                payload = {}
+        else:
+            payload = {}
+        return status, payload if isinstance(payload, dict) else {}
+    if isinstance(response, dict):
+        return 200, response
+    return 500, {"ok": False, "error": "Unexpected response."}
+
+
+def _series_expected_pairs_for_fetch(state: MassContentState) -> list[tuple[int, int]]:
+    pairs: set[tuple[int, int]] = set()
+    for season_row in list(getattr(state, "seasons", []) or []):
+        season_no = _int_or_none(season_row.get("season"))
+        if not season_no:
+            continue
+        episodes = list(season_row.get("episodes") or [])
+        for ep_row in episodes:
+            ep_no = _int_or_none(ep_row.get("episode"))
+            if ep_no:
+                pairs.add((int(season_no), int(ep_no)))
+    if pairs:
+        return sorted(list(pairs))
+
+    # Fallback when TMDB episodes were unavailable: infer from current missing/matched rows.
+    for row in list(getattr(state, "missing_items", []) or []):
+        season_no = _int_or_none(row.get("season"))
+        episode_no = _int_or_none(row.get("episode"))
+        if season_no and episode_no:
+            pairs.add((int(season_no), int(episode_no)))
+    for row in list(getattr(state, "matched_files", []) or []):
+        season_no = _int_or_none(row.get("season"))
+        episode_no = _int_or_none(row.get("episode"))
+        if season_no and episode_no:
+            pairs.add((int(season_no), int(episode_no)))
+    return sorted(list(pairs))
+
+
+def _mass_fetch_pick_candidates(
+    state: MassContentState,
+    items: list[dict[str, Any]],
+) -> dict[str, Any]:
+    mandatory = ("1080P", "720P", "480P")
+    optional = ("360P",)
+    allowed = set([*mandatory, *optional])
+    title_variants = _search_titles_for_state(state) or [state.title]
+    candidates: list[dict[str, Any]] = []
+
+    for row in list(items or []):
+        item_id = str(row.get("id") or "").strip()
+        title = " ".join(str(row.get("title") or "").split()).strip()
+        if not item_id or not title:
+            continue
+        if not _title_match(title_variants, title):
+            continue
+        size_bytes = int(row.get("size_bytes") or 0)
+        payload = {
+            "id": item_id,
+            "title": title,
+            "size_bytes": size_bytes,
+        }
+        if state.content_type == "movie":
+            if size_bytes <= 0:
+                continue
+            quality = _normalize_quality_label(_movie_quality_from_size(size_bytes)).upper()
+            if quality not in allowed:
+                continue
+            payload["quality"] = quality
+            candidates.append(payload)
+            continue
+
+        season_no, episode_no = _series_season_episode(title)
+        if not season_no or not episode_no:
+            continue
+        quality = _normalize_quality_label(_series_quality_from_name(title)).upper()
+        if quality not in allowed:
+            continue
+        payload["quality"] = quality
+        payload["season"] = int(season_no)
+        payload["episode"] = int(episode_no)
+        candidates.append(payload)
+
+    if state.content_type == "movie":
+        by_quality: dict[str, dict[str, Any]] = {}
+        for row in candidates:
+            quality = str(row.get("quality") or "").upper()
+            if not quality:
+                continue
+            current = by_quality.get(quality)
+            if not current or int(row.get("size_bytes") or 0) > int(current.get("size_bytes") or 0):
+                by_quality[quality] = row
+        selected: list[dict[str, Any]] = []
+        for quality in [*mandatory, *optional]:
+            picked = by_quality.get(quality)
+            if picked:
+                selected.append(picked)
+        selected_ids = list(dict.fromkeys([str(x.get("id") or "").strip() for x in selected if str(x.get("id") or "").strip()]))
+        coverage = {quality: bool(by_quality.get(quality)) for quality in [*mandatory, *optional]}
+        return {
+            "mode": "movie",
+            "candidate_count": len(candidates),
+            "selected_ids": selected_ids,
+            "coverage": coverage,
+            "satisfied": all(bool(by_quality.get(quality)) for quality in mandatory),
+            "required_total": len(mandatory),
+            "required_found": sum(1 for quality in mandatory if bool(by_quality.get(quality))),
+        }
+
+    expected_pairs = _series_expected_pairs_for_fetch(state)
+    by_bucket: dict[tuple[int, int, str], dict[str, Any]] = {}
+    for row in candidates:
+        season_no = int(row.get("season") or 0)
+        episode_no = int(row.get("episode") or 0)
+        quality = str(row.get("quality") or "").upper()
+        if season_no <= 0 or episode_no <= 0 or not quality:
+            continue
+        bucket = (season_no, episode_no, quality)
+        current = by_bucket.get(bucket)
+        if not current or int(row.get("size_bytes") or 0) > int(current.get("size_bytes") or 0):
+            by_bucket[bucket] = row
+
+    selected_rows: list[dict[str, Any]] = []
+    required_total = 0
+    required_found = 0
+
+    if expected_pairs:
+        for season_no, episode_no in expected_pairs:
+            for quality in mandatory:
+                required_total += 1
+                picked = by_bucket.get((season_no, episode_no, quality))
+                if picked:
+                    required_found += 1
+                    selected_rows.append(picked)
+            for quality in optional:
+                picked = by_bucket.get((season_no, episode_no, quality))
+                if picked:
+                    selected_rows.append(picked)
+    else:
+        # Fallback: no explicit episode map, require at least one match per mandatory quality.
+        best_by_quality: dict[str, dict[str, Any]] = {}
+        for row in candidates:
+            quality = str(row.get("quality") or "").upper()
+            current = best_by_quality.get(quality)
+            if not current or int(row.get("size_bytes") or 0) > int(current.get("size_bytes") or 0):
+                best_by_quality[quality] = row
+        for quality in mandatory:
+            required_total += 1
+            picked = best_by_quality.get(quality)
+            if picked:
+                required_found += 1
+                selected_rows.append(picked)
+        for quality in optional:
+            picked = best_by_quality.get(quality)
+            if picked:
+                selected_rows.append(picked)
+
+    selected_ids = list(dict.fromkeys([str(x.get("id") or "").strip() for x in selected_rows if str(x.get("id") or "").strip()]))
+    return {
+        "mode": "series",
+        "candidate_count": len(candidates),
+        "selected_ids": selected_ids,
+        "expected_pairs": len(expected_pairs),
+        "required_total": required_total,
+        "required_found": required_found,
+        "satisfied": (required_total > 0 and required_found >= required_total),
+    }
+
+
 async def _upsert_mass_entry(title: str, content_type: str, year: str, source_note: str) -> MassContentState:
     clean_title = " ".join((title or "").split()).strip()
     if not clean_title:
@@ -3058,6 +3240,173 @@ async def advance_mass_content_adder_retry_files(request: Request, item_id: str)
     _schedule_process(str(row.id), mode="files")
     await _mass_broadcast_snapshot()
     return {"ok": True}
+
+
+@router.post("/advance-mass-content-adder/fetch-files/{item_id}")
+async def advance_mass_content_adder_fetch_files(
+    request: Request,
+    item_id: str,
+    auto_next: str = Form("1"),
+    max_pages: str = Form(""),
+):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    row = await MassContentState.get(item_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+    if row.tmdb_status != "found":
+        return JSONResponse({"ok": False, "error": "TMDB data is missing for this item."}, status_code=400)
+
+    # Lazy import to avoid startup coupling.
+    from app.routes import file_fetcher as ff
+
+    cfg = await ff._ensure_settings()
+    source_chat = ff._norm_chat_ref(cfg.source_chat_id)
+    if source_chat is None:
+        return JSONResponse(
+            {"ok": False, "error": "Configure Source Query Group/Chat ID in /file-fetcher settings first."},
+            status_code=400,
+        )
+
+    source_bots_text = "\n".join([str(x or "").strip() for x in (cfg.source_bots or []) if str(x or "").strip()])
+    query = " ".join(str(getattr(row, "title", "") or "").split()).strip()
+    if not query:
+        return JSONResponse({"ok": False, "error": "Invalid content title for fetch search."}, status_code=400)
+
+    row.panel = "processing"
+    row.file_status = "pending"
+    row.upload_state = "idle"
+    row.upload_message = "Fetch Step 1/4: Searching source bots..."
+    row.last_error = None
+    row.updated_at = datetime.now()
+    await row.save()
+    await _mass_broadcast_snapshot()
+
+    search_resp = await ff.file_fetcher_search(
+        request=request,
+        query=query,
+        source_chat_id=str(cfg.source_chat_id or ""),
+        source_bots_text=source_bots_text,
+    )
+    search_status, search_data = _response_payload(search_resp)
+    search_ok = bool(search_status < 400 and bool(search_data.get("ok")))
+    if not search_ok:
+        msg = str(search_data.get("error") or "File search failed.")
+        row.upload_message = msg
+        row.last_error = msg
+        row.updated_at = datetime.now()
+        await row.save()
+        await _mass_broadcast_snapshot()
+        return JSONResponse({"ok": False, "error": msg, "logs": search_data.get("logs") or []}, status_code=400)
+
+    items = list(search_data.get("items") or [])
+    logs: list[str] = list(search_data.get("logs") or [])
+    pick = _mass_fetch_pick_candidates(row, items)
+    pages_advanced = 0
+    auto_next_on = str(auto_next or "").strip().lower() in {"1", "true", "yes", "on"}
+    max_auto_pages = _MASS_FETCH_AUTO_NEXT_MAX_PAGES
+    try:
+        if str(max_pages or "").strip():
+            max_auto_pages = max(0, min(int(max_pages), 80))
+    except Exception:
+        pass
+
+    stagnation = 0
+    previous_found = int(pick.get("required_found") or 0)
+    previous_selected = len(list(pick.get("selected_ids") or []))
+    while auto_next_on and (not bool(pick.get("satisfied"))) and pages_advanced < max_auto_pages:
+        row.upload_message = f"Fetch Step 2/4: Auto-next page {pages_advanced + 1}/{max_auto_pages}..."
+        row.updated_at = datetime.now()
+        await row.save()
+        await _mass_broadcast_snapshot()
+
+        next_resp = await ff.file_fetcher_page_next_all(request=request, payload={"direction": "next"})
+        next_status, next_data = _response_payload(next_resp)
+        if next_status >= 400 or not bool(next_data.get("ok")):
+            logs.extend(list(next_data.get("logs") or []))
+            break
+        pages_advanced += 1
+        logs.extend(list(next_data.get("logs") or []))
+        items = list(next_data.get("items") or items)
+        pick = _mass_fetch_pick_candidates(row, items)
+        now_found = int(pick.get("required_found") or 0)
+        now_selected = len(list(pick.get("selected_ids") or []))
+        if now_found <= previous_found and now_selected <= previous_selected:
+            stagnation += 1
+        else:
+            stagnation = 0
+        previous_found = now_found
+        previous_selected = now_selected
+        if stagnation >= 3:
+            break
+
+    selected_ids = [str(x).strip() for x in (pick.get("selected_ids") or []) if str(x).strip()]
+    if not selected_ids:
+        msg = "No suitable files found from source bot results."
+        row.upload_message = msg
+        row.last_error = msg
+        row.updated_at = datetime.now()
+        await row.save()
+        await _mass_broadcast_snapshot()
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": msg,
+                "required_total": int(pick.get("required_total") or 0),
+                "required_found": int(pick.get("required_found") or 0),
+                "logs": logs[-160:],
+            },
+            status_code=404,
+        )
+
+    row.upload_message = f"Fetch Step 3/4: Fetching {len(selected_ids)} selected file(s)..."
+    row.updated_at = datetime.now()
+    await row.save()
+    await _mass_broadcast_snapshot()
+
+    fetch_resp = await ff.file_fetcher_fetch(request=request, payload={"ids": selected_ids})
+    fetch_status, fetch_data = _response_payload(fetch_resp)
+    fetch_ok = bool(fetch_status < 400 and bool(fetch_data.get("ok")))
+    fetch_logs = list(fetch_data.get("logs") or [])
+    logs.extend(fetch_logs)
+    if not fetch_ok:
+        msg = str(fetch_data.get("error") or "Failed to fetch selected files.")
+        row.upload_message = msg
+        row.last_error = msg
+        row.updated_at = datetime.now()
+        await row.save()
+        await _mass_broadcast_snapshot()
+        return JSONResponse({"ok": False, "error": msg, "logs": logs[-160:]}, status_code=400)
+
+    row.panel = "processing"
+    row.file_status = "pending"
+    row.upload_state = "idle"
+    row.upload_message = "Fetch Step 4/4: Files fetched. Re-scanning content matches..."
+    row.last_error = None
+    row.updated_at = datetime.now()
+    await row.save()
+    _STORAGE_POOL_CACHE["rows"] = []
+    _STORAGE_POOL_CACHE["expires_at"] = datetime.min
+    _BOT_CAPTION_NAME_CACHE.clear()
+    _schedule_process(str(row.id), mode="files")
+    await _mass_broadcast_snapshot()
+
+    return {
+        "ok": True,
+        "message": (
+            f"Fetched {len(selected_ids)} candidate file(s)"
+            f"{f' after {pages_advanced} auto-next page(s)' if pages_advanced else ''}. "
+            "Auto re-scan started."
+        ),
+        "selected_count": len(selected_ids),
+        "required_total": int(pick.get("required_total") or 0),
+        "required_found": int(pick.get("required_found") or 0),
+        "auto_next_pages": pages_advanced,
+        "forwarded_count": int(fetch_data.get("forwarded_count") or 0),
+        "joined_channels": list(fetch_data.get("joined_channels") or []),
+        "logs": logs[-160:],
+    }
 
 
 @router.post("/advance-mass-content-adder/process-skipped/{item_id}")

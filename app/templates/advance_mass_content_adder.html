@@ -1095,6 +1095,7 @@ function actionsHtml(item, panelKey) {
     const uploadState = String(item.upload_state || "idle");
     const retryTmdb = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-tmdb" data-id="${id}">Retry TMDB</button>`;
     const retryFiles = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-files" data-id="${id}">Retry Files</button>`;
+    const fetchFiles = `<button class="btn btn-xs btn-outline-primary mr-1 action-btn" data-action="fetch-files" data-id="${id}"><i class="fas fa-bolt mr-1"></i>Fetch Files</button>`;
     const del = `<button class="btn btn-xs btn-outline-danger mr-1 action-btn" data-action="delete" data-id="${id}">Delete</button>`;
     const uploadLabel = (uploadState === "queued" || uploadState === "uploading") ? "Uploading..." : "Upload";
     const uploadDisabled = (uploadState === "queued" || uploadState === "uploading") ? "disabled" : "";
@@ -1104,8 +1105,8 @@ function actionsHtml(item, panelKey) {
 
     if (panelKey === "processing") return focus + del;
     if (panelKey === "tmdb_not_found") return focus + retryTmdb + del;
-    if (panelKey === "file_not_found") return focus + retryFiles + del;
-    if (panelKey === "incomplete") return focus + retryFiles + uploadIncomplete + del;
+    if (panelKey === "file_not_found") return focus + fetchFiles + retryFiles + del;
+    if (panelKey === "incomplete") return focus + fetchFiles + retryFiles + uploadIncomplete + del;
     if (panelKey === "complete") return focus + upload + retryFiles + del;
     if (panelKey === "uploading") return focus + del;
     if (panelKey === "uploaded") return focus + del;
@@ -1685,6 +1686,19 @@ document.addEventListener("click", async (e) => {
             const out = await postForm(`/advance-mass-content-adder/retry-files/${encodeURIComponent(id)}`, new FormData());
             if (!out.ok) toast(out.data.error || "Retry files failed.", "error");
             else toast("File scan retry started.", "info");
+            await fetchState();
+            return;
+        }
+        if (action === "fetch-files") {
+            const fd = new FormData();
+            fd.append("auto_next", "1");
+            const out = await postForm(`/advance-mass-content-adder/fetch-files/${encodeURIComponent(id)}`, fd);
+            if (!out.ok) {
+                toast(out.data.error || "Fetch files failed.", "error", 4600);
+            } else {
+                const msg = out.data.message || `Fetched ${Number(out.data.selected_count || 0)} files and started re-scan.`;
+                toast(msg, "success", 4200);
+            }
             await fetchState();
             return;
         }
