@@ -739,15 +739,19 @@ function _episodeListText(values) {
 function itemFingerprint(item) {
     const notesCount = Array.isArray(item && item.live_notes) ? item.live_notes.length : 0;
     const choicesCount = Array.isArray(item && item.file_choice_groups) ? item.file_choice_groups.length : 0;
+    const fetchLogsCount = Array.isArray(item && item.fetch_logs) ? item.fetch_logs.length : 0;
     return [
         String(item && item.id || ""),
         String(item && item.updated_at || ""),
         String(item && item.upload_state || "idle"),
         String(item && item.upload_message || ""),
+        String(item && item.fetch_state || "idle"),
+        String(item && item.fetch_message || ""),
         String(item && item.missing_count || 0),
         String(item && item.matched_files_count || 0),
         String(notesCount),
         String(choicesCount),
+        String(fetchLogsCount),
     ].join("|");
 }
 
@@ -968,6 +972,27 @@ function matchedFilesHtml(item) {
     `;
 }
 
+function fetchLogHtml(item) {
+    const logs = Array.isArray(item && item.fetch_logs) ? item.fetch_logs : [];
+    const fetchState = String(item && item.fetch_state || "idle").toLowerCase();
+    const fetchMsg = String(item && item.fetch_message || "").trim();
+    if (!fetchMsg && !logs.length && fetchState === "idle") return "";
+    const showLogs = logs.slice(-120);
+    return `
+        <details class="mt-2">
+            <summary class="text-xs text-info" style="cursor:pointer;">
+                Fetch Log (${showLogs.length})${fetchState ? ` | ${esc(fetchState.toUpperCase())}` : ""}
+            </summary>
+            ${fetchMsg ? `<div class="text-xs text-warning mt-1">${esc(fetchMsg)}</div>` : ""}
+            ${showLogs.length ? `
+                <div class="mt-1 p-2 border border-secondary rounded bg-black" style="max-height:220px;overflow:auto;">
+                    ${showLogs.map(line => `<div class="text-xs text-muted mb-1">${esc(line)}</div>`).join("")}
+                </div>
+            ` : `<div class="text-xs text-muted mt-1">No fetch logs yet.</div>`}
+        </details>
+    `;
+}
+
 function fileChoicesHtml(item) {
     const groups = Array.isArray(item.file_choice_groups) ? item.file_choice_groups : [];
     if (!groups.length) return "";
@@ -1093,20 +1118,24 @@ function actionsHtml(item, panelKey) {
     const id = esc(item.id);
     const focus = `<button class="btn btn-xs btn-outline-light mr-1 action-btn" data-action="focus-item" data-id="${id}" data-panel="${esc(panelKey)}"><i class="fas fa-expand-arrows-alt mr-1"></i>Focus</button>`;
     const uploadState = String(item.upload_state || "idle");
+    const fetchState = String(item.fetch_state || "idle").toLowerCase();
+    const fetchRunning = fetchState === "queued" || fetchState === "fetching";
     const retryTmdb = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-tmdb" data-id="${id}">Retry TMDB</button>`;
     const retryFiles = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-files" data-id="${id}">Retry Files</button>`;
     const fetchFiles = `<button class="btn btn-xs btn-outline-primary mr-1 action-btn" data-action="fetch-files" data-id="${id}"><i class="fas fa-bolt mr-1"></i>Fetch Files</button>`;
+    const stopFetch = `<button class="btn btn-xs btn-outline-warning mr-1 action-btn" data-action="stop-fetch-files" data-id="${id}"><i class="fas fa-stop mr-1"></i>Stop Fetch</button>`;
     const del = `<button class="btn btn-xs btn-outline-danger mr-1 action-btn" data-action="delete" data-id="${id}">Delete</button>`;
     const uploadLabel = (uploadState === "queued" || uploadState === "uploading") ? "Uploading..." : "Upload";
     const uploadDisabled = (uploadState === "queued" || uploadState === "uploading") ? "disabled" : "";
     const upload = `<button class="btn btn-xs btn-success mr-1 action-btn" data-action="upload" data-id="${id}" ${uploadDisabled}>${uploadLabel}</button>`;
     const uploadIncomplete = `<button class="btn btn-xs btn-warning mr-1 action-btn" data-action="upload" data-id="${id}" ${uploadDisabled}>${uploadLabel === "Upload" ? "Upload (Warn)" : uploadLabel}</button>`;
     const processSkipped = `<button class="btn btn-xs btn-outline-success mr-1 action-btn" data-action="process-skipped" data-id="${id}">Add Anyway</button>`;
+    const fetchAction = fetchRunning ? stopFetch : fetchFiles;
 
-    if (panelKey === "processing") return focus + del;
+    if (panelKey === "processing") return focus + (fetchRunning ? fetchAction : "") + del;
     if (panelKey === "tmdb_not_found") return focus + retryTmdb + del;
-    if (panelKey === "file_not_found") return focus + fetchFiles + retryFiles + del;
-    if (panelKey === "incomplete") return focus + fetchFiles + retryFiles + uploadIncomplete + del;
+    if (panelKey === "file_not_found") return focus + fetchAction + retryFiles + del;
+    if (panelKey === "incomplete") return focus + fetchAction + retryFiles + uploadIncomplete + del;
     if (panelKey === "complete") return focus + upload + retryFiles + del;
     if (panelKey === "uploading") return focus + del;
     if (panelKey === "uploaded") return focus + del;
@@ -1164,6 +1193,10 @@ function itemHtml(item, panelKey) {
     const error = item.last_error ? `<div class="text-xs text-danger mt-1">${esc(item.last_error)}</div>` : "";
     const uploadStage = uploadStageHtml(item, panelKey);
     const uploadMsg = (uploadStage || !item.upload_message) ? "" : `<div class="text-xs text-info mt-1">${esc(item.upload_message)}</div>`;
+    const fetchState = String(item.fetch_state || "idle").toLowerCase();
+    const fetchMessage = String(item.fetch_message || "").trim();
+    const fetchCls = (fetchState === "fetching" || fetchState === "queued") ? "text-warning" : (fetchState === "failed" ? "text-danger" : "text-info");
+    const fetchMsg = fetchMessage ? `<div class="text-xs ${fetchCls} mt-1"><i class="fas fa-magnet mr-1"></i>${esc(fetchMessage)}</div>` : "";
     const missingTxt = missing > 0 ? `<div class="text-xs text-warning mt-1">Missing: ${missing}</div>` : "";
     const existing = (item && typeof item.existing_content === "object" && item.existing_content) ? item.existing_content : {};
     const existingTitle = String(existing.title || "").trim();
@@ -1200,11 +1233,13 @@ function itemHtml(item, panelKey) {
                     ${skippedInfo}
                     ${uploadStage}
                     ${uploadMsg}
+                    ${fetchMsg}
                     ${error}
                     <div class="mt-2">${actionsHtml(item, panelKey)}</div>
                     ${manualHint}
                     ${fileChoicesHtml(item)}
                     ${qualityBoardHtml(item, panelKey)}
+                    ${fetchLogHtml(item)}
                 </div>
             </div>
             <div class="mt-2 p-2 border border-secondary rounded bg-black live-notes-box">
@@ -1696,8 +1731,18 @@ document.addEventListener("click", async (e) => {
             if (!out.ok) {
                 toast(out.data.error || "Fetch files failed.", "error", 4600);
             } else {
-                const msg = out.data.message || `Fetched ${Number(out.data.selected_count || 0)} files and started re-scan.`;
-                toast(msg, "success", 4200);
+                const msg = out.data.message || "Auto fetch started.";
+                toast(msg, out.data.already_running ? "info" : "success", 4200);
+            }
+            await fetchState();
+            return;
+        }
+        if (action === "stop-fetch-files") {
+            const out = await postForm(`/advance-mass-content-adder/stop-fetch-files/${encodeURIComponent(id)}`, new FormData());
+            if (!out.ok) {
+                toast(out.data.error || "Failed to stop fetch.", "error", 4600);
+            } else {
+                toast(out.data.message || "Fetch stop requested.", "warn", 3600);
             }
             await fetchState();
             return;

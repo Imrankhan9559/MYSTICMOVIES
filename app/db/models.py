@@ -456,6 +456,10 @@ class MassContentState(Document):
     missing_items: List[Dict[str, Any]] = []
     upload_plan: List[Dict[str, Any]] = []
     last_error: Optional[str] = None
+    fetch_state: str = "idle"  # idle | queued | fetching | done | stopped | failed
+    fetch_message: Optional[str] = None
+    fetch_logs: List[str] = []
+    fetched_candidate_keys: List[str] = []
 
     created_at: datetime = datetime.now()
     updated_at: datetime = datetime.now()

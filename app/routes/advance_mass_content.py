@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 _MASS_WS_CLIENTS: set[WebSocket] = set()
 _MASS_TASKS: dict[str, asyncio.Task] = {}
 _MASS_UPLOAD_TASKS: dict[str, asyncio.Task] = {}
+_MASS_FETCH_TASKS: dict[str, asyncio.Task] = {}
+_MASS_FETCH_STOP_FLAGS: set[str] = set()
 _MASS_LOCKS: dict[str, asyncio.Lock] = {}
 _MASS_BROADCAST_LOCK = asyncio.Lock()
 _MASS_PROCESS_WORKERS = max(1, min(int(os.getenv("MASS_PROCESS_WORKERS", "3")), 8))
@@ -68,6 +70,7 @@ _MASS_IMPORT_STATUS: dict[str, Any] = {
     "message": "Idle",
 }
 _MASS_FETCH_AUTO_NEXT_MAX_PAGES = max(0, min(int(os.getenv("MASS_FETCH_AUTO_NEXT_MAX_PAGES", "18")), 80))
+_MASS_FETCH_MAX_CYCLES = max(1, min(int(os.getenv("MASS_FETCH_MAX_CYCLES", "120")), 500))
 
 
 def _collection_for(model_cls):
@@ -124,6 +127,18 @@ _CAPTION_SKIP_RE = re.compile(
 )
 _BOT_CAPTION_NAME_CACHE: dict[str, str] = {}
 _DEFAULT_QUALITY = "720P"
+_FETCH_SKIP_TITLE_RE = re.compile(
+    r"("
+    r"\bpart[\s._-]*0*\d{1,4}\b|"  # part007 / part 07 / part-7
+    r"\bpt[\s._-]*0*\d{1,4}\b|"  # pt07 / pt 7
+    r"\b(?:complete|ccomplete|full)[\s._-]*(?:season|series)\b|"
+    r"\bseason[\s._-]*\d{1,2}[\s._-]*(?:pack|complete|full)\b|"
+    r"\ball[\s._-]*episodes?\b|"
+    r"\bepisodes?[\s._-]*(?:pack|complete|full)\b|"
+    r"\bcomplete[\s._-]*collection\b"
+    r")",
+    re.I,
+)
 
 
 def _clean_match_tokens(text: str, *, for_file_name: bool = False) -> set[str]:
@@ -724,6 +739,17 @@ def _content_release_year(state: MassContentState) -> int | None:
     return _extract_primary_year(str(getattr(state, "year", "") or ""))
 
 
+def _fetch_query_for_state(state: MassContentState) -> str:
+    title = " ".join(str(getattr(state, "title", "") or "").split()).strip()
+    if not title:
+        return ""
+    is_series = str(getattr(state, "content_type", "") or "").strip().lower() == "series"
+    year = _content_release_year(state)
+    if (not is_series) and year and not re.search(rf"(?<!\d){int(year)}(?!\d)", title):
+        return f"{title} {int(year)}"
+    return title
+
+
 def _is_video_row(item: FileSystemItem) -> bool:
     if item.is_folder:
         return False
@@ -1315,6 +1341,8 @@ async def _fetch_storage_candidates_multi(search_titles: list[str]) -> list[File
         if not _is_video_row(row):
             continue
         row_name = row.name or ""
+        if _filename_should_skip_for_match(row_name):
+            continue
         matched = _title_match(
             title_variants,
             row_name,
@@ -1432,6 +1460,8 @@ async def _scan_files_for_state(
 
         for row in candidates:
             file_name = row.name or ""
+            if _filename_should_skip_for_match(file_name):
+                continue
             # Year rule:
             # - If filename has no year token -> allow.
             # - If filename has year token(s) and content year known -> must include content year.
@@ -1487,6 +1517,8 @@ async def _scan_files_for_state(
             if not file_id:
                 continue
             file_name = str(row.get("name") or "").strip()
+            if _filename_should_skip_for_match(file_name):
+                continue
             file_size = int(row.get("size") or 0)
             src = str(row.get("source") or "").strip().lower()
             source_label = str(row.get("source_label") or "").strip()
@@ -2029,6 +2061,72 @@ def _response_payload(response: Any) -> tuple[int, dict[str, Any]]:
     return 500, {"ok": False, "error": "Unexpected response."}
 
 
+def _fetch_running(item_id: str) -> bool:
+    task = _MASS_FETCH_TASKS.get(str(item_id or ""))
+    return bool(task and not task.done())
+
+
+def _fetch_candidate_key(item: dict[str, Any]) -> str:
+    action = item.get("action") if isinstance(item.get("action"), dict) else {}
+    title = _norm_title(str(item.get("title") or ""))
+    source = str(item.get("source_bot") or "").strip().lower()
+    size_bytes = int(item.get("size_bytes") or 0)
+    chat_id = str(item.get("chat_id") or "").strip()
+    message_id = str(item.get("message_id") or "").strip()
+    action_type = str(item.get("action_type") or "").strip().lower()
+    url = str(action.get("url") or "").strip().lower()
+    callback = str(action.get("callback_data") or "").strip()
+    if url:
+        return f"url:{url}"
+    if callback:
+        return f"cb:{source}:{callback}:{size_bytes}:{title[:90]}"
+    return f"{action_type}:{source}:{chat_id}:{message_id}:{size_bytes}:{title[:90]}"
+
+
+def _title_should_skip_for_fetch(title: str) -> bool:
+    text = " ".join(str(title or "").split()).strip()
+    if not text:
+        return True
+    if _FETCH_SKIP_TITLE_RE.search(text):
+        return True
+    return False
+
+
+def _filename_should_skip_for_match(name: str) -> bool:
+    # Hard guard for noisy/pack rows that should never be auto-matched to a
+    # single movie/episode requirement (example: part007, complete season, etc.).
+    text = " ".join(str(name or "").split()).strip()
+    if not text:
+        return True
+    return bool(_FETCH_SKIP_TITLE_RE.search(text))
+
+
+def _append_fetch_logs(
+    row: MassContentState,
+    entries: list[str] | tuple[str, ...] | set[str] | str,
+    *,
+    clear: bool = False,
+    limit: int = 260,
+) -> list[str]:
+    if clear:
+        logs: list[str] = []
+    else:
+        logs = list(getattr(row, "fetch_logs", []) or [])
+    if isinstance(entries, str):
+        chunk = [entries]
+    else:
+        chunk = [str(x or "").strip() for x in list(entries or [])]
+    for line in chunk:
+        msg = " ".join(str(line or "").split()).strip()
+        if not msg:
+            continue
+        logs.append(msg)
+    if len(logs) > limit:
+        logs = logs[-limit:]
+    row.fetch_logs = logs
+    return logs
+
+
 def _series_expected_pairs_for_fetch(state: MassContentState) -> list[tuple[int, int]]:
     pairs: set[tuple[int, int]] = set()
     for season_row in list(getattr(state, "seasons", []) or []):
@@ -2060,10 +2158,13 @@ def _series_expected_pairs_for_fetch(state: MassContentState) -> list[tuple[int,
 def _mass_fetch_pick_candidates(
     state: MassContentState,
     items: list[dict[str, Any]],
+    *,
+    excluded_candidate_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     mandatory = ("1080P", "720P", "480P")
     optional = ("360P",)
     allowed = set([*mandatory, *optional])
+    excluded = set([str(x or "").strip() for x in (excluded_candidate_keys or set()) if str(x or "").strip()])
     title_variants = _search_titles_for_state(state) or [state.title]
     candidates: list[dict[str, Any]] = []
 
@@ -2072,13 +2173,19 @@ def _mass_fetch_pick_candidates(
         title = " ".join(str(row.get("title") or "").split()).strip()
         if not item_id or not title:
             continue
+        if _title_should_skip_for_fetch(title):
+            continue
         if not _title_match(title_variants, title):
             continue
         size_bytes = int(row.get("size_bytes") or 0)
+        candidate_key = _fetch_candidate_key(row)
+        if candidate_key in excluded:
+            continue
         payload = {
             "id": item_id,
             "title": title,
             "size_bytes": size_bytes,
+            "candidate_key": candidate_key,
         }
         if state.content_type == "movie":
             if size_bytes <= 0:
@@ -2116,11 +2223,14 @@ def _mass_fetch_pick_candidates(
             if picked:
                 selected.append(picked)
         selected_ids = list(dict.fromkeys([str(x.get("id") or "").strip() for x in selected if str(x.get("id") or "").strip()]))
+        selected_keys = list(dict.fromkeys([str(x.get("candidate_key") or "").strip() for x in selected if str(x.get("candidate_key") or "").strip()]))
         coverage = {quality: bool(by_quality.get(quality)) for quality in [*mandatory, *optional]}
         return {
             "mode": "movie",
             "candidate_count": len(candidates),
             "selected_ids": selected_ids,
+            "selected_rows": selected,
+            "selected_keys": selected_keys,
             "coverage": coverage,
             "satisfied": all(bool(by_quality.get(quality)) for quality in mandatory),
             "required_total": len(mandatory),
@@ -2176,15 +2286,61 @@ def _mass_fetch_pick_candidates(
                 selected_rows.append(picked)
 
     selected_ids = list(dict.fromkeys([str(x.get("id") or "").strip() for x in selected_rows if str(x.get("id") or "").strip()]))
+    selected_keys = list(dict.fromkeys([str(x.get("candidate_key") or "").strip() for x in selected_rows if str(x.get("candidate_key") or "").strip()]))
     return {
         "mode": "series",
         "candidate_count": len(candidates),
         "selected_ids": selected_ids,
+        "selected_rows": selected_rows,
+        "selected_keys": selected_keys,
         "expected_pairs": len(expected_pairs),
         "required_total": required_total,
         "required_found": required_found,
         "satisfied": (required_total > 0 and required_found >= required_total),
     }
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _fetch_max_pages(value: Any) -> int:
+    try:
+        return max(0, min(int(str(value or "").strip()), 80))
+    except Exception:
+        return _MASS_FETCH_AUTO_NEXT_MAX_PAGES
+
+
+async def _save_fetch_state(
+    row: MassContentState,
+    *,
+    fetch_state: str | None = None,
+    fetch_message: str | None = None,
+    clear_logs: bool = False,
+    append_logs: list[str] | tuple[str, ...] | set[str] | str | None = None,
+    last_error: str | None = None,
+    update_seen_keys: set[str] | None = None,
+    force_snapshot: bool = False,
+) -> None:
+    if fetch_state is not None:
+        row.fetch_state = str(fetch_state or "idle").strip().lower() or "idle"
+    if fetch_message is not None:
+        row.fetch_message = str(fetch_message or "").strip()
+    if clear_logs:
+        row.fetch_logs = []
+    if append_logs is not None:
+        _append_fetch_logs(row, append_logs, clear=clear_logs)
+    if update_seen_keys is not None:
+        keys = [str(x or "").strip() for x in update_seen_keys if str(x or "").strip()]
+        row.fetched_candidate_keys = keys[-1800:]
+    if last_error is not None:
+        row.last_error = str(last_error or "").strip() or None
+    row.updated_at = datetime.now()
+    await row.save()
+    await _mass_broadcast_snapshot(force=force_snapshot)
 
 
 async def _upsert_mass_entry(title: str, content_type: str, year: str, source_note: str) -> MassContentState:
@@ -2749,6 +2905,10 @@ def _serialize_row(row: MassContentState) -> dict:
     panel_key = _panel_key_for_row(row)
     skip_reason = str(getattr(row, "skip_reason", "") or "")
     existing_content = dict(getattr(row, "existing_content", {}) or {})
+    row_id = str(getattr(row, "id", "") or "")
+    fetch_state = str(getattr(row, "fetch_state", "") or "idle").strip().lower()
+    if fetch_state in {"queued", "fetching"} and not _fetch_running(row_id):
+        fetch_state = "idle" if not bool(getattr(row, "fetch_message", "")) else "stopped"
     return {
         "id": str(row.id),
         "title": row.title,
@@ -2775,6 +2935,10 @@ def _serialize_row(row: MassContentState) -> dict:
         "source_inputs": list(row.source_inputs or []),
         "upload_state": str(getattr(row, "upload_state", "") or "idle"),
         "upload_message": str(getattr(row, "upload_message", "") or ""),
+        "fetch_state": fetch_state,
+        "fetch_message": str(getattr(row, "fetch_message", "") or ""),
+        "fetch_logs": list(getattr(row, "fetch_logs", []) or []),
+        "fetch_running": bool(_fetch_running(row_id)),
         "last_error": row.last_error or "",
         "skip_reason": skip_reason,
         "existing_content": existing_content,
@@ -2884,6 +3048,10 @@ async def _build_snapshot() -> dict:
         "source_inputs": {"$slice": [{"$ifNull": ["$source_inputs", []]}, 50]},
         "upload_state": 1,
         "upload_message": 1,
+        "fetch_state": 1,
+        "fetch_message": 1,
+        "fetch_logs": {"$slice": [{"$ifNull": ["$fetch_logs", []]}, 260]},
+        "fetched_candidate_keys": {"$slice": [{"$ifNull": ["$fetched_candidate_keys", []]}, 1500]},
         "last_error": 1,
         "skip_reason": 1,
         "existing_content": 1,
@@ -2928,12 +3096,13 @@ def _mass_workers_snapshot() -> dict[str, int]:
     return {
         "process_active": sum(1 for task in _MASS_TASKS.values() if not task.done()),
         "upload_active": sum(1 for task in _MASS_UPLOAD_TASKS.values() if not task.done()),
+        "fetch_active": sum(1 for task in _MASS_FETCH_TASKS.values() if not task.done()),
     }
 
 
 def _mass_runtime_is_busy() -> bool:
     workers = _mass_workers_snapshot()
-    if workers["process_active"] > 0 or workers["upload_active"] > 0:
+    if workers["process_active"] > 0 or workers["upload_active"] > 0 or workers["fetch_active"] > 0:
         return True
     return bool(_MASS_IMPORT_STATUS.get("running"))
 
@@ -3200,6 +3369,10 @@ async def advance_mass_content_adder_retry_tmdb(request: Request, item_id: str):
     row = await MassContentState.get(item_id)
     if not row:
         raise HTTPException(status_code=404, detail="Item not found")
+    _MASS_FETCH_STOP_FLAGS.add(str(row.id))
+    fetch_task = _MASS_FETCH_TASKS.get(str(row.id))
+    if fetch_task and not fetch_task.done():
+        fetch_task.cancel()
     row.panel = "processing"
     row.tmdb_status = "pending"
     row.file_status = "pending"
@@ -3207,6 +3380,10 @@ async def advance_mass_content_adder_retry_tmdb(request: Request, item_id: str):
     row.uploaded_at = None
     row.upload_state = "idle"
     row.upload_message = ""
+    row.fetch_state = "idle"
+    row.fetch_message = ""
+    row.fetch_logs = []
+    row.fetched_candidate_keys = []
     row.last_error = None
     row.updated_at = datetime.now()
     await row.save()
@@ -3225,12 +3402,20 @@ async def advance_mass_content_adder_retry_files(request: Request, item_id: str)
         raise HTTPException(status_code=404, detail="Item not found")
     if row.tmdb_status != "found":
         return JSONResponse({"ok": False, "error": "TMDB data is missing for this item."}, status_code=400)
+    _MASS_FETCH_STOP_FLAGS.add(str(row.id))
+    fetch_task = _MASS_FETCH_TASKS.get(str(row.id))
+    if fetch_task and not fetch_task.done():
+        fetch_task.cancel()
     row.panel = "processing"
     row.file_status = "pending"
     row.uploaded = False
     row.uploaded_at = None
     row.upload_state = "idle"
     row.upload_message = ""
+    row.fetch_state = "idle"
+    row.fetch_message = ""
+    row.fetch_logs = []
+    row.fetched_candidate_keys = []
     row.last_error = None
     row.updated_at = datetime.now()
     await row.save()
@@ -3240,6 +3425,374 @@ async def advance_mass_content_adder_retry_files(request: Request, item_id: str)
     _schedule_process(str(row.id), mode="files")
     await _mass_broadcast_snapshot()
     return {"ok": True}
+
+
+async def _run_fetch_files_worker(
+    request: Request,
+    item_id: str,
+    *,
+    auto_next_on: bool,
+    max_auto_pages: int,
+) -> None:
+    lock = _MASS_LOCKS.setdefault(f"fetch:{item_id}", asyncio.Lock())
+    async with lock:
+        # Lazy import to avoid startup coupling.
+        from app.routes import file_fetcher as ff
+
+        row = await MassContentState.get(item_id)
+        if not row:
+            return
+
+        seen_candidate_keys: set[str] = set(
+            [str(x or "").strip() for x in (getattr(row, "fetched_candidate_keys", []) or []) if str(x or "").strip()]
+        )
+        _MASS_FETCH_STOP_FLAGS.discard(item_id)
+        no_progress_loops = 0
+        total_selected = 0
+        total_forwarded = 0
+
+        try:
+            cfg = await ff._ensure_settings()
+            source_chat = ff._norm_chat_ref(cfg.source_chat_id)
+            if source_chat is None:
+                await _save_fetch_state(
+                    row,
+                    fetch_state="failed",
+                    fetch_message="Configure Source Query Group/Chat ID in /file-fetcher settings first.",
+                    append_logs="Source group/chat id is missing in file fetcher settings.",
+                    last_error="Source group/chat id is missing in file fetcher settings.",
+                    force_snapshot=True,
+                )
+                return
+
+            source_bots_text = "\n".join([str(x or "").strip() for x in (cfg.source_bots or []) if str(x or "").strip()])
+            max_cycles = _MASS_FETCH_MAX_CYCLES
+            cycle = 0
+
+            while cycle < max_cycles:
+                if item_id in _MASS_FETCH_STOP_FLAGS:
+                    row = await MassContentState.get(item_id)
+                    if row:
+                        await _save_fetch_state(
+                            row,
+                            fetch_state="stopped",
+                            fetch_message="Fetch stopped by admin.",
+                            append_logs="Fetch stopped by admin.",
+                            update_seen_keys=seen_candidate_keys,
+                            force_snapshot=True,
+                        )
+                    return
+
+                row = await MassContentState.get(item_id)
+                if not row:
+                    return
+                if row.tmdb_status != "found":
+                    await _save_fetch_state(
+                        row,
+                        fetch_state="failed",
+                        fetch_message="TMDB data is missing for this item.",
+                        append_logs="TMDB data missing. Fetch worker stopped.",
+                        last_error="TMDB data missing. Fetch worker stopped.",
+                        update_seen_keys=seen_candidate_keys,
+                        force_snapshot=True,
+                    )
+                    return
+                if bool(row.upload_ready) and _panel_key_for_row(row) == "complete":
+                    await _save_fetch_state(
+                        row,
+                        fetch_state="done",
+                        fetch_message="All required files are already matched.",
+                        append_logs="Required qualities are already complete. No fetch needed.",
+                        update_seen_keys=seen_candidate_keys,
+                        force_snapshot=True,
+                    )
+                    return
+
+                cycle += 1
+                query = _fetch_query_for_state(row)
+                if not query:
+                    await _save_fetch_state(
+                        row,
+                        fetch_state="failed",
+                        fetch_message="Invalid content title for fetch query.",
+                        append_logs="Failed to build fetch query from content title.",
+                        last_error="Failed to build fetch query from content title.",
+                        update_seen_keys=seen_candidate_keys,
+                        force_snapshot=True,
+                    )
+                    return
+
+                row.panel = "processing"
+                row.file_status = "pending"
+                row.upload_state = "idle"
+                row.upload_message = f"Fetch Loop {cycle}/{max_cycles}: Searching source bots..."
+                await _save_fetch_state(
+                    row,
+                    fetch_state="fetching",
+                    fetch_message=f"Loop {cycle}: searching source bots for \"{query}\"...",
+                    append_logs=f"Loop {cycle}: searching -> {query}",
+                    update_seen_keys=seen_candidate_keys,
+                )
+
+                search_resp = await ff.file_fetcher_search(
+                    request=request,
+                    query=query,
+                    source_chat_id=str(cfg.source_chat_id or ""),
+                    source_bots_text=source_bots_text,
+                )
+                search_status, search_data = _response_payload(search_resp)
+                search_ok = bool(search_status < 400 and bool(search_data.get("ok")))
+                logs: list[str] = list(search_data.get("logs") or [])
+                if not search_ok:
+                    msg = str(search_data.get("error") or "File search failed.")
+                    no_progress_loops += 1
+                    await _save_fetch_state(
+                        row,
+                        fetch_state="fetching",
+                        fetch_message=f"Loop {cycle}: {msg}",
+                        append_logs=[f"Loop {cycle}: {msg}", *logs[-30:]],
+                        update_seen_keys=seen_candidate_keys,
+                    )
+                    if no_progress_loops >= 3:
+                        await _save_fetch_state(
+                            row,
+                            fetch_state="failed",
+                            fetch_message=msg,
+                            append_logs=f"Stopping after {no_progress_loops} failed search attempts.",
+                            last_error=msg,
+                            update_seen_keys=seen_candidate_keys,
+                            force_snapshot=True,
+                        )
+                        return
+                    await asyncio.sleep(1.2)
+                    continue
+
+                items = list(search_data.get("items") or [])
+                pick = _mass_fetch_pick_candidates(row, items, excluded_candidate_keys=seen_candidate_keys)
+                pages_advanced = 0
+                stagnation = 0
+                previous_found = int(pick.get("required_found") or 0)
+                previous_selected = len(list(pick.get("selected_ids") or []))
+                while auto_next_on and (not bool(pick.get("satisfied"))) and pages_advanced < max_auto_pages:
+                    if item_id in _MASS_FETCH_STOP_FLAGS:
+                        break
+                    row = await MassContentState.get(item_id)
+                    if not row:
+                        return
+                    row.upload_message = f"Fetch Loop {cycle}/{max_cycles}: Auto-next page {pages_advanced + 1}/{max_auto_pages}..."
+                    await _save_fetch_state(
+                        row,
+                        fetch_state="fetching",
+                        fetch_message=f"Loop {cycle}: auto-next page {pages_advanced + 1}/{max_auto_pages}",
+                        append_logs=f"Loop {cycle}: auto-next page {pages_advanced + 1}/{max_auto_pages}",
+                        update_seen_keys=seen_candidate_keys,
+                    )
+                    next_resp = await ff.file_fetcher_page_next_all(request=request, payload={"direction": "next"})
+                    next_status, next_data = _response_payload(next_resp)
+                    logs.extend(list(next_data.get("logs") or []))
+                    if next_status >= 400 or not bool(next_data.get("ok")):
+                        break
+                    pages_advanced += 1
+                    items = list(next_data.get("items") or items)
+                    pick = _mass_fetch_pick_candidates(row, items, excluded_candidate_keys=seen_candidate_keys)
+                    now_found = int(pick.get("required_found") or 0)
+                    now_selected = len(list(pick.get("selected_ids") or []))
+                    if now_found <= previous_found and now_selected <= previous_selected:
+                        stagnation += 1
+                    else:
+                        stagnation = 0
+                    previous_found = now_found
+                    previous_selected = now_selected
+                    if stagnation >= 3:
+                        break
+
+                selected_ids = [str(x).strip() for x in (pick.get("selected_ids") or []) if str(x).strip()]
+                selected_keys = [str(x).strip() for x in (pick.get("selected_keys") or []) if str(x).strip()]
+                if not selected_ids:
+                    no_progress_loops += 1
+                    await _save_fetch_state(
+                        row,
+                        fetch_state="fetching",
+                        fetch_message=(
+                            f"Loop {cycle}: no new eligible files. Required "
+                            f"{int(pick.get('required_found') or 0)}/{int(pick.get('required_total') or 0)}."
+                        ),
+                        append_logs=(
+                            f"Loop {cycle}: no new eligible files "
+                            f"(required {int(pick.get('required_found') or 0)}/{int(pick.get('required_total') or 0)})."
+                        ),
+                        update_seen_keys=seen_candidate_keys,
+                    )
+                    if no_progress_loops >= 5:
+                        await _save_fetch_state(
+                            row,
+                            fetch_state="done",
+                            fetch_message=(
+                                "Auto-fetch stopped: no new suitable files found for multiple rounds. "
+                                "You can stop or run fetch again later."
+                            ),
+                            append_logs=f"Stopped after {no_progress_loops} no-progress loops.",
+                            update_seen_keys=seen_candidate_keys,
+                            force_snapshot=True,
+                        )
+                        return
+                    await asyncio.sleep(1.0)
+                    continue
+
+                no_progress_loops = 0
+                total_selected += len(selected_ids)
+                row.upload_message = f"Fetch Loop {cycle}/{max_cycles}: fetching {len(selected_ids)} file(s)..."
+                await _save_fetch_state(
+                    row,
+                    fetch_state="fetching",
+                    fetch_message=f"Loop {cycle}: fetching {len(selected_ids)} file(s)...",
+                    append_logs=(
+                        f"Loop {cycle}: fetching {len(selected_ids)} selected file(s)"
+                        + (f" after {pages_advanced} page(s)" if pages_advanced else "")
+                    ),
+                    update_seen_keys=seen_candidate_keys,
+                )
+
+                fetch_resp = await ff.file_fetcher_fetch(request=request, payload={"ids": selected_ids})
+                fetch_status, fetch_data = _response_payload(fetch_resp)
+                fetch_ok = bool(fetch_status < 400 and bool(fetch_data.get("ok")))
+                fetch_logs = list(fetch_data.get("logs") or [])
+                logs.extend(fetch_logs)
+                seen_candidate_keys.update(selected_keys)
+                if not fetch_ok:
+                    msg = str(fetch_data.get("error") or "Failed to fetch selected files.")
+                    await _save_fetch_state(
+                        row,
+                        fetch_state="fetching",
+                        fetch_message=f"Loop {cycle}: {msg}",
+                        append_logs=[f"Loop {cycle}: {msg}", *fetch_logs[-30:]],
+                        update_seen_keys=seen_candidate_keys,
+                    )
+                    await asyncio.sleep(1.0)
+                    continue
+
+                total_forwarded += int(fetch_data.get("forwarded_count") or 0)
+                row = await MassContentState.get(item_id)
+                if not row:
+                    return
+                row.panel = "processing"
+                row.file_status = "pending"
+                row.upload_state = "idle"
+                row.upload_message = "Fetch: files received. Re-scanning content matches..."
+                await _save_fetch_state(
+                    row,
+                    fetch_state="fetching",
+                    fetch_message=(
+                        f"Loop {cycle}: fetched {len(selected_ids)} file(s), "
+                        "re-scanning for accurate season/episode/quality matches..."
+                    ),
+                    append_logs=[f"Loop {cycle}: fetched {len(selected_ids)} file(s).", *fetch_logs[-25:]],
+                    update_seen_keys=seen_candidate_keys,
+                )
+
+                _STORAGE_POOL_CACHE["rows"] = []
+                _STORAGE_POOL_CACHE["expires_at"] = datetime.min
+                _BOT_CAPTION_NAME_CACHE.clear()
+
+                row = await MassContentState.get(item_id)
+                if not row:
+                    return
+                await _recompute_mass_item_files_fast(row, base_found_rows=list(row.matched_files or []))
+
+                row = await MassContentState.get(item_id)
+                if not row:
+                    return
+                if bool(row.upload_ready) and _panel_key_for_row(row) == "complete":
+                    await _save_fetch_state(
+                        row,
+                        fetch_state="done",
+                        fetch_message=(
+                            f"Auto-fetch complete. Selected {total_selected} candidates and forwarded "
+                            f"{total_forwarded} file message(s)."
+                        ),
+                        append_logs="All mandatory qualities are matched. Fetch completed.",
+                        update_seen_keys=seen_candidate_keys,
+                        force_snapshot=True,
+                    )
+                    return
+
+                await _save_fetch_state(
+                    row,
+                    fetch_state="fetching",
+                    fetch_message=(
+                        f"Loop {cycle}: still missing files. Continuing auto-fetch..."
+                    ),
+                    append_logs=(
+                        f"Loop {cycle}: content still incomplete. "
+                        f"Missing {len(list(getattr(row, 'missing_items', []) or []))} rows."
+                    ),
+                    update_seen_keys=seen_candidate_keys,
+                )
+
+            row = await MassContentState.get(item_id)
+            if row:
+                await _save_fetch_state(
+                    row,
+                    fetch_state="done",
+                    fetch_message=(
+                        f"Auto-fetch stopped after {max_cycles} loops. "
+                        "Content is still incomplete."
+                    ),
+                    append_logs=f"Reached loop limit ({max_cycles}).",
+                    update_seen_keys=seen_candidate_keys,
+                    force_snapshot=True,
+                )
+        except asyncio.CancelledError:
+            row = await MassContentState.get(item_id)
+            if row:
+                await _save_fetch_state(
+                    row,
+                    fetch_state="stopped",
+                    fetch_message="Fetch stopped by admin.",
+                    append_logs="Fetch worker cancelled by admin.",
+                    update_seen_keys=seen_candidate_keys,
+                    force_snapshot=True,
+                )
+            raise
+        except Exception as exc:
+            row = await MassContentState.get(item_id)
+            if row:
+                await _save_fetch_state(
+                    row,
+                    fetch_state="failed",
+                    fetch_message=str(exc),
+                    append_logs=f"Fetch worker error: {exc}",
+                    last_error=str(exc),
+                    update_seen_keys=seen_candidate_keys,
+                    force_snapshot=True,
+                )
+
+
+def _queue_fetch_files_worker(
+    request: Request,
+    item_id: str,
+    *,
+    auto_next_on: bool,
+    max_auto_pages: int,
+) -> bool:
+    task = _MASS_FETCH_TASKS.get(item_id)
+    if task and not task.done():
+        return False
+
+    async def _runner() -> None:
+        try:
+            await _run_fetch_files_worker(
+                request=request,
+                item_id=item_id,
+                auto_next_on=auto_next_on,
+                max_auto_pages=max_auto_pages,
+            )
+        finally:
+            _MASS_FETCH_TASKS.pop(item_id, None)
+            _MASS_FETCH_STOP_FLAGS.discard(item_id)
+
+    _MASS_FETCH_TASKS[item_id] = asyncio.create_task(_runner())
+    return True
 
 
 @router.post("/advance-mass-content-adder/fetch-files/{item_id}")
@@ -3258,9 +3811,8 @@ async def advance_mass_content_adder_fetch_files(
     if row.tmdb_status != "found":
         return JSONResponse({"ok": False, "error": "TMDB data is missing for this item."}, status_code=400)
 
-    # Lazy import to avoid startup coupling.
+    # Validate settings before queuing.
     from app.routes import file_fetcher as ff
-
     cfg = await ff._ensure_settings()
     source_chat = ff._norm_chat_ref(cfg.source_chat_id)
     if source_chat is None:
@@ -3269,144 +3821,89 @@ async def advance_mass_content_adder_fetch_files(
             status_code=400,
         )
 
-    source_bots_text = "\n".join([str(x or "").strip() for x in (cfg.source_bots or []) if str(x or "").strip()])
-    query = " ".join(str(getattr(row, "title", "") or "").split()).strip()
-    if not query:
-        return JSONResponse({"ok": False, "error": "Invalid content title for fetch search."}, status_code=400)
+    auto_next_on = _as_bool(auto_next, default=True)
+    max_auto_pages = _fetch_max_pages(max_pages)
+    if not str(max_pages or "").strip():
+        max_auto_pages = _MASS_FETCH_AUTO_NEXT_MAX_PAGES
 
-    row.panel = "processing"
-    row.file_status = "pending"
-    row.upload_state = "idle"
-    row.upload_message = "Fetch Step 1/4: Searching source bots..."
-    row.last_error = None
-    row.updated_at = datetime.now()
-    await row.save()
-    await _mass_broadcast_snapshot()
-
-    search_resp = await ff.file_fetcher_search(
-        request=request,
-        query=query,
-        source_chat_id=str(cfg.source_chat_id or ""),
-        source_bots_text=source_bots_text,
-    )
-    search_status, search_data = _response_payload(search_resp)
-    search_ok = bool(search_status < 400 and bool(search_data.get("ok")))
-    if not search_ok:
-        msg = str(search_data.get("error") or "File search failed.")
-        row.upload_message = msg
-        row.last_error = msg
-        row.updated_at = datetime.now()
-        await row.save()
-        await _mass_broadcast_snapshot()
-        return JSONResponse({"ok": False, "error": msg, "logs": search_data.get("logs") or []}, status_code=400)
-
-    items = list(search_data.get("items") or [])
-    logs: list[str] = list(search_data.get("logs") or [])
-    pick = _mass_fetch_pick_candidates(row, items)
-    pages_advanced = 0
-    auto_next_on = str(auto_next or "").strip().lower() in {"1", "true", "yes", "on"}
-    max_auto_pages = _MASS_FETCH_AUTO_NEXT_MAX_PAGES
-    try:
-        if str(max_pages or "").strip():
-            max_auto_pages = max(0, min(int(max_pages), 80))
-    except Exception:
-        pass
-
-    stagnation = 0
-    previous_found = int(pick.get("required_found") or 0)
-    previous_selected = len(list(pick.get("selected_ids") or []))
-    while auto_next_on and (not bool(pick.get("satisfied"))) and pages_advanced < max_auto_pages:
-        row.upload_message = f"Fetch Step 2/4: Auto-next page {pages_advanced + 1}/{max_auto_pages}..."
-        row.updated_at = datetime.now()
-        await row.save()
-        await _mass_broadcast_snapshot()
-
-        next_resp = await ff.file_fetcher_page_next_all(request=request, payload={"direction": "next"})
-        next_status, next_data = _response_payload(next_resp)
-        if next_status >= 400 or not bool(next_data.get("ok")):
-            logs.extend(list(next_data.get("logs") or []))
-            break
-        pages_advanced += 1
-        logs.extend(list(next_data.get("logs") or []))
-        items = list(next_data.get("items") or items)
-        pick = _mass_fetch_pick_candidates(row, items)
-        now_found = int(pick.get("required_found") or 0)
-        now_selected = len(list(pick.get("selected_ids") or []))
-        if now_found <= previous_found and now_selected <= previous_selected:
-            stagnation += 1
-        else:
-            stagnation = 0
-        previous_found = now_found
-        previous_selected = now_selected
-        if stagnation >= 3:
-            break
-
-    selected_ids = [str(x).strip() for x in (pick.get("selected_ids") or []) if str(x).strip()]
-    if not selected_ids:
-        msg = "No suitable files found from source bot results."
-        row.upload_message = msg
-        row.last_error = msg
-        row.updated_at = datetime.now()
-        await row.save()
-        await _mass_broadcast_snapshot()
+    if _fetch_running(item_id):
+        await _save_fetch_state(
+            row,
+            fetch_state="fetching",
+            fetch_message="Fetch is already running for this content.",
+            append_logs="Fetch start ignored: worker already running.",
+        )
         return JSONResponse(
-            {
-                "ok": False,
-                "error": msg,
-                "required_total": int(pick.get("required_total") or 0),
-                "required_found": int(pick.get("required_found") or 0),
-                "logs": logs[-160:],
-            },
-            status_code=404,
+            {"ok": True, "queued": False, "already_running": True, "message": "Fetch already running."},
+            status_code=200,
         )
 
-    row.upload_message = f"Fetch Step 3/4: Fetching {len(selected_ids)} selected file(s)..."
-    row.updated_at = datetime.now()
-    await row.save()
-    await _mass_broadcast_snapshot()
-
-    fetch_resp = await ff.file_fetcher_fetch(request=request, payload={"ids": selected_ids})
-    fetch_status, fetch_data = _response_payload(fetch_resp)
-    fetch_ok = bool(fetch_status < 400 and bool(fetch_data.get("ok")))
-    fetch_logs = list(fetch_data.get("logs") or [])
-    logs.extend(fetch_logs)
-    if not fetch_ok:
-        msg = str(fetch_data.get("error") or "Failed to fetch selected files.")
-        row.upload_message = msg
-        row.last_error = msg
-        row.updated_at = datetime.now()
-        await row.save()
-        await _mass_broadcast_snapshot()
-        return JSONResponse({"ok": False, "error": msg, "logs": logs[-160:]}, status_code=400)
-
     row.panel = "processing"
     row.file_status = "pending"
     row.upload_state = "idle"
-    row.upload_message = "Fetch Step 4/4: Files fetched. Re-scanning content matches..."
-    row.last_error = None
-    row.updated_at = datetime.now()
-    await row.save()
-    _STORAGE_POOL_CACHE["rows"] = []
-    _STORAGE_POOL_CACHE["expires_at"] = datetime.min
-    _BOT_CAPTION_NAME_CACHE.clear()
-    _schedule_process(str(row.id), mode="files")
-    await _mass_broadcast_snapshot()
+    row.upload_message = "Auto fetch queued..."
+    await _save_fetch_state(
+        row,
+        fetch_state="queued",
+        fetch_message="Fetch queued. Worker will search and fetch until complete or stopped.",
+        clear_logs=True,
+        append_logs=f"Fetch queued (auto_next={auto_next_on}, max_pages={max_auto_pages}).",
+        last_error="",
+        force_snapshot=True,
+    )
 
-    return {
-        "ok": True,
-        "message": (
-            f"Fetched {len(selected_ids)} candidate file(s)"
-            f"{f' after {pages_advanced} auto-next page(s)' if pages_advanced else ''}. "
-            "Auto re-scan started."
-        ),
-        "selected_count": len(selected_ids),
-        "required_total": int(pick.get("required_total") or 0),
-        "required_found": int(pick.get("required_found") or 0),
-        "auto_next_pages": pages_advanced,
-        "forwarded_count": int(fetch_data.get("forwarded_count") or 0),
-        "joined_channels": list(fetch_data.get("joined_channels") or []),
-        "logs": logs[-160:],
-    }
+    queued = _queue_fetch_files_worker(
+        request=request,
+        item_id=item_id,
+        auto_next_on=auto_next_on,
+        max_auto_pages=max_auto_pages,
+    )
+    if not queued:
+        await _save_fetch_state(
+            row,
+            fetch_state="fetching",
+            fetch_message="Fetch is already running for this content.",
+            append_logs="Fetch start ignored: worker already running.",
+        )
+        return JSONResponse(
+            {"ok": True, "queued": False, "already_running": True, "message": "Fetch already running."},
+            status_code=200,
+        )
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "queued": True,
+            "message": "Auto fetch started. It will keep running until files are matched or you stop it.",
+            "auto_next": auto_next_on,
+            "max_pages": max_auto_pages,
+        },
+        status_code=202,
+    )
+
+
+@router.post("/advance-mass-content-adder/stop-fetch-files/{item_id}")
+async def advance_mass_content_adder_stop_fetch_files(request: Request, item_id: str):
+    user = await get_current_user(request)
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail="Not authorized.")
+    row = await MassContentState.get(item_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    _MASS_FETCH_STOP_FLAGS.add(item_id)
+    task = _MASS_FETCH_TASKS.get(item_id)
+    if task and not task.done():
+        task.cancel()
+
+    await _save_fetch_state(
+        row,
+        fetch_state="stopped",
+        fetch_message="Stopping fetch worker...",
+        append_logs="Stop requested by admin.",
+        force_snapshot=True,
+    )
+    return {"ok": True, "message": "Fetch stop requested."}
 
 
 @router.post("/advance-mass-content-adder/process-skipped/{item_id}")
@@ -3417,6 +3914,10 @@ async def advance_mass_content_adder_process_skipped(request: Request, item_id: 
     row = await MassContentState.get(item_id)
     if not row:
         raise HTTPException(status_code=404, detail="Item not found")
+    _MASS_FETCH_STOP_FLAGS.add(str(row.id))
+    fetch_task = _MASS_FETCH_TASKS.get(str(row.id))
+    if fetch_task and not fetch_task.done():
+        fetch_task.cancel()
 
     row.panel = "processing"
     row.tmdb_status = "pending"
@@ -3426,6 +3927,10 @@ async def advance_mass_content_adder_process_skipped(request: Request, item_id: 
     row.uploaded_at = None
     row.upload_state = "idle"
     row.upload_message = ""
+    row.fetch_state = "idle"
+    row.fetch_message = ""
+    row.fetch_logs = []
+    row.fetched_candidate_keys = []
     row.skip_reason = ""
     row.existing_content = {}
     row.last_error = None
@@ -3759,6 +4264,7 @@ async def advance_mass_content_adder_delete(request: Request, item_id: str):
     row = await MassContentState.get(item_id)
     if not row:
         raise HTTPException(status_code=404, detail="Item not found")
+    await _cancel_worker_tasks_for_ids([str(row.id)])
     await row.delete()
     await _mass_broadcast_snapshot()
     return {"ok": True}
@@ -3774,10 +4280,11 @@ def _effective_mass_panel(row: MassContentState) -> str:
 async def _cancel_worker_tasks_for_ids(item_ids: list[str]) -> dict[str, int]:
     keys = {str(x).strip() for x in (item_ids or []) if str(x).strip()}
     if not keys:
-        return {"process": 0, "upload": 0}
+        return {"process": 0, "upload": 0, "fetch": 0}
 
     proc_tasks: list[asyncio.Task] = []
     upload_tasks: list[asyncio.Task] = []
+    fetch_tasks: list[asyncio.Task] = []
 
     for key in keys:
         task = _MASS_TASKS.get(key)
@@ -3788,6 +4295,11 @@ async def _cancel_worker_tasks_for_ids(item_ids: list[str]) -> dict[str, int]:
         if task and not task.done():
             task.cancel()
             upload_tasks.append(task)
+        task = _MASS_FETCH_TASKS.get(key)
+        if task and not task.done():
+            _MASS_FETCH_STOP_FLAGS.add(key)
+            task.cancel()
+            fetch_tasks.append(task)
 
     if proc_tasks:
         try:
@@ -3799,16 +4311,25 @@ async def _cancel_worker_tasks_for_ids(item_ids: list[str]) -> dict[str, int]:
             await asyncio.wait_for(asyncio.gather(*upload_tasks, return_exceptions=True), timeout=1.5)
         except Exception:
             pass
+    if fetch_tasks:
+        try:
+            await asyncio.wait_for(asyncio.gather(*fetch_tasks, return_exceptions=True), timeout=1.5)
+        except Exception:
+            pass
 
     for key in keys:
         if key in _MASS_TASKS and _MASS_TASKS[key].done():
             _MASS_TASKS.pop(key, None)
         if key in _MASS_UPLOAD_TASKS and _MASS_UPLOAD_TASKS[key].done():
             _MASS_UPLOAD_TASKS.pop(key, None)
+        if key in _MASS_FETCH_TASKS and _MASS_FETCH_TASKS[key].done():
+            _MASS_FETCH_TASKS.pop(key, None)
+        _MASS_FETCH_STOP_FLAGS.discard(key)
         _MASS_LOCKS.pop(key, None)
         _MASS_LOCKS.pop(f"upload:{key}", None)
+        _MASS_LOCKS.pop(f"fetch:{key}", None)
 
-    return {"process": len(proc_tasks), "upload": len(upload_tasks)}
+    return {"process": len(proc_tasks), "upload": len(upload_tasks), "fetch": len(fetch_tasks)}
 
 
 async def _cancel_import_worker(reason: str = "Cleared by admin.") -> bool:
