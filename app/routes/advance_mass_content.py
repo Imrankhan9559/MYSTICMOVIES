@@ -3724,6 +3724,8 @@ async def _run_fetch_files_worker(
                 search_ok = bool(search_status < 400 and bool(search_data.get("ok")))
                 logs: list[str] = list(search_data.get("logs") or [])
                 pagers: list[dict[str, Any]] = list(search_data.get("pagers") or [])
+                search_no_results_hint = bool(search_data.get("no_results_hint"))
+                search_spelling_hint = bool(search_data.get("spelling_hint"))
                 if not search_ok:
                     msg = str(search_data.get("error") or "File search failed.")
                     no_progress_loops += 1
@@ -3812,6 +3814,9 @@ async def _run_fetch_files_worker(
                     no_controls = not bool(pagers)
                     no_progress_loops += 1
                     exhausted_now = bool(pages_exhausted or no_controls)
+                    query_no_gain[query] = int(query_no_gain.get(query, 0)) + 1
+                    if search_no_results_hint or search_spelling_hint:
+                        exhausted_now = True
                     if exhausted_now:
                         query_exhausted.add(query)
                     await _save_fetch_state(
@@ -3824,6 +3829,11 @@ async def _run_fetch_files_worker(
                         append_logs=(
                             f"Loop {cycle}: no new eligible files "
                             f"(required {int(pick.get('required_found') or 0)}/{int(pick.get('required_total') or 0)})."
+                            + (
+                                " Source replied with explicit no-files/no-more-pages."
+                                if (search_no_results_hint or search_spelling_hint)
+                                else ""
+                            )
                         ),
                         update_seen_keys=seen_candidate_keys,
                     )
@@ -3858,6 +3868,29 @@ async def _run_fetch_files_worker(
                             force_snapshot=True,
                         )
                         return
+                    if int(query_no_gain.get(query, 0)) >= 2:
+                        query_exhausted.add(query)
+                        all_queries_exhausted = bool(query_plan) and all(q in query_exhausted for q in query_plan)
+                        await _save_fetch_state(
+                            row,
+                            fetch_state="fetching",
+                            fetch_message=f"Loop {cycle}: no eligible files for \"{query}\". Trying next query...",
+                            append_logs=(
+                                f"Loop {cycle}: marked '{query}' exhausted after "
+                                f"{int(query_no_gain.get(query, 0))} no-eligible rounds."
+                            ),
+                            update_seen_keys=seen_candidate_keys,
+                        )
+                        if all_queries_exhausted:
+                            await _save_fetch_state(
+                                row,
+                                fetch_state="done",
+                                fetch_message="Auto-fetch stopped: all planned queries are exhausted.",
+                                append_logs="Stopped: all planned queries returned no new eligible files.",
+                                update_seen_keys=seen_candidate_keys,
+                                force_snapshot=True,
+                            )
+                            return
                     await asyncio.sleep(1.0)
                     continue
 

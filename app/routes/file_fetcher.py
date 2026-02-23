@@ -603,6 +603,34 @@ def _looks_like_spelling_suggestion(text: str) -> bool:
     return False
 
 
+def _looks_like_no_files_reply(text: str, query: str = "") -> bool:
+    raw = _fold_text_for_match(text)
+    if not raw:
+        return False
+    q = _fold_text_for_match(query)
+    hard_hits = [
+        "sorry no files were found for your request",
+        "no files were found for your request",
+        "no files were found",
+        "no files found",
+        "no more pages available",
+    ]
+    if any(hit in raw for hit in hard_hits):
+        # Prefer query-correlated no-result hints when query is available.
+        if q:
+            if q in raw:
+                return True
+            # If no query text but strong marker exists, still treat as no-result.
+            if ("no files were found for your request" in raw) or ("no more pages available" in raw):
+                return True
+            return False
+        return True
+    # Some bots use softer wording plus spelling instruction.
+    if ("check your spelling" in raw or "search again" in raw) and "request" in raw:
+        return True
+    return False
+
+
 def _clean_title_without_url(raw: str) -> str:
     text = str(raw or "").strip()
     if not text:
@@ -1539,6 +1567,7 @@ async def file_fetcher_search(
         )
 
     spelling_hint = False
+    no_results_hint = False
     if not items:
         try:
             async for msg in client.get_chat_history(source_chat, limit=70):
@@ -1550,6 +1579,9 @@ async def file_fetcher_search(
                 text = str(getattr(msg, "text", "") or getattr(msg, "caption", "") or "")
                 if _looks_like_spelling_suggestion(text):
                     spelling_hint = True
+                if _looks_like_no_files_reply(text, q):
+                    no_results_hint = True
+                if spelling_hint and no_results_hint:
                     break
         except Exception:
             pass
@@ -1563,8 +1595,19 @@ async def file_fetcher_search(
     )
     if spelling_hint and not items:
         logs.append("Bot returned spelling-suggestion reply; no exact files found.")
+    if no_results_hint and not items:
+        logs.append("Bot returned explicit no-files/no-more-pages reply for this query.")
     logs.append(f"Results: {len(items)} file choices | {len(pagers)} page controls")
-    return JSONResponse({"ok": True, "items": items, "pagers": pagers, "logs": logs})
+    return JSONResponse(
+        {
+            "ok": True,
+            "items": items,
+            "pagers": pagers,
+            "logs": logs,
+            "spelling_hint": bool(spelling_hint),
+            "no_results_hint": bool(no_results_hint),
+        }
+    )
 
 
 @router.post("/file-fetcher/page")
