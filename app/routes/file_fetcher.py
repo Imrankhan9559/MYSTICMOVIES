@@ -1888,7 +1888,16 @@ async def file_fetcher_fetch(
     seen_keys: set[str] = set()
     source_chat = cache.get("source_chat")
 
-    # do not send /start to destination bot on each fetch; forward directly
+    # Batch mode:
+    # 1) trigger all selected actions quickly (callbacks, links, starts)
+    # 2) resolve extra /start links once
+    # 3) collect and forward media once for all watched chats
+    start_ts = _now_ts() - 1.5
+    watch_chats: list[int | str] = []
+    if source_chat not in (None, ""):
+        watch_chats.append(source_chat)
+    queued_starts: list[tuple[str, str]] = []
+    clicked_callbacks: list[tuple[int | str, int, dict[str, Any]]] = []
 
     for item in chosen:
         action_type = str(item.get("action_type") or "")
@@ -1897,30 +1906,31 @@ async def file_fetcher_fetch(
         chat_id = item.get("chat_id")
         message_id = int(item.get("message_id") or 0)
         action = item.get("action") if isinstance(item.get("action"), dict) else {}
-        logs.append(f"Fetching: {item.get('title') or 'Untitled'} [{source_bot_label or source_bot}]")
+        logs.append(f"Queueing: {item.get('title') or 'Untitled'} [{source_bot_label or source_bot}]")
 
-        if action_type == "direct_media":
-            forwarded_total += await _forward_message(client, destination_bot, chat_id, message_id, logs)
-            continue
-        if action_type == "text_result":
-            logs.append("This row is a text-only result without direct link/button. Use linked/button rows to fetch.")
-            continue
-
-        start_ts = _now_ts() - 1.5
-        watch_chats: list[int | str] = []
-        if source_chat not in (None, ""):
-            watch_chats.append(source_chat)
         if chat_id not in (None, ""):
             watch_chats.append(chat_id)
         if source_bot and _is_valid_bot_username(source_bot):
             watch_chats.append(source_bot)
 
-        clicked = False
+        if action_type == "direct_media":
+            forwarded_total += await _forward_message(client, destination_bot, chat_id, message_id, logs)
+            continue
+        if action_type == "text_result":
+            logs.append("Skipped text-only row (no direct fetch action).")
+            continue
+
         if action_type == "button_callback":
             clicked = await _click_message_button(client, chat_id, message_id, action, logs)
-        elif action_type in {"button_url", "line_url"}:
+            if clicked:
+                clicked_callbacks.append((chat_id, message_id, action))
+            else:
+                logs.append("Callback click failed for selected row.")
+            continue
+
+        if action_type in {"button_url", "line_url"}:
             if action_type == "button_url":
-                # Prefer real button click first (for bots that rely on callback/url interaction state).
+                # Keep this because some bots only emit media after actual button press.
                 _ = await _click_message_button(client, chat_id, message_id, action, logs)
             raw_url = str(action.get("url") or "").strip()
             parsed = _parse_tme_action(raw_url)
@@ -1928,81 +1938,98 @@ async def file_fetcher_fetch(
             if kind == "join":
                 joined = await _join_channels_and_save(client, cfg, [str(parsed.get("target") or "")], logs)
                 joined_total.extend(joined)
-                clicked = bool(joined)
             elif kind == "bot_start":
                 target = str(parsed.get("target") or "").strip()
                 start_payload = str(parsed.get("start") or "").strip()
                 if target:
-                    try:
-                        if start_payload:
-                            await client.send_message(target, f"/start {start_payload}")
-                            logs.append(f"Sent /start payload to {target}")
-                        else:
-                            await client.send_message(target, "/start")
-                            logs.append(f"Sent /start to {target}")
-                        watch_chats.append(target)
-                        clicked = True
-                    except Exception as e:
-                        logs.append(f"Open link failed for {target}: {e}")
+                    queued_starts.append((target, start_payload))
+                    watch_chats.append(target)
             elif kind == "post":
                 target = parsed.get("target")
                 post_message_id = int(parsed.get("message_id") or 0)
                 if target and post_message_id:
                     forwarded_total += await _forward_message(client, destination_bot, target, post_message_id, logs)
-                    clicked = True
+            else:
+                logs.append("URL action is not fetchable for this row.")
+            continue
 
-        if not clicked:
-            logs.append("Action not clickable for this row.")
+        logs.append("Unsupported action type for selected row.")
 
-        started_targets, joined_from_links = await _resolve_start_actions_from_recent(
+    dedup_starts: list[tuple[str, str]] = []
+    seen_start: set[str] = set()
+    for target, start_payload in queued_starts:
+        key = f"{target}|{start_payload}"
+        if key in seen_start:
+            continue
+        seen_start.add(key)
+        dedup_starts.append((target, start_payload))
+
+    if dedup_starts:
+        logs.append(f"Batch sending /start for {len(dedup_starts)} selected link(s)...")
+    for idx, (target, start_payload) in enumerate(dedup_starts):
+        try:
+            if start_payload:
+                await client.send_message(target, f"/start {start_payload}")
+                logs.append(f"Sent /start payload to {target}")
+            else:
+                await client.send_message(target, "/start")
+                logs.append(f"Sent /start to {target}")
+            # light throttle to reduce flood risk on many selected rows
+            if idx and (idx % 8 == 0):
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            logs.append(f"/start send failed for {target}: {e}")
+
+    started_targets, joined_from_links = await _resolve_start_actions_from_recent(
+        client,
+        chats=_dedupe_chat_refs(watch_chats),
+        since_ts=start_ts,
+        cfg=cfg,
+        logs=logs,
+    )
+    for t in started_targets:
+        watch_chats.append(t)
+    joined_total.extend(joined_from_links)
+
+    forwarded_now, joined_now = await _collect_new_media_and_force_sub(
+        client=client,
+        destination_bot=destination_bot,
+        watch_chats=_dedupe_chat_refs(watch_chats),
+        since_ts=start_ts,
+        cfg=cfg,
+        logs=logs,
+        seen_keys=seen_keys,
+    )
+    forwarded_total += int(forwarded_now or 0)
+    joined_total.extend(joined_now)
+
+    # If force-sub happened and callbacks were clicked, retry callbacks once in batch.
+    if int(forwarded_now or 0) == 0 and joined_now and clicked_callbacks:
+        logs.append("Retrying callback actions after join (batch retry)...")
+        retry_ts = _now_ts() - 1.0
+        for chat_id, message_id, action in clicked_callbacks:
+            _ = await _click_message_button(client, chat_id, message_id, action, logs)
+        retry_started, retry_joined_from_links = await _resolve_start_actions_from_recent(
             client,
-            chats=watch_chats,
-            since_ts=start_ts,
+            chats=_dedupe_chat_refs(watch_chats),
+            since_ts=retry_ts,
             cfg=cfg,
             logs=logs,
         )
-        for t in started_targets:
+        for t in retry_started:
             watch_chats.append(t)
-        joined_total.extend(joined_from_links)
-
-        forwarded_now, joined_now = await _collect_new_media_and_force_sub(
+        joined_total.extend(retry_joined_from_links)
+        retry_forwarded, retry_joined = await _collect_new_media_and_force_sub(
             client=client,
             destination_bot=destination_bot,
             watch_chats=_dedupe_chat_refs(watch_chats),
-            since_ts=start_ts,
+            since_ts=retry_ts,
             cfg=cfg,
             logs=logs,
             seen_keys=seen_keys,
         )
-        forwarded_total += int(forwarded_now or 0)
-        joined_total.extend(joined_now)
-
-        if int(forwarded_now or 0) == 0 and joined_now and action_type == "button_callback":
-            logs.append("Retrying after join...")
-            retry_ts = _now_ts() - 1.0
-            retry_click = await _click_message_button(client, chat_id, message_id, action, logs)
-            if retry_click:
-                retry_started, retry_joined_from_links = await _resolve_start_actions_from_recent(
-                    client,
-                    chats=watch_chats,
-                    since_ts=retry_ts,
-                    cfg=cfg,
-                    logs=logs,
-                )
-                for t in retry_started:
-                    watch_chats.append(t)
-                joined_total.extend(retry_joined_from_links)
-                retry_forwarded, retry_joined = await _collect_new_media_and_force_sub(
-                    client=client,
-                    destination_bot=destination_bot,
-                    watch_chats=_dedupe_chat_refs(watch_chats),
-                    since_ts=retry_ts,
-                    cfg=cfg,
-                    logs=logs,
-                    seen_keys=seen_keys,
-                )
-                forwarded_total += int(retry_forwarded or 0)
-                joined_total.extend(retry_joined)
+        forwarded_total += int(retry_forwarded or 0)
+        joined_total.extend(retry_joined)
 
     joined_total = _dedupe_keep_order(joined_total)
     return JSONResponse(

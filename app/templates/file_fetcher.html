@@ -153,6 +153,53 @@ function actionLabel(actionType) {
     return t || "-";
 }
 
+function pagerFold(text) {
+    const raw = String(text || "").trim().toLowerCase();
+    if (!raw) return "";
+    return raw
+        .normalize("NFKD")
+        .replace(/[^\x00-\x7F]/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function pagerIsNext(label) {
+    const f = pagerFold(label);
+    if (!f) return false;
+    return /\bnext\b/.test(f) || f === ">" || f === ">>" || />$/.test(f);
+}
+
+function pagerIsPrev(label) {
+    const f = pagerFold(label);
+    if (!f) return false;
+    return /\b(prev|previous|back)\b/.test(f) || f === "<" || f === "<<" || /^</.test(f);
+}
+
+function pagerIsPageFraction(label) {
+    return /^(\d+)\s*\/\s*(\d+)$/.test(pagerFold(label));
+}
+
+function pagerParseFraction(label) {
+    const m = pagerFold(label).match(/^(\d+)\s*\/\s*(\d+)$/);
+    if (!m) return null;
+    const page = Number(m[1] || 0);
+    const total = Number(m[2] || 0);
+    if (!page || !total) return null;
+    return { page, total };
+}
+
+function pagerIsNoisy(label) {
+    const f = pagerFold(label);
+    if (!f) return true;
+    return /(quality|language|season|remove ads|send all|filters?)\b/.test(f);
+}
+
+function pagerCol(pg) {
+    const action = (pg && typeof pg.action === "object" && pg.action) ? pg.action : {};
+    const col = Number(action.col);
+    return Number.isFinite(col) ? col : -1;
+}
+
 function renderResults() {
     if (!Array.isArray(currentResults) || !currentResults.length) {
         resultsBody.innerHTML = `<tr><td colspan="5" class="text-muted text-center p-3">No results found.</td></tr>`;
@@ -174,12 +221,72 @@ function renderPagers() {
         pagersWrap.innerHTML = `<span class="text-muted">No page controls available.</span>`;
         return;
     }
-    pagersWrap.innerHTML = currentPagers.map(pg => `
-        <button type="button" class="btn btn-sm btn-outline-info ff-pager-btn" data-pager-id="${esc(pg.id || "")}">
-            ${esc(pg.source_bot || "bot")} : ${esc(pg.button_text || "Next")}
-        </button>
-    `).join("");
-    document.querySelectorAll(".ff-pager-btn").forEach((btn) => {
+
+    const byBot = {};
+    currentPagers.forEach((pg) => {
+        const bot = String(pg.source_bot || "bot").trim() || "bot";
+        if (!byBot[bot]) byBot[bot] = [];
+        byBot[bot].push(pg);
+    });
+
+    const cards = Object.keys(byBot).map((bot) => {
+        const rows = byBot[bot] || [];
+        let latestMsgId = -1;
+        rows.forEach((r) => {
+            const id = Number(r && r.message_id);
+            if (Number.isFinite(id) && id > latestMsgId) latestMsgId = id;
+        });
+        const latestRows = rows.filter((r) => Number(r && r.message_id) === latestMsgId);
+        const workRows = latestRows.length ? latestRows : rows;
+
+        let pageInfo = null;
+        workRows.forEach((r) => {
+            if (pageInfo) return;
+            pageInfo = pagerParseFraction(r.button_text || "");
+        });
+
+        let nextPg = workRows.find((r) => pagerIsNext(r.button_text || ""));
+        let prevPg = workRows.find((r) => pagerIsPrev(r.button_text || ""));
+
+        if (!nextPg || !prevPg) {
+            const fractionExists = workRows.some((r) => pagerIsPageFraction(r.button_text || ""));
+            if (fractionExists) {
+                const candidates = workRows
+                    .filter((r) => {
+                        const t = String(r.button_text || "");
+                        if (pagerIsPageFraction(t)) return false;
+                        if (pagerIsNoisy(t)) return false;
+                        return true;
+                    })
+                    .sort((a, b) => pagerCol(a) - pagerCol(b));
+                if (candidates.length) {
+                    if (!prevPg) prevPg = candidates[0];
+                    if (!nextPg) nextPg = candidates[candidates.length - 1];
+                }
+            }
+        }
+
+        const pageLabel = pageInfo ? `Page ${pageInfo.page}/${pageInfo.total}` : "Page ?";
+        const prevDisabled = (!prevPg) || (pageInfo && pageInfo.page <= 1);
+        const nextDisabled = (!nextPg) || (pageInfo && pageInfo.page >= pageInfo.total);
+
+        return `
+            <div class="border rounded p-2" style="min-width:300px; border-color: rgba(0,188,212,.45)!important;">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-info font-weight-bold">${esc(bot)}</span>
+                    <span class="badge badge-secondary">${esc(pageLabel)}</span>
+                </div>
+                <div class="d-flex" style="gap:8px;">
+                    <button type="button" class="btn btn-xs btn-outline-info ff-pager-nav" data-direction="prev" data-pager-id="${esc(prevPg && prevPg.id ? prevPg.id : "")}" ${prevDisabled ? "disabled" : ""}>Previous</button>
+                    <button type="button" class="btn btn-xs btn-outline-warning ff-pager-nav" data-direction="next" data-pager-id="${esc(nextPg && nextPg.id ? nextPg.id : "")}" ${nextDisabled ? "disabled" : ""}>Next</button>
+                </div>
+            </div>
+        `;
+    });
+
+    pagersWrap.innerHTML = cards.join("");
+
+    document.querySelectorAll(".ff-pager-nav").forEach((btn) => {
         btn.addEventListener("click", async () => {
             const pagerId = String(btn.getAttribute("data-pager-id") || "").trim();
             if (!pagerId) return;
@@ -188,7 +295,7 @@ function renderPagers() {
             const out = await postJson("/file-fetcher/page", { pager_id: pagerId });
             btn.disabled = false;
             if (!out.ok || !out.data.ok) {
-                replaceLog([out.data.error || `Next page failed (HTTP ${out.status})`]);
+                replaceLog([out.data.error || `Page change failed (HTTP ${out.status})`]);
                 renderPagers();
                 return;
             }
