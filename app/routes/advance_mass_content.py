@@ -739,8 +739,20 @@ def _content_release_year(state: MassContentState) -> int | None:
     return _extract_primary_year(str(getattr(state, "year", "") or ""))
 
 
+def _clean_fetch_query_title(raw_title: str) -> str:
+    text = " ".join(str(raw_title or "").split()).strip()
+    if not text:
+        return ""
+    # Remove placeholder artifacts that sometimes leak from imports/manual edits.
+    text = re.sub(r"\((?:none|null|nil|na|n/?a)\)", " ", text, flags=re.I)
+    text = re.sub(r"\b(?:for|with|season|episode|ep)\s+(?:none|null|nil|na|n/?a)\b", " ", text, flags=re.I)
+    text = re.sub(r"\b(?:none|null|nil|na|n/?a)\b", " ", text, flags=re.I)
+    text = re.sub(r"\s{2,}", " ", text).strip(" -_:,")
+    return " ".join(text.split()).strip()
+
+
 def _fetch_query_for_state(state: MassContentState) -> str:
-    title = " ".join(str(getattr(state, "title", "") or "").split()).strip()
+    title = _clean_fetch_query_title(str(getattr(state, "title", "") or ""))
     if not title:
         return ""
     is_series = str(getattr(state, "content_type", "") or "").strip().lower() == "series"
@@ -748,6 +760,161 @@ def _fetch_query_for_state(state: MassContentState) -> str:
     if (not is_series) and year and not re.search(rf"(?<!\d){int(year)}(?!\d)", title):
         return f"{title} {int(year)}"
     return title
+
+
+def _quality_query_token(quality: str) -> str:
+    q = _normalize_quality_label(quality or "").upper()
+    mapping = {
+        "4K": "2160p",
+        "2K": "1440p",
+        "1080P": "1080p",
+        "720P": "720p",
+        "480P": "480p",
+        "360P": "360p",
+    }
+    return mapping.get(q, q.lower() if q else "")
+
+
+def _series_missing_map_for_fetch(state: MassContentState) -> dict[tuple[int, str], list[int]]:
+    mandatory = ("1080P", "720P", "480P")
+    expected_by_season: dict[int, set[int]] = {}
+    found_by_quality: dict[tuple[int, str], set[int]] = {}
+    missing_by_quality: dict[tuple[int, str], set[int]] = {}
+
+    for season_no, episode_no in _series_expected_pairs_for_fetch(state):
+        expected_by_season.setdefault(int(season_no), set()).add(int(episode_no))
+
+    for row in list(getattr(state, "matched_files", []) or []):
+        season_no = _int_or_none(row.get("season"))
+        episode_no = _int_or_none(row.get("episode"))
+        quality = _normalize_quality_label(row.get("quality") or _DEFAULT_QUALITY).upper()
+        if not season_no or not episode_no or quality not in mandatory:
+            continue
+        expected_by_season.setdefault(int(season_no), set()).add(int(episode_no))
+        found_by_quality.setdefault((int(season_no), quality), set()).add(int(episode_no))
+
+    for row in list(getattr(state, "missing_items", []) or []):
+        season_no = _int_or_none(row.get("season"))
+        episode_no = _int_or_none(row.get("episode"))
+        quality = _normalize_quality_label(row.get("quality") or _DEFAULT_QUALITY).upper()
+        if not season_no or quality not in mandatory:
+            continue
+        key = (int(season_no), quality)
+        missing_by_quality.setdefault(key, set())
+        if episode_no:
+            expected_by_season.setdefault(int(season_no), set()).add(int(episode_no))
+            missing_by_quality[key].add(int(episode_no))
+        else:
+            expected_by_season.setdefault(int(season_no), set())
+
+    for season_no, episodes in expected_by_season.items():
+        if not episodes:
+            continue
+        expected_eps = {int(x) for x in episodes if int(x) > 0}
+        if not expected_eps:
+            continue
+        for quality in mandatory:
+            key = (int(season_no), quality)
+            found_eps = {int(x) for x in (found_by_quality.get(key) or set()) if int(x) > 0}
+            inferred_missing = expected_eps - found_eps
+            if inferred_missing:
+                missing_by_quality.setdefault(key, set()).update(inferred_missing)
+
+    out: dict[tuple[int, str], list[int]] = {}
+    for key, values in missing_by_quality.items():
+        clean_eps = sorted({int(x) for x in (values or set()) if int(x) > 0})
+        if clean_eps:
+            out[key] = clean_eps
+    return out
+
+
+def _movie_missing_qualities_for_fetch(state: MassContentState) -> list[str]:
+    mandatory = ("1080P", "720P", "480P")
+    missing: set[str] = set()
+    for row in list(getattr(state, "missing_items", []) or []):
+        quality = _normalize_quality_label(row.get("quality") or "").upper()
+        if quality in mandatory:
+            missing.add(quality)
+    if not missing:
+        found = {
+            _normalize_quality_label(row.get("quality") or _DEFAULT_QUALITY).upper()
+            for row in list(getattr(state, "matched_files", []) or [])
+        }
+        missing = {q for q in mandatory if q not in found}
+    if not missing and not bool(getattr(state, "upload_ready", False)):
+        missing = set(mandatory)
+    return [q for q in mandatory if q in missing]
+
+
+def _build_fetch_query_plan(state: MassContentState) -> list[str]:
+    base = _fetch_query_for_state(state)
+    if not base:
+        return []
+
+    queries: list[str] = []
+    content_type = str(getattr(state, "content_type", "") or "").strip().lower()
+    if content_type == "series":
+        missing_map = _series_missing_map_for_fetch(state)
+        season_order = sorted({season for season, _quality in missing_map.keys()})
+        for season_no in season_order:
+            for quality in ("1080P", "720P", "480P"):
+                missing_eps = list(missing_map.get((int(season_no), quality)) or [])
+                if not missing_eps:
+                    continue
+                token = _quality_query_token(quality)
+                if token:
+                    queries.append(f"{base} S{int(season_no):02d} {token}")
+                    queries.append(f"{base} Season {int(season_no)} {token}")
+        for season_no in season_order:
+            for quality in ("1080P", "720P", "480P"):
+                missing_eps = list(missing_map.get((int(season_no), quality)) or [])
+                if not missing_eps:
+                    continue
+                token = _quality_query_token(quality)
+                if not token:
+                    continue
+                for episode_no in missing_eps:
+                    queries.append(f"{base} S{int(season_no):02d}E{int(episode_no):02d} {token}")
+                    queries.append(f"{base} Season {int(season_no)} Episode {int(episode_no)} {token}")
+        if not queries:
+            queries.append(base)
+    else:
+        for quality in _movie_missing_qualities_for_fetch(state):
+            token = _quality_query_token(quality)
+            if token:
+                queries.append(f"{base} {token}")
+        queries.append(base)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for q in queries:
+        clean = " ".join(str(q or "").split()).strip()
+        if not clean:
+            continue
+        key = clean.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(clean)
+    return deduped
+
+
+def _pick_fetch_query(
+    query_plan: list[str],
+    query_attempts: dict[str, int],
+    exhausted_queries: set[str] | None = None,
+) -> str:
+    if not query_plan:
+        return ""
+    exhausted = {str(x or "").strip() for x in (exhausted_queries or set()) if str(x or "").strip()}
+    candidates = [q for q in query_plan if q not in exhausted]
+    if not candidates:
+        candidates = list(query_plan)
+    min_count = min([int(query_attempts.get(q, 0)) for q in candidates] or [0])
+    for q in candidates:
+        if int(query_attempts.get(q, 0)) == min_count:
+            return q
+    return candidates[0]
 
 
 def _is_video_row(item: FileSystemItem) -> bool:
@@ -2076,6 +2243,10 @@ def _fetch_candidate_key(item: dict[str, Any]) -> str:
     action_type = str(item.get("action_type") or "").strip().lower()
     url = str(action.get("url") or "").strip().lower()
     callback = str(action.get("callback_data") or "").strip()
+    # Primary semantic signature to avoid fetching the same file repeatedly across
+    # different deep-links/callback wrappers.
+    if title and size_bytes > 0:
+        return f"sig:{source}:{size_bytes}:{title[:140]}"
     if url:
         return f"url:{url}"
     if callback:
@@ -3450,6 +3621,9 @@ async def _run_fetch_files_worker(
         no_progress_loops = 0
         total_selected = 0
         total_forwarded = 0
+        query_attempts: dict[str, int] = {}
+        query_exhausted: set[str] = set()
+        query_no_gain: dict[str, int] = {}
 
         try:
             cfg = await ff._ensure_settings()
@@ -3509,7 +3683,8 @@ async def _run_fetch_files_worker(
                     return
 
                 cycle += 1
-                query = _fetch_query_for_state(row)
+                query_plan = _build_fetch_query_plan(row)
+                query = _pick_fetch_query(query_plan, query_attempts, query_exhausted)
                 if not query:
                     await _save_fetch_state(
                         row,
@@ -3521,6 +3696,8 @@ async def _run_fetch_files_worker(
                         force_snapshot=True,
                     )
                     return
+                query_attempts[query] = int(query_attempts.get(query, 0)) + 1
+                no_progress_limit = max(5, min(18, (len(query_plan) * 2) if query_plan else 5))
 
                 row.panel = "processing"
                 row.file_status = "pending"
@@ -3529,7 +3706,10 @@ async def _run_fetch_files_worker(
                 await _save_fetch_state(
                     row,
                     fetch_state="fetching",
-                    fetch_message=f"Loop {cycle}: searching source bots for \"{query}\"...",
+                    fetch_message=(
+                        f"Loop {cycle}: searching source bots for \"{query}\" "
+                        f"(query {query_attempts[query]}/{max(1, len(query_plan))})..."
+                    ),
                     append_logs=f"Loop {cycle}: searching -> {query}",
                     update_seen_keys=seen_candidate_keys,
                 )
@@ -3543,6 +3723,7 @@ async def _run_fetch_files_worker(
                 search_status, search_data = _response_payload(search_resp)
                 search_ok = bool(search_status < 400 and bool(search_data.get("ok")))
                 logs: list[str] = list(search_data.get("logs") or [])
+                pagers: list[dict[str, Any]] = list(search_data.get("pagers") or [])
                 if not search_ok:
                     msg = str(search_data.get("error") or "File search failed.")
                     no_progress_loops += 1
@@ -3570,6 +3751,7 @@ async def _run_fetch_files_worker(
                 items = list(search_data.get("items") or [])
                 pick = _mass_fetch_pick_candidates(row, items, excluded_candidate_keys=seen_candidate_keys)
                 pages_advanced = 0
+                pages_exhausted = False
                 stagnation = 0
                 previous_found = int(pick.get("required_found") or 0)
                 previous_selected = len(list(pick.get("selected_ids") or []))
@@ -3591,9 +3773,27 @@ async def _run_fetch_files_worker(
                     next_status, next_data = _response_payload(next_resp)
                     logs.extend(list(next_data.get("logs") or []))
                     if next_status >= 400 or not bool(next_data.get("ok")):
+                        next_err = str(next_data.get("error") or "")
+                        if any(x in next_err.lower() for x in ["no page controls", "no next pager", "failed to open next page"]):
+                            pages_exhausted = True
+                        if "search cache expired" in next_err.lower():
+                            refresh_resp = await ff.file_fetcher_search(
+                                request=request,
+                                query=query,
+                                source_chat_id=str(cfg.source_chat_id or ""),
+                                source_bots_text=source_bots_text,
+                            )
+                            refresh_status, refresh_data = _response_payload(refresh_resp)
+                            logs.extend(list(refresh_data.get("logs") or []))
+                            if refresh_status < 400 and bool(refresh_data.get("ok")):
+                                items = list(refresh_data.get("items") or items)
+                                pagers = list(refresh_data.get("pagers") or pagers)
+                                pick = _mass_fetch_pick_candidates(row, items, excluded_candidate_keys=seen_candidate_keys)
+                                continue
                         break
                     pages_advanced += 1
                     items = list(next_data.get("items") or items)
+                    pagers = list(next_data.get("pagers") or pagers)
                     pick = _mass_fetch_pick_candidates(row, items, excluded_candidate_keys=seen_candidate_keys)
                     now_found = int(pick.get("required_found") or 0)
                     now_selected = len(list(pick.get("selected_ids") or []))
@@ -3609,7 +3809,11 @@ async def _run_fetch_files_worker(
                 selected_ids = [str(x).strip() for x in (pick.get("selected_ids") or []) if str(x).strip()]
                 selected_keys = [str(x).strip() for x in (pick.get("selected_keys") or []) if str(x).strip()]
                 if not selected_ids:
+                    no_controls = not bool(pagers)
                     no_progress_loops += 1
+                    exhausted_now = bool(pages_exhausted or no_controls)
+                    if exhausted_now:
+                        query_exhausted.add(query)
                     await _save_fetch_state(
                         row,
                         fetch_state="fetching",
@@ -3623,7 +3827,25 @@ async def _run_fetch_files_worker(
                         ),
                         update_seen_keys=seen_candidate_keys,
                     )
-                    if no_progress_loops >= 5:
+                    all_queries_attempted = bool(query_plan) and all(
+                        int(query_attempts.get(q, 0)) >= 1 for q in query_plan
+                    )
+                    all_queries_exhausted = bool(query_plan) and all(q in query_exhausted for q in query_plan)
+                    if all_queries_exhausted or (all_queries_attempted and exhausted_now):
+                        await _save_fetch_state(
+                            row,
+                            fetch_state="done",
+                            fetch_message=(
+                                "Auto-fetch stopped: no more bot pages/files matched required missing rows."
+                            ),
+                            append_logs=(
+                                f"Stopped after query sweep. Exhausted pages/controls for '{query}'."
+                            ),
+                            update_seen_keys=seen_candidate_keys,
+                            force_snapshot=True,
+                        )
+                        return
+                    if no_progress_loops >= no_progress_limit:
                         await _save_fetch_state(
                             row,
                             fetch_state="done",
@@ -3631,7 +3853,7 @@ async def _run_fetch_files_worker(
                                 "Auto-fetch stopped: no new suitable files found for multiple rounds. "
                                 "You can stop or run fetch again later."
                             ),
-                            append_logs=f"Stopped after {no_progress_loops} no-progress loops.",
+                            append_logs=f"Stopped after {no_progress_loops} no-progress loops (limit {no_progress_limit}).",
                             update_seen_keys=seen_candidate_keys,
                             force_snapshot=True,
                         )
@@ -3639,6 +3861,8 @@ async def _run_fetch_files_worker(
                     await asyncio.sleep(1.0)
                     continue
 
+                baseline_missing_count = len(list(getattr(row, "missing_items", []) or []))
+                baseline_matched_count = len(list(getattr(row, "matched_files", []) or []))
                 no_progress_loops = 0
                 total_selected += len(selected_ids)
                 row.upload_message = f"Fetch Loop {cycle}/{max_cycles}: fetching {len(selected_ids)} file(s)..."
@@ -3661,15 +3885,49 @@ async def _run_fetch_files_worker(
                 seen_candidate_keys.update(selected_keys)
                 if not fetch_ok:
                     msg = str(fetch_data.get("error") or "Failed to fetch selected files.")
-                    await _save_fetch_state(
-                        row,
-                        fetch_state="fetching",
-                        fetch_message=f"Loop {cycle}: {msg}",
-                        append_logs=[f"Loop {cycle}: {msg}", *fetch_logs[-30:]],
-                        update_seen_keys=seen_candidate_keys,
-                    )
-                    await asyncio.sleep(1.0)
-                    continue
+                    if "search cache expired" in msg.lower():
+                        refresh_resp = await ff.file_fetcher_search(
+                            request=request,
+                            query=query,
+                            source_chat_id=str(cfg.source_chat_id or ""),
+                            source_bots_text=source_bots_text,
+                        )
+                        refresh_status, refresh_data = _response_payload(refresh_resp)
+                        refresh_logs = list(refresh_data.get("logs") or [])
+                        logs.extend(refresh_logs)
+                        if refresh_status < 400 and bool(refresh_data.get("ok")):
+                            refreshed_items = list(refresh_data.get("items") or [])
+                            refresh_pick = _mass_fetch_pick_candidates(
+                                row, refreshed_items, excluded_candidate_keys=seen_candidate_keys
+                            )
+                            selected_ids = [
+                                str(x).strip()
+                                for x in (refresh_pick.get("selected_ids") or [])
+                                if str(x).strip()
+                            ]
+                            selected_keys = [
+                                str(x).strip()
+                                for x in (refresh_pick.get("selected_keys") or [])
+                                if str(x).strip()
+                            ]
+                            if selected_ids:
+                                fetch_resp = await ff.file_fetcher_fetch(request=request, payload={"ids": selected_ids})
+                                fetch_status, fetch_data = _response_payload(fetch_resp)
+                                fetch_ok = bool(fetch_status < 400 and bool(fetch_data.get("ok")))
+                                fetch_logs = list(fetch_data.get("logs") or [])
+                                logs.extend(fetch_logs)
+                                seen_candidate_keys.update(selected_keys)
+                                msg = str(fetch_data.get("error") or msg)
+                    if not fetch_ok:
+                        await _save_fetch_state(
+                            row,
+                            fetch_state="fetching",
+                            fetch_message=f"Loop {cycle}: {msg}",
+                            append_logs=[f"Loop {cycle}: {msg}", *fetch_logs[-30:]],
+                            update_seen_keys=seen_candidate_keys,
+                        )
+                        await asyncio.sleep(1.0)
+                        continue
 
                 total_forwarded += int(fetch_data.get("forwarded_count") or 0)
                 row = await MassContentState.get(item_id)
@@ -3694,14 +3952,30 @@ async def _run_fetch_files_worker(
                 _STORAGE_POOL_CACHE["expires_at"] = datetime.min
                 _BOT_CAPTION_NAME_CACHE.clear()
 
-                row = await MassContentState.get(item_id)
-                if not row:
-                    return
-                await _recompute_mass_item_files_fast(row, base_found_rows=list(row.matched_files or []))
+                # Forwarding from source-bot to destination-bot can finish in small bursts.
+                # Recompute for a few short rounds so we don't immediately loop/re-fetch
+                # the same quality while files are still landing.
+                settle_rounds = 7
+                current_missing = len(list(getattr(row, "missing_items", []) or []))
+                current_matched = len(list(getattr(row, "matched_files", []) or []))
+                for settle_idx in range(1, settle_rounds + 1):
+                    row = await MassContentState.get(item_id)
+                    if not row:
+                        return
+                    await _recompute_mass_item_files_fast(row, base_found_rows=list(row.matched_files or []))
+                    row = await MassContentState.get(item_id)
+                    if not row:
+                        return
+                    current_missing = len(list(getattr(row, "missing_items", []) or []))
+                    current_matched = len(list(getattr(row, "matched_files", []) or []))
+                    if bool(row.upload_ready) and _panel_key_for_row(row) == "complete":
+                        break
+                    progressed = (current_matched > baseline_matched_count) or (current_missing < baseline_missing_count)
+                    if progressed:
+                        break
+                    if settle_idx < settle_rounds:
+                        await asyncio.sleep(0.9)
 
-                row = await MassContentState.get(item_id)
-                if not row:
-                    return
                 if bool(row.upload_ready) and _panel_key_for_row(row) == "complete":
                     await _save_fetch_state(
                         row,
@@ -3715,6 +3989,43 @@ async def _run_fetch_files_worker(
                         force_snapshot=True,
                     )
                     return
+
+                progressed_after_fetch = (current_matched > baseline_matched_count) or (
+                    current_missing < baseline_missing_count
+                )
+                if progressed_after_fetch:
+                    query_no_gain[query] = 0
+                else:
+                    query_no_gain[query] = int(query_no_gain.get(query, 0)) + 1
+                    if int(query_no_gain.get(query, 0)) >= 2:
+                        query_exhausted.add(query)
+                        await _save_fetch_state(
+                            row,
+                            fetch_state="fetching",
+                            fetch_message=(
+                                f"Loop {cycle}: source appears exhausted for \"{query}\"; switching/finishing."
+                            ),
+                            append_logs=(
+                                f"Loop {cycle}: no matching progress after fetch for '{query}' "
+                                f"(attempt {query_no_gain[query]}). Marked exhausted."
+                            ),
+                            update_seen_keys=seen_candidate_keys,
+                        )
+                        all_queries_exhausted = bool(query_plan) and all(q in query_exhausted for q in query_plan)
+                        if all_queries_exhausted:
+                            await _save_fetch_state(
+                                row,
+                                fetch_state="done",
+                                fetch_message=(
+                                    "Auto-fetch stopped: source appears exhausted for all planned queries."
+                                ),
+                                append_logs=(
+                                    "Stopped after repeated no-progress fetch cycles across all planned queries."
+                                ),
+                                update_seen_keys=seen_candidate_keys,
+                                force_snapshot=True,
+                            )
+                            return
 
                 await _save_fetch_state(
                     row,
@@ -3896,10 +4207,22 @@ async def advance_mass_content_adder_stop_fetch_files(request: Request, item_id:
     if task and not task.done():
         task.cancel()
 
+    # Normalize panel/file state right away so action buttons are usable after stop.
+    try:
+        _STORAGE_POOL_CACHE["rows"] = []
+        _STORAGE_POOL_CACHE["expires_at"] = datetime.min
+        _BOT_CAPTION_NAME_CACHE.clear()
+        await _recompute_mass_item_files_fast(row, base_found_rows=list(row.matched_files or []))
+        refreshed = await MassContentState.get(item_id)
+        if refreshed:
+            row = refreshed
+    except Exception:
+        pass
+
     await _save_fetch_state(
         row,
         fetch_state="stopped",
-        fetch_message="Stopping fetch worker...",
+        fetch_message="Fetch stopped by admin.",
         append_logs="Stop requested by admin.",
         force_snapshot=True,
     )

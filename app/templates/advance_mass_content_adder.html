@@ -1120,6 +1120,7 @@ function actionsHtml(item, panelKey) {
     const uploadState = String(item.upload_state || "idle");
     const fetchState = String(item.fetch_state || "idle").toLowerCase();
     const fetchRunning = fetchState === "queued" || fetchState === "fetching";
+    const matchedCount = Number(item.matched_count || 0);
     const retryTmdb = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-tmdb" data-id="${id}">Retry TMDB</button>`;
     const retryFiles = `<button class="btn btn-xs btn-outline-info mr-1 action-btn" data-action="retry-files" data-id="${id}">Retry Files</button>`;
     const fetchFiles = `<button class="btn btn-xs btn-outline-primary mr-1 action-btn" data-action="fetch-files" data-id="${id}"><i class="fas fa-bolt mr-1"></i>Fetch Files</button>`;
@@ -1131,14 +1132,16 @@ function actionsHtml(item, panelKey) {
     const uploadIncomplete = `<button class="btn btn-xs btn-warning mr-1 action-btn" data-action="upload" data-id="${id}" ${uploadDisabled}>${uploadLabel === "Upload" ? "Upload (Warn)" : uploadLabel}</button>`;
     const processSkipped = `<button class="btn btn-xs btn-outline-success mr-1 action-btn" data-action="process-skipped" data-id="${id}">Add Anyway</button>`;
     const fetchAction = fetchRunning ? stopFetch : fetchFiles;
+    const uploadAction = item && item.upload_ready ? upload : uploadIncomplete;
+    const uploadIfAnyMatch = matchedCount > 0 ? uploadAction : "";
 
-    if (panelKey === "processing") return focus + (fetchRunning ? fetchAction : "") + del;
+    if (panelKey === "processing") return focus + fetchAction + retryFiles + uploadIfAnyMatch + del;
     if (panelKey === "tmdb_not_found") return focus + retryTmdb + del;
     if (panelKey === "file_not_found") return focus + fetchAction + retryFiles + del;
     if (panelKey === "incomplete") return focus + fetchAction + retryFiles + uploadIncomplete + del;
     if (panelKey === "complete") return focus + upload + retryFiles + del;
-    if (panelKey === "uploading") return focus + del;
-    if (panelKey === "uploaded") return focus + del;
+    if (panelKey === "uploading") return focus + stopFetch + retryFiles + del;
+    if (panelKey === "uploaded") return focus + retryFiles + fetchFiles + del;
     if (panelKey === "skipped") return focus + processSkipped + del;
     return focus + del;
 }

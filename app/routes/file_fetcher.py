@@ -717,7 +717,14 @@ def _dedupe_pagers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _user_cache_key(user: User) -> str:
-    return f"user:{(user.phone_number or '').strip()}"
+    phone = str(getattr(user, "phone_number", "") or "").strip()
+    user_id = str(getattr(user, "id", "") or getattr(user, "_id", "") or "").strip()
+    first = str(getattr(user, "first_name", "") or "").strip().lower()
+    if phone:
+        return f"user:phone:{phone}"
+    if user_id:
+        return f"user:id:{user_id}"
+    return f"user:fallback:{first or 'anonymous'}"
 
 
 def _put_cache(
