@@ -15,7 +15,7 @@
         </div>
         {% endif %}
 
-        <form action="/content/request" method="post" class="mt-6 space-y-4">
+        <form id="request_content_form" action="/content/request" method="post" class="mt-6 space-y-4">
             <input type="hidden" name="return_to" value="{{ return_to or '/content' }}">
             <input type="hidden" name="tmdb_id" id="tmdb_id_field" value="">
             <input type="hidden" name="tmdb_media_type" id="tmdb_media_type_field" value="">
@@ -38,7 +38,7 @@
             </div>
             <div>
                 <label class="text-xs text-gray-400">Notes</label>
-                <textarea name="note" rows="4" placeholder="Optional note for admin (language, quality, source)." class="mt-1 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400"></textarea>
+                <textarea id="request_note_field" name="note" rows="4" placeholder="Optional note for admin (language, quality, source)." class="mt-1 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400"></textarea>
             </div>
             <div id="tmdb-selection-pill" class="hidden rounded-xl border border-emerald-700/60 bg-emerald-900/25 px-3 py-2 text-xs text-emerald-200">
                 TMDB selected. Auto processing has been queued for admin review.
@@ -57,31 +57,46 @@
         <div class="mt-4 space-y-3">
             {% for r in requests %}
             <div class="rounded-xl border border-gray-800 bg-black/80 p-3">
-                <div class="flex items-center justify-between gap-2">
-                    <div class="text-sm font-semibold text-white">{{ r.title }}</div>
-                    <span class="text-[10px] uppercase px-2 py-1 rounded-full
-                        {% if r.status == 'fulfilled' %}bg-green-900/60 text-green-300 border border-green-700
-                        {% elif r.status == 'rejected' %}bg-red-900/60 text-red-300 border border-red-700
-                        {% else %}bg-gray-800 text-gray-300 border border-gray-700{% endif %}">
-                        {{ r.status }}
-                    </span>
-                </div>
-                <div class="mt-1 text-xs text-gray-400">
-                    {{ r.request_type|upper }} | {{ r.created_at.strftime('%d %b %Y') if r.created_at else '-' }}
-                </div>
-                {% if r.note %}
-                <div class="mt-2 text-xs text-gray-500">{{ r.note }}</div>
-                {% endif %}
-                {% if r.status == 'fulfilled' and r.view_path %}
-                <div class="mt-3 flex items-center justify-between gap-2">
-                    <div class="text-[11px] text-green-300">
-                        Ready to watch{% if r.fulfilled_content_title %}: {{ r.fulfilled_content_title }}{% endif %}
+                <div class="flex gap-3">
+                    {% if r.view_poster %}
+                    <img src="{{ r.view_poster }}" alt="{{ r.title }}" class="h-24 w-16 rounded-lg object-cover border border-gray-800 bg-gray-900">
+                    {% endif %}
+                    <div class="min-w-0 flex-1">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="text-sm font-semibold text-white">{{ r.title }}</div>
+                            <span class="text-[10px] uppercase px-2 py-1 rounded-full
+                                {% if r.status == 'fulfilled' %}bg-green-900/60 text-green-300 border border-green-700
+                                {% elif r.status == 'rejected' %}bg-red-900/60 text-red-300 border border-red-700
+                                {% else %}bg-gray-800 text-gray-300 border border-gray-700{% endif %}">
+                                {{ r.status }}
+                            </span>
+                        </div>
+                        <div class="mt-1 text-xs text-gray-400">
+                            {{ r.request_type|upper }} | {{ r.created_at.strftime('%d %b %Y') if r.created_at else '-' }}
+                        </div>
+                        {% if r.note %}
+                        <div class="mt-2 text-xs text-gray-500">{{ r.note }}</div>
+                        {% endif %}
+                        {% if r.auto_status %}
+                        <div class="mt-2 text-[11px] text-sky-300">
+                            Auto: {{ r.auto_status | replace('_', ' ') | title }}
+                        </div>
+                        {% if r.auto_error %}
+                        <div class="mt-1 text-[11px] text-amber-300">{{ r.auto_error }}</div>
+                        {% endif %}
+                        {% endif %}
+                        {% if r.status == 'fulfilled' and r.view_path %}
+                        <div class="mt-3 flex items-center justify-between gap-2">
+                            <div class="text-[11px] text-green-300">
+                                Ready to watch{% if r.fulfilled_content_title %}: {{ r.fulfilled_content_title }}{% endif %}
+                            </div>
+                            <a href="{{ r.view_path }}" class="inline-flex items-center rounded-lg border border-green-700 bg-green-900/40 px-3 py-1.5 text-xs font-semibold text-green-200 hover:bg-green-800/60">
+                                <i class="fas fa-eye mr-1"></i>View
+                            </a>
+                        </div>
+                        {% endif %}
                     </div>
-                    <a href="{{ r.view_path }}" class="inline-flex items-center rounded-lg border border-green-700 bg-green-900/40 px-3 py-1.5 text-xs font-semibold text-green-200 hover:bg-green-800/60">
-                        <i class="fas fa-eye mr-1"></i>View
-                    </a>
                 </div>
-                {% endif %}
             </div>
             {% else %}
             <div class="rounded-xl border border-gray-800 bg-black/80 p-4 text-sm text-gray-500">No requests yet.</div>
@@ -89,6 +104,19 @@
         </div>
     </div>
 </section>
+
+<div id="tmdb_note_modal" class="hidden fixed inset-0 z-50 bg-black/75 px-4 py-6">
+    <div class="mx-auto max-w-lg rounded-2xl border border-gray-700 bg-gray-950 p-4 sm:p-5">
+        <div class="text-sm font-semibold text-white">Add optional notes for admin</div>
+        <p class="mt-1 text-xs text-gray-400">You can submit without notes. This helps if you want a specific language or quality.</p>
+        <textarea id="tmdb_note_input" rows="4" class="mt-3 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400" placeholder="Optional note"></textarea>
+        <div class="mt-4 flex flex-wrap justify-end gap-2">
+            <button type="button" id="tmdb_note_cancel_btn" class="rounded-lg border border-gray-700 px-3 py-2 text-xs font-semibold text-gray-300 hover:bg-gray-800">Cancel</button>
+            <button type="button" id="tmdb_note_skip_btn" class="rounded-lg border border-emerald-700 bg-emerald-900/30 px-3 py-2 text-xs font-semibold text-emerald-200 hover:bg-emerald-800/40">Continue Without Note</button>
+            <button type="button" id="tmdb_note_submit_btn" class="rounded-lg bg-yellow-400 px-3 py-2 text-xs font-bold text-black hover:bg-yellow-300">Submit Request</button>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block page_scripts %}
@@ -105,7 +133,15 @@
     const tmdbYearField = document.getElementById("tmdb_year_field");
     const autoModeField = document.getElementById("auto_mode_field");
     const reqTypeField = document.getElementById("request_type_field");
+    const formEl = document.getElementById("request_content_form");
+    const noteField = document.getElementById("request_note_field");
+    const emailField = formEl ? formEl.querySelector("input[name='request_email']") : null;
     const selectedPill = document.getElementById("tmdb-selection-pill");
+    const noteModal = document.getElementById("tmdb_note_modal");
+    const noteInput = document.getElementById("tmdb_note_input");
+    const noteCancelBtn = document.getElementById("tmdb_note_cancel_btn");
+    const noteSkipBtn = document.getElementById("tmdb_note_skip_btn");
+    const noteSubmitBtn = document.getElementById("tmdb_note_submit_btn");
 
     function esc(v) {
         return String(v || "").replace(/[&<>'\"]/g, (ch) => ({
@@ -136,6 +172,35 @@
         reqTypeField.value = (card.type === "series") ? "series" : "movie";
         titleInput.value = String(card.title || "");
         if (selectedPill) selectedPill.classList.remove("hidden");
+    }
+
+    function submitRequestWithNote(noteText) {
+        if (noteField) noteField.value = String(noteText || "").trim();
+        if (noteModal) noteModal.classList.add("hidden");
+        if (formEl) {
+            if (typeof formEl.requestSubmit === "function") {
+                formEl.requestSubmit();
+            } else {
+                formEl.submit();
+            }
+        }
+    }
+
+    function openNoteDialogAndSubmit() {
+        if (!emailField || !String(emailField.value || "").trim()) {
+            statusEl.textContent = "Enter your email first.";
+            if (emailField) emailField.focus();
+            return;
+        }
+        if (noteInput && noteField) {
+            noteInput.value = String(noteField.value || "").trim();
+        }
+        if (noteModal) {
+            noteModal.classList.remove("hidden");
+            if (noteInput) noteInput.focus();
+        } else {
+            submitRequestWithNote(noteField ? noteField.value : "");
+        }
     }
 
     async function runSearch() {
@@ -211,7 +276,9 @@
                         title: el.getAttribute("data-title") || "",
                         year: el.getAttribute("data-year") || "",
                     });
-                    statusEl.textContent = "TMDB card selected. Submit request to auto-process.";
+                    resultsEl.innerHTML = "";
+                    statusEl.textContent = "TMDB card selected. Confirm optional note and request will be submitted now.";
+                    openNoteDialogAndSubmit();
                 });
             });
         } catch (_) {
@@ -220,6 +287,25 @@
     }
 
     btnEl.addEventListener("click", runSearch);
+    if (noteCancelBtn) {
+        noteCancelBtn.addEventListener("click", () => {
+            if (noteModal) noteModal.classList.add("hidden");
+            statusEl.textContent = "Request not submitted. Select card again to continue.";
+        });
+    }
+    if (noteSkipBtn) {
+        noteSkipBtn.addEventListener("click", () => submitRequestWithNote(""));
+    }
+    if (noteSubmitBtn) {
+        noteSubmitBtn.addEventListener("click", () => submitRequestWithNote(noteInput ? noteInput.value : ""));
+    }
+    if (noteModal) {
+        noteModal.addEventListener("click", (e) => {
+            if (e.target === noteModal) {
+                noteModal.classList.add("hidden");
+            }
+        });
+    }
     titleInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
             e.preventDefault();

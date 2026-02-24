@@ -228,8 +228,30 @@
                             <label>Notes</label>
                             <input class="form-control" value="Use Gmail App Password if using Gmail SMTP." readonly />
                         </div>
+                        <div class="form-group col-md-12 mb-0">
+                            {% if mail_test_status == "ok" %}
+                            <div class="alert alert-success py-2 mb-3">
+                                Test email sent successfully{% if mail_test_to %} to <strong>{{ mail_test_to }}</strong>{% endif %}.
+                            </div>
+                            {% elif mail_test_status == "failed" %}
+                            <div class="alert alert-danger py-2 mb-3">
+                                Test email failed{% if mail_test_to %} for <strong>{{ mail_test_to }}</strong>{% endif %}.
+                                {% if mail_test_detail %}<div class="small mt-1">{{ mail_test_detail }}</div>{% endif %}
+                            </div>
+                            {% elif mail_test_status == "invalid" %}
+                            <div class="alert alert-warning py-2 mb-3">
+                                Enter a valid test email address.
+                            </div>
+                            {% endif %}
+                        </div>
                     </div>
                     <button class="btn btn-warning">Save Site Settings</button>
+                </form>
+                <hr class="border-secondary my-3">
+                <form action="/admin/site/test-email" method="post" class="form-inline">
+                    <label class="mr-2 mb-2">Send Test Email</label>
+                    <input name="test_email" type="email" required class="form-control mr-2 mb-2" placeholder="you@example.com" style="min-width:280px;">
+                    <button type="submit" class="btn btn-info mb-2">Send Test</button>
                 </form>
             </div>
         </div>

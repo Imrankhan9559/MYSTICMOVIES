@@ -1388,6 +1388,56 @@ async def _send_site_email_now(
         return False, str(exc)
 
 
+def _queue_request_auto_processing(request_id: str) -> None:
+    req_id = (request_id or "").strip()
+    if not req_id:
+        return
+
+    async def _runner() -> None:
+        row = await ContentRequest.get(req_id)
+        if not row:
+            return
+        tmdb_id_val = int(getattr(row, "tmdb_id", 0) or 0)
+        if tmdb_id_val <= 0:
+            return
+        try:
+            from app.routes import advance_mass_content as amc
+
+            title = str(getattr(row, "tmdb_title", "") or row.title or "").strip()
+            ctype = str(getattr(row, "tmdb_type", "") or row.request_type or "movie").strip().lower()
+            if ctype in {"tv", "webseries"}:
+                ctype = "series"
+            if ctype not in {"movie", "series"}:
+                ctype = "movie"
+            year = str(getattr(row, "tmdb_year", "") or "").strip()
+            source = f"user_request:{(getattr(row, 'user_phone', '') or 'unknown').strip()}"
+
+            mass_row = await amc._upsert_mass_entry(title, ctype, year, source)
+            row = await ContentRequest.get(req_id)
+            if not row:
+                return
+            row.auto_mass_state_id = str(mass_row.id)
+            row.auto_status = "processing"
+            row.auto_error = ""
+            row.updated_at = datetime.now()
+            await row.save()
+            amc._schedule_process(str(mass_row.id), mode="full")
+            asyncio.create_task(amc._mass_broadcast_snapshot())
+        except Exception as exc:
+            logger.warning("Auto queue failed for request %s: %s", req_id, exc)
+            row = await ContentRequest.get(req_id)
+            if row:
+                row.auto_status = "queue_failed"
+                row.auto_error = str(exc)
+                row.updated_at = datetime.now()
+                await row.save()
+
+    try:
+        asyncio.create_task(_runner())
+    except Exception as exc:
+        logger.warning("Failed to start auto queue task for request %s: %s", req_id, exc)
+
+
 def _admin_alert_emails(site: SiteSettings) -> list[str]:
     out: list[str] = []
     candidates = [
@@ -3012,6 +3062,7 @@ async def request_content(
 
     tmdb_year_value = (tmdb_year or "").strip()
     tmdb_title_value = (tmdb_title or "").strip()
+    tmdb_poster_value = ""
     if selected_tmdb_id > 0:
         try:
             details = await _tmdb_details(selected_tmdb_id, selected_tmdb_type == "series")
@@ -3028,6 +3079,9 @@ async def request_content(
                 tmdb_year_value = fetched_date[:4]
             if fetched_title:
                 tmdb_title_value = fetched_title
+            poster_path = str(details.get("poster_path") or "").strip()
+            if poster_path:
+                tmdb_poster_value = f"https://image.tmdb.org/t/p/w500{poster_path}"
         normalized_type = selected_tmdb_type
 
     row = ContentRequest(
@@ -3048,6 +3102,7 @@ async def request_content(
         row.tmdb_type = selected_tmdb_type
         row.tmdb_title = tmdb_title_value or clean_title
         row.tmdb_year = tmdb_year_value
+        row.tmdb_poster_url = tmdb_poster_value
         row.auto_mode = (auto_mode or "tmdb_auto").strip().lower() or "tmdb_auto"
         row.auto_status = "queued"
     else:
@@ -3056,26 +3111,7 @@ async def request_content(
     await row.insert()
 
     if selected_tmdb_id > 0:
-        try:
-            from app.routes import advance_mass_content as amc
-
-            mass_row = await amc._upsert_mass_entry(
-                clean_title,
-                normalized_type,
-                tmdb_year_value,
-                f"user_request:{user.phone_number}",
-            )
-            row.auto_mass_state_id = str(mass_row.id)
-            row.auto_status = "processing"
-            row.updated_at = datetime.now()
-            await row.save()
-            amc._schedule_process(str(mass_row.id), mode="full")
-            asyncio.create_task(amc._mass_broadcast_snapshot())
-        except Exception as exc:
-            row.auto_status = "queue_failed"
-            row.auto_error = str(exc)
-            row.updated_at = datetime.now()
-            await row.save()
+        _queue_request_auto_processing(str(row.id))
 
     site = await _site_settings()
     try:
@@ -3083,7 +3119,6 @@ async def request_content(
     except Exception:
         pass
     user_email = resolved_request_email
-    email_send_ok = True
     if user_email:
         site_base = str(request.base_url).rstrip("/")
         subject, html_body, text_body = _request_received_email_payload(
@@ -3094,21 +3129,18 @@ async def request_content(
             note=(note or "").strip(),
             cta_url=f"{site_base}/request-content",
         )
-        ok, _detail = await _send_site_email_now(
+        _queue_site_email(
             site,
             to_email=user_email,
             subject=subject,
             html_body=html_body,
             text_body=text_body,
         )
-        email_send_ok = bool(ok)
 
     target = (return_to or "").strip()
     if not target.startswith("/"):
         target = "/request-content"
     sep = "&" if "?" in target else "?"
-    if user_email and not email_send_ok:
-        return RedirectResponse(f"{target}{sep}requested=1&mail=failed", status_code=303)
     return RedirectResponse(f"{target}{sep}requested=1", status_code=303)
 
 
@@ -3299,6 +3331,7 @@ async def request_content_page(request: Request, return_to: str = "", prefill_ti
     my_requests = await ContentRequest.find(ContentRequest.user_phone == user.phone_number).sort("-created_at").limit(40).to_list()
     catalog = await _build_catalog(user, is_admin, limit=3000)
     by_id = {str(c.get("id")): c for c in catalog}
+    by_slug = {str(c.get("slug") or "").strip().lower(): c for c in catalog if str(c.get("slug") or "").strip()}
     by_file_id: dict[str, dict] = {}
     for card in catalog:
         for item in card.get("items", []) or []:
@@ -3307,16 +3340,27 @@ async def request_content_page(request: Request, return_to: str = "", prefill_ti
                 by_file_id[file_id] = card
     for row in my_requests:
         raw_path = str(getattr(row, "fulfilled_content_path", "") or "").strip()
+        card_match = None
         if not raw_path:
             ref_id = str(getattr(row, "fulfilled_content_id", "") or "").strip()
-            match = by_id.get(ref_id) or by_file_id.get(ref_id)
-            if match:
-                raw_path = f"/content/details/{match.get('slug') or match.get('id')}"
+            card_match = by_id.get(ref_id) or by_file_id.get(ref_id)
+            if card_match:
+                raw_path = f"/content/details/{card_match.get('slug') or card_match.get('id')}"
                 if not getattr(row, "fulfilled_content_title", ""):
-                    setattr(row, "fulfilled_content_title", match.get("title") or "")
+                    setattr(row, "fulfilled_content_title", card_match.get("title") or "")
+        elif raw_path.startswith("/content/details/"):
+            slug = raw_path.rsplit("/", 1)[-1].strip().lower()
+            if slug:
+                card_match = by_slug.get(slug)
         if raw_path and not raw_path.startswith("/") and not re.match(r"^https?://", raw_path, re.I):
             raw_path = "/" + raw_path.lstrip("/")
         setattr(row, "view_path", raw_path)
+        poster_url = str(getattr(row, "tmdb_poster_url", "") or "").strip()
+        if card_match:
+            match_poster = str(card_match.get("poster") or "").strip()
+            if match_poster:
+                poster_url = match_poster
+        setattr(row, "view_poster", poster_url)
     return templates.TemplateResponse("request_content.html", {
         "request": request,
         "user": user,
