@@ -17,7 +17,14 @@ from app.core.config import settings
 from app.core.telethon_storage import get_message as tl_get_message
 from app.db.models import ContentItem, ContentRequest, FileSystemItem, MassContentState, SiteSettings, User
 from app.routes.admin import _admin_context_base, _build_title_regex, _is_admin, _publish_items
-from app.routes.content import _parse_name, _tmdb_details, _tmdb_get, _tmdb_search, notify_admin_auto_upload_email
+from app.routes.content import (
+    _parse_name,
+    _tmdb_details,
+    _tmdb_get,
+    _tmdb_search,
+    notify_admin_auto_upload_email,
+    notify_request_status_email,
+)
 from app.routes.dashboard import _cast_ids, get_current_user
 from app.utils.file_utils import format_size
 
@@ -4930,6 +4937,16 @@ async def _mark_request_auto_uploaded(mass_row: MassContentState) -> None:
                 )
             except Exception as exc:
                 logger.warning("Auto-upload admin email failed for request %s: %s", str(req.id), exc)
+            if has_content:
+                try:
+                    await notify_request_status_email(
+                        site=site,
+                        request_row=req,
+                        status="fulfilled",
+                        content_url=content_path or "/content",
+                    )
+                except Exception as exc:
+                    logger.warning("Auto-upload user email failed for request %s: %s", str(req.id), exc)
 
 
 async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:

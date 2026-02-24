@@ -4,24 +4,14 @@
     <div class="rounded-2xl border border-gray-800 bg-gradient-to-br from-gray-950 to-black p-5 sm:p-7">
         <p class="text-xs uppercase tracking-[0.22em] text-yellow-400 mb-2">Request Content</p>
         <h1 class="text-2xl sm:text-3xl font-extrabold text-white">Ask For Movies & Web Series</h1>
-        <p class="text-sm text-gray-400 mt-3">Send requests to the admin team. You can mention language, season, quality, or source preference.</p>
-
-        {% if tmdb_configured %}
-        <div class="mt-5 rounded-xl border border-gray-800 bg-black/60 p-3">
-            <div class="grid gap-3 sm:grid-cols-[1fr,160px,120px]">
-                <input id="tmdb-request-query" value="{{ prefill_title or '' }}" placeholder="Search TMDB title..." class="rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400" />
-                <select id="tmdb-request-type" class="rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400">
-                    <option value="movie">Movie</option>
-                    <option value="series">Web Series</option>
-                </select>
-                <button type="button" id="tmdb-request-search-btn" class="rounded-xl bg-sky-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-sky-500">Search TMDB</button>
-            </div>
-            <div id="tmdb-request-status" class="mt-2 text-xs text-gray-400"></div>
-            <div id="tmdb-request-results" class="mt-3 grid gap-3 sm:grid-cols-2"></div>
-        </div>
-        {% else %}
-        <div class="mt-5 rounded-xl border border-amber-700/40 bg-amber-900/20 p-3 text-xs text-amber-200">
-            TMDB search is not configured. You can still submit a manual request.
+        <p class="text-sm text-gray-400 mt-3">Type one name. We check library first. If not available, we show TMDB cards for auto request.</p>
+        {% if request.query_params.get('requested') == '1' %}
+        <div class="mt-4 rounded-xl border {% if request.query_params.get('mail') == 'failed' %}border-amber-700 bg-amber-900/20 text-amber-200{% else %}border-emerald-700 bg-emerald-900/20 text-emerald-200{% endif %} px-3 py-2 text-xs">
+            {% if request.query_params.get('mail') == 'failed' %}
+            Request submitted, but email could not be sent. Please verify SMTP settings and your email.
+            {% else %}
+            Request submitted successfully. A confirmation email has been sent.
+            {% endif %}
         </div>
         {% endif %}
 
@@ -32,29 +22,23 @@
             <input type="hidden" name="tmdb_title" id="tmdb_title_field" value="">
             <input type="hidden" name="tmdb_year" id="tmdb_year_field" value="">
             <input type="hidden" name="auto_mode" id="auto_mode_field" value="manual">
+            <input type="hidden" name="request_type" id="request_type_field" value="movie">
             <div>
-                <label class="text-xs text-gray-400">Title</label>
-                <input id="request_title_input" name="title" value="{{ prefill_title or '' }}" required placeholder="e.g. Stranger Things" class="mt-1 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400" />
+                <label class="text-xs text-gray-400">Movie / Web Series Name</label>
+                <div class="mt-1 grid gap-3 sm:grid-cols-[1fr,140px]">
+                    <input id="request_title_input" name="title" value="{{ prefill_title or '' }}" required placeholder="e.g. Stranger Things / Sita Ramam" class="rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400" />
+                    <button type="button" id="request_search_btn" class="rounded-xl bg-sky-600 px-3 py-2.5 text-sm font-semibold text-white hover:bg-sky-500">Find</button>
+                </div>
+                <div id="request_search_status" class="mt-2 text-xs text-gray-400"></div>
+                <div id="request_search_results" class="mt-3 grid gap-3 sm:grid-cols-2"></div>
             </div>
-            <div class="grid gap-4 sm:grid-cols-2">
-                <div>
-                    <label class="text-xs text-gray-400">Type</label>
-                    <select id="request_type_select" name="request_type" class="mt-1 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400">
-                        <option value="movie">Movie</option>
-                        <option value="series">Web Series</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="text-xs text-gray-400">Priority</label>
-                    <select name="priority" class="mt-1 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400">
-                        <option value="">Normal</option>
-                        <option value="high">High</option>
-                    </select>
-                </div>
+            <div>
+                <label class="text-xs text-gray-400">Email (for request updates)</label>
+                <input name="request_email" required value="{{ requester_email or '' }}" placeholder="you@example.com" class="mt-1 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400" />
             </div>
             <div>
                 <label class="text-xs text-gray-400">Notes</label>
-                <textarea name="note" rows="4" placeholder="Hindi + 1080p, complete seasons, uncensored, etc." class="mt-1 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400"></textarea>
+                <textarea name="note" rows="4" placeholder="Optional note for admin (language, quality, source)." class="mt-1 w-full rounded-xl border border-gray-700 bg-black px-3 py-2.5 text-sm text-white focus:outline-none focus:border-yellow-400"></textarea>
             </div>
             <div id="tmdb-selection-pill" class="hidden rounded-xl border border-emerald-700/60 bg-emerald-900/25 px-3 py-2 text-xs text-emerald-200">
                 TMDB selected. Auto processing has been queued for admin review.
@@ -108,22 +92,19 @@
 {% endblock %}
 
 {% block page_scripts %}
-{% if tmdb_configured %}
 <script>
 (() => {
-    const qEl = document.getElementById("tmdb-request-query");
-    const typeEl = document.getElementById("tmdb-request-type");
-    const btnEl = document.getElementById("tmdb-request-search-btn");
-    const statusEl = document.getElementById("tmdb-request-status");
-    const resultsEl = document.getElementById("tmdb-request-results");
+    const titleInput = document.getElementById("request_title_input");
+    const btnEl = document.getElementById("request_search_btn");
+    const statusEl = document.getElementById("request_search_status");
+    const resultsEl = document.getElementById("request_search_results");
 
     const tmdbIdField = document.getElementById("tmdb_id_field");
     const tmdbTypeField = document.getElementById("tmdb_media_type_field");
     const tmdbTitleField = document.getElementById("tmdb_title_field");
     const tmdbYearField = document.getElementById("tmdb_year_field");
     const autoModeField = document.getElementById("auto_mode_field");
-    const titleInput = document.getElementById("request_title_input");
-    const reqTypeSelect = document.getElementById("request_type_select");
+    const reqTypeField = document.getElementById("request_type_field");
     const selectedPill = document.getElementById("tmdb-selection-pill");
 
     function esc(v) {
@@ -142,6 +123,7 @@
         tmdbTitleField.value = "";
         tmdbYearField.value = "";
         autoModeField.value = "manual";
+        reqTypeField.value = "movie";
         if (selectedPill) selectedPill.classList.add("hidden");
     }
 
@@ -151,34 +133,58 @@
         tmdbTitleField.value = String(card.title || "");
         tmdbYearField.value = String(card.year || "");
         autoModeField.value = "tmdb_auto";
+        reqTypeField.value = (card.type === "series") ? "series" : "movie";
         titleInput.value = String(card.title || "");
-        reqTypeSelect.value = (card.type === "series") ? "series" : "movie";
         if (selectedPill) selectedPill.classList.remove("hidden");
     }
 
     async function runSearch() {
-        const q = (qEl.value || "").trim();
+        const q = (titleInput.value || "").trim();
         if (q.length < 2) {
             statusEl.textContent = "Enter at least 2 characters.";
             return;
         }
-        const type = (typeEl.value || "movie").trim();
-        statusEl.textContent = "Searching TMDB...";
+        statusEl.textContent = "Searching library and TMDB...";
         resultsEl.innerHTML = "";
         clearSelection();
         try {
-            const res = await fetch(`/content/request/tmdb-search?q=${encodeURIComponent(q)}&request_type=${encodeURIComponent(type)}`);
+            const res = await fetch(`/content/request/search?q=${encodeURIComponent(q)}`);
             const data = await res.json();
             if (!res.ok || !data.ok) {
-                statusEl.textContent = data.error || "TMDB search failed.";
+                statusEl.textContent = data.error || "Search failed.";
                 return;
             }
-            const rows = Array.isArray(data.results) ? data.results : [];
-            statusEl.textContent = rows.length ? `Found ${rows.length} result(s). Select one card.` : "No results found in TMDB. Submit manual request.";
-            if (!rows.length) {
+            const dbRows = Array.isArray(data.database) ? data.database : [];
+            const tmdbRows = Array.isArray(data.tmdb) ? data.tmdb : [];
+            const baseMsg = String(data.message || "").trim() || "Search completed.";
+            const errMsg = String(data.tmdb_error || "").trim();
+            statusEl.textContent = errMsg ? `${baseMsg} (${errMsg})` : baseMsg;
+
+            if (dbRows.length) {
+                resultsEl.innerHTML = dbRows.map((r) => `
+                    <div class="rounded-xl border border-emerald-700/50 bg-emerald-950/20 p-2">
+                        <div class="flex gap-2">
+                            <img src="${esc(r.poster || '')}" onerror="this.style.visibility='hidden'" class="h-24 w-16 rounded object-cover bg-gray-900" alt="">
+                            <div class="min-w-0 flex-1">
+                                <div class="text-sm font-semibold text-white truncate">${esc(r.title)}</div>
+                                <div class="mt-1 text-[11px] text-emerald-300">${esc(r.year || "-")} | ${(r.type === "series" ? "WEB SERIES" : "MOVIE")} | In Library</div>
+                                <div class="mt-1 text-[11px] text-gray-400 line-clamp-2">${esc(r.overview || "")}</div>
+                                <a href="${esc(r.open_url || '#')}" class="mt-2 inline-flex items-center rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-500">
+                                    <i class="fas fa-eye mr-1"></i>Open
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                `).join("");
                 return;
             }
-            resultsEl.innerHTML = rows.map((r) => `
+
+            if (!tmdbRows.length) {
+                resultsEl.innerHTML = "";
+                return;
+            }
+
+            resultsEl.innerHTML = tmdbRows.map((r) => `
                 <div class="rounded-xl border border-gray-800 bg-gray-950 p-2">
                     <div class="flex gap-2">
                         <img src="${esc(r.poster || '')}" onerror="this.style.visibility='hidden'" class="h-24 w-16 rounded object-cover bg-gray-900" alt="">
@@ -191,7 +197,7 @@
                                 data-type="${esc(r.type)}"
                                 data-title="${esc(r.title)}"
                                 data-year="${esc(r.year)}">
-                                Use This
+                                I Want This
                             </button>
                         </div>
                     </div>
@@ -205,22 +211,24 @@
                         title: el.getAttribute("data-title") || "",
                         year: el.getAttribute("data-year") || "",
                     });
-                    statusEl.textContent = "TMDB card selected. Submit request to queue auto processing.";
+                    statusEl.textContent = "TMDB card selected. Submit request to auto-process.";
                 });
             });
         } catch (_) {
-            statusEl.textContent = "TMDB search failed.";
+            statusEl.textContent = "Search failed.";
         }
     }
 
     btnEl.addEventListener("click", runSearch);
-    qEl.addEventListener("keydown", (e) => {
+    titleInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
             e.preventDefault();
             runSearch();
         }
     });
+    if ((titleInput.value || "").trim().length >= 2) {
+        runSearch();
+    }
 })();
 </script>
-{% endif %}
 {% endblock %}

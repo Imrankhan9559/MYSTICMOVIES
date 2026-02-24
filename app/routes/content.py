@@ -71,6 +71,16 @@ TRASH_RE = re.compile(
 )
 SE_RE = re.compile(r"[Ss](\d{1,2})[\s._-]*[Ee](\d{1,3})")
 SEASON_TAG_RE = re.compile(r"\bS\d{1,2}\s*[._-]?\s*E\d{1,3}\b|\bS\d{1,2}\b|\bE\d{1,3}\b|\bSeason\s?\d{1,2}\b|\bEpisode\s?\d{1,3}\b", re.I)
+REQUEST_NOISE_RE = re.compile(
+    r"\b("
+    r"s\d{1,2}e\d{1,3}|season\s?\d{1,2}|episode\s?\d{1,3}|"
+    r"2160p|1440p|1080p|720p|480p|380p|360p|240p|4k|2k|uhd|fhd|hd|"
+    r"web[-\s]?dl|web[-\s]?rip|bluray|brrip|hdrip|hdtc|hdts|cam|"
+    r"x264|x265|h\.?264|h\.?265|hevc|aac|dts|10bit|dual|multi|esub|subs?|"
+    r"hindi|english|telugu|tamil|malayalam|kannada|punjabi"
+    r")\b",
+    re.I,
+)
 
 
 def invalidate_public_catalog_cache() -> None:
@@ -236,6 +246,36 @@ def _infer_quality(name: str) -> str:
 
 def _tokenize_search(text: str) -> list[str]:
     return [t for t in re.split(r"[^a-zA-Z0-9]+", (text or "").lower()) if t]
+
+
+def _request_query_variants(query: str) -> list[str]:
+    base = re.sub(r"\s+", " ", (query or "").strip())
+    if not base:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def add(val: str) -> None:
+        norm = re.sub(r"\s+", " ", (val or "").strip())
+        if len(norm) < 2:
+            return
+        key = norm.lower()
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(norm)
+
+    add(base)
+    without_se = SEASON_TAG_RE.sub(" ", base)
+    add(without_se)
+    without_noise = REQUEST_NOISE_RE.sub(" ", without_se)
+    without_noise = re.sub(r"[()\[\]{}:|,+_]+", " ", without_noise)
+    without_noise = re.sub(r"\s+", " ", without_noise).strip()
+    add(without_noise)
+    without_year = YEAR_RE.sub(" ", without_noise)
+    without_year = re.sub(r"\s+", " ", without_year).strip()
+    add(without_year)
+    return out
 
 
 def _build_search_regex(text: str) -> str:
@@ -1296,6 +1336,13 @@ def _extract_user_email(user: User | None) -> str:
     return ""
 
 
+def _resolve_request_email(user: User | None, raw_email: str = "") -> str:
+    typed = (raw_email or "").strip().lower()
+    if _is_email(typed):
+        return typed
+    return _extract_user_email(user)
+
+
 def _queue_site_email(site: SiteSettings, *, to_email: str, subject: str, html_body: str, text_body: str = "") -> None:
     async def _runner() -> None:
         try:
@@ -1315,6 +1362,30 @@ def _queue_site_email(site: SiteSettings, *, to_email: str, subject: str, html_b
         asyncio.create_task(_runner())
     except Exception:
         pass
+
+
+async def _send_site_email_now(
+    site: SiteSettings,
+    *,
+    to_email: str,
+    subject: str,
+    html_body: str,
+    text_body: str = "",
+) -> tuple[bool, str]:
+    try:
+        ok, detail = await send_email_via_site_settings(
+            site=site,
+            to_email=to_email,
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+        )
+        if not ok:
+            logger.warning("Email send failed for %s: %s", to_email, detail)
+        return ok, detail
+    except Exception as exc:
+        logger.warning("Email send exception for %s: %s", to_email, exc)
+        return False, str(exc)
 
 
 def _admin_alert_emails(site: SiteSettings) -> list[str]:
@@ -1449,7 +1520,7 @@ async def notify_request_status_email(
     content_url: str = "",
 ) -> None:
     user = await User.find_one(User.phone_number == (request_row.user_phone or ""))
-    to_email = _extract_user_email(user)
+    to_email = _resolve_request_email(user, str(getattr(request_row, "request_email", "") or ""))
     if not to_email:
         return
     receiver_name = ((request_row.user_name or "") or ((user.first_name if user else "") or "")).strip() or "there"
@@ -2912,6 +2983,7 @@ async def request_content(
     title: str = Form(...),
     request_type: str = Form("movie"),
     note: str = Form(""),
+    request_email: str = Form(""),
     return_to: str = Form(""),
     tmdb_id: str = Form(""),
     tmdb_media_type: str = Form(""),
@@ -2968,6 +3040,9 @@ async def request_content(
         created_at=datetime.now(),
         updated_at=datetime.now(),
     )
+    resolved_request_email = _resolve_request_email(user, request_email)
+    if resolved_request_email:
+        row.request_email = resolved_request_email
     if selected_tmdb_id > 0:
         row.tmdb_id = selected_tmdb_id
         row.tmdb_type = selected_tmdb_type
@@ -3007,7 +3082,8 @@ async def request_content(
         await notify_admin_new_request_email(site=site, request_row=row, source="web")
     except Exception:
         pass
-    user_email = _extract_user_email(user)
+    user_email = resolved_request_email
+    email_send_ok = True
     if user_email:
         site_base = str(request.base_url).rstrip("/")
         subject, html_body, text_body = _request_received_email_payload(
@@ -3018,22 +3094,26 @@ async def request_content(
             note=(note or "").strip(),
             cta_url=f"{site_base}/request-content",
         )
-        _queue_site_email(
+        ok, _detail = await _send_site_email_now(
             site,
             to_email=user_email,
             subject=subject,
             html_body=html_body,
             text_body=text_body,
         )
+        email_send_ok = bool(ok)
 
     target = (return_to or "").strip()
     if not target.startswith("/"):
-        target = "/content"
+        target = "/request-content"
     sep = "&" if "?" in target else "?"
+    if user_email and not email_send_ok:
+        return RedirectResponse(f"{target}{sep}requested=1&mail=failed", status_code=303)
     return RedirectResponse(f"{target}{sep}requested=1", status_code=303)
 
 
 @router.get("/content/request/tmdb-search")
+@router.get("/content-request/tmdb-search")
 async def request_content_tmdb_search(request: Request, q: str = "", request_type: str = "movie"):
     user = await get_current_user(request)
     if not user:
@@ -3084,7 +3164,127 @@ async def request_content_tmdb_search(request: Request, q: str = "", request_typ
     return {"ok": True, "results": out, "type": ctype}
 
 
+@router.get("/content/request/search")
+@router.get("/content-request/search")
+async def request_content_search(request: Request, q: str = ""):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login required"}, status_code=401)
+
+    query = (q or "").strip()
+    if len(query) < 2:
+        return JSONResponse({"ok": False, "error": "Enter at least 2 characters."}, status_code=400)
+
+    db_rows: list[dict] = []
+    try:
+        regex = {"$regex": re.escape(query), "$options": "i"}
+        where = {
+            "status": "published",
+            "$or": [
+                {"title": regex},
+                {"search_title": regex},
+                {"slug": regex},
+            ],
+        }
+        content_rows = await ContentItem.find(where).sort("-updated_at").limit(12).to_list()
+        for item in content_rows:
+            slug = (getattr(item, "slug", "") or "").strip()
+            title = (getattr(item, "title", "") or "").strip()
+            if not slug or not title:
+                continue
+            poster_url = (getattr(item, "poster_url", "") or "").strip()
+            db_rows.append(
+                {
+                    "id": str(item.id),
+                    "slug": slug,
+                    "title": title,
+                    "year": (getattr(item, "year", "") or "").strip(),
+                    "type": (getattr(item, "content_type", "") or "movie").strip().lower(),
+                    "overview": (getattr(item, "description", "") or "").strip(),
+                    "poster": poster_url,
+                    "open_url": f"/content/details/{slug}",
+                }
+            )
+    except Exception:
+        db_rows = []
+
+    if db_rows:
+        return {
+            "ok": True,
+            "found_in_db": True,
+            "database": db_rows,
+            "tmdb": [],
+            "tmdb_configured": bool(getattr(settings, "TMDB_API_KEY", "")),
+            "message": "Content found in library.",
+        }
+
+    tmdb_rows: list[dict] = []
+    tmdb_errors: list[str] = []
+    tmdb_enabled = bool(getattr(settings, "TMDB_API_KEY", ""))
+    if tmdb_enabled:
+        query_variants = _request_query_variants(query) or [query]
+        for ctype in ("movie", "series"):
+            for variant in query_variants:
+                try:
+                    search = await _tmdb_search(variant, "", ctype == "series")
+                    results = (search or {}).get("results") or []
+                except Exception as exc:
+                    tmdb_errors.append(str(exc))
+                    results = []
+                for row in results[:10]:
+                    title_value = (row.get("name") if ctype == "series" else row.get("title")) or ""
+                    title_value = str(title_value or "").strip()
+                    if not title_value:
+                        continue
+                    date_value = (row.get("first_air_date") if ctype == "series" else row.get("release_date")) or ""
+                    date_value = str(date_value or "").strip()
+                    year_value = date_value[:4] if len(date_value) >= 4 else ""
+                    poster_path = str(row.get("poster_path") or "").strip()
+                    poster_url = f"https://image.tmdb.org/t/p/w300{poster_path}" if poster_path else ""
+                    tmdb_rows.append(
+                        {
+                            "id": int(row.get("id") or 0),
+                            "title": title_value,
+                            "year": year_value,
+                            "type": ctype,
+                            "overview": str(row.get("overview") or "").strip(),
+                            "poster": poster_url,
+                        }
+                    )
+                if len(tmdb_rows) >= 28:
+                    break
+        seen_tmdb: set[tuple[int, str]] = set()
+        unique_tmdb: list[dict] = []
+        for row in tmdb_rows:
+            key = (int(row.get("id") or 0), str(row.get("type") or "movie"))
+            if key in seen_tmdb or key[0] <= 0:
+                continue
+            seen_tmdb.add(key)
+            unique_tmdb.append(row)
+        tmdb_rows = unique_tmdb[:18]
+
+    if tmdb_rows:
+        message = "Select a TMDB card to request auto processing."
+    elif tmdb_enabled and tmdb_errors:
+        message = "TMDB search failed right now. You can submit a manual request and admin will review."
+    elif tmdb_enabled:
+        message = "No matching content found in library or TMDB. You can still submit manual request."
+    else:
+        message = "TMDB is not configured. You can submit a manual request and admin will review."
+
+    return {
+        "ok": True,
+        "found_in_db": False,
+        "database": [],
+        "tmdb": tmdb_rows,
+        "tmdb_configured": tmdb_enabled,
+        "message": message,
+        "tmdb_error": tmdb_errors[0] if tmdb_errors else "",
+    }
+
+
 @router.get("/request-content")
+@router.get("/content-request")
 async def request_content_page(request: Request, return_to: str = "", prefill_title: str = ""):
     user = await get_current_user(request)
     if not user:
@@ -3123,9 +3323,10 @@ async def request_content_page(request: Request, return_to: str = "", prefill_ti
         "is_admin": is_admin,
         "site": site,
         "requests": my_requests,
-        "return_to": (return_to or "").strip() if (return_to or "").strip().startswith("/") else "/content",
+        "return_to": (return_to or "").strip() if (return_to or "").strip().startswith("/") else "/request-content",
         "prefill_title": (prefill_title or "").strip(),
         "tmdb_configured": bool(getattr(settings, "TMDB_API_KEY", "")),
+        "requester_email": _extract_user_email(user),
     })
 
 
