@@ -33,6 +33,7 @@ from app.routes.content import (
     _parse_name,
     _tmdb_get,
     _ensure_group_assets,
+    notify_request_status_email,
     invalidate_public_catalog_cache,
 )
 from app.core.config import settings
@@ -196,6 +197,33 @@ def _apply_site_defaults(row: SiteSettings) -> bool:
     if not getattr(row, "contact_email", "").strip():
         row.contact_email = "support@mysticmovies.site"
         changed = True
+    if getattr(row, "smtp_enabled", None) is None:
+        row.smtp_enabled = False
+        changed = True
+    if getattr(row, "smtp_host", None) is None:
+        row.smtp_host = ""
+        changed = True
+    if not getattr(row, "smtp_port", None):
+        row.smtp_port = 587
+        changed = True
+    if getattr(row, "smtp_username", None) is None:
+        row.smtp_username = ""
+        changed = True
+    if getattr(row, "smtp_password", None) is None:
+        row.smtp_password = ""
+        changed = True
+    if getattr(row, "smtp_from_email", None) is None:
+        row.smtp_from_email = row.contact_email or ""
+        changed = True
+    if getattr(row, "smtp_from_name", None) is None:
+        row.smtp_from_name = row.site_name or "MysticMovies"
+        changed = True
+    if getattr(row, "smtp_use_tls", None) is None:
+        row.smtp_use_tls = True
+        changed = True
+    if getattr(row, "smtp_use_ssl", None) is None:
+        row.smtp_use_ssl = False
+        changed = True
 
     header_menu = _clean_link_rows(getattr(row, "header_menu", None), include_icon=True)
     if not header_menu:
@@ -321,6 +349,20 @@ async def _catalog_counts(groups: list[dict] | None = None) -> dict:
 
 
 async def _admin_badges(groups: list[dict] | None = None) -> dict:
+    async def _request_counts() -> tuple[int, int]:
+        pending_total = 0
+        auto_uploaded_total = 0
+        try:
+            pending_total = int(await ContentRequest.find({"status": "pending"}).count())
+            auto_uploaded_total = int(await ContentRequest.find({
+                "status": "pending",
+                "auto_status": {"$in": ["uploaded", "auto_uploaded", "ready_for_review"]},
+            }).count())
+        except Exception:
+            pending_total = 0
+            auto_uploaded_total = 0
+        return pending_total, auto_uploaded_total
+
     if groups is None:
         now = time.monotonic()
         cached_ts = float(_ADMIN_BADGES_CACHE.get("ts") or 0.0)
@@ -341,6 +383,9 @@ async def _admin_badges(groups: list[dict] | None = None) -> dict:
             _ADMIN_PENDING_STORAGE_CACHE["ts"] = now
             _ADMIN_PENDING_STORAGE_CACHE["count"] = pending_storage
         counts["pending_storage"] = pending_storage
+        pending_requests, auto_uploaded_pending = await _request_counts()
+        counts["pending_content_requests_badge"] = pending_requests
+        counts["auto_uploaded_pending_badge"] = auto_uploaded_pending
         _ADMIN_BADGES_CACHE["ts"] = now
         _ADMIN_BADGES_CACHE["data"] = dict(counts)
         return counts
@@ -359,6 +404,9 @@ async def _admin_badges(groups: list[dict] | None = None) -> dict:
         _ADMIN_PENDING_STORAGE_CACHE["ts"] = now
         _ADMIN_PENDING_STORAGE_CACHE["count"] = pending_storage
         counts["pending_storage"] = pending_storage
+    pending_requests, auto_uploaded_pending = await _request_counts()
+    counts["pending_content_requests_badge"] = pending_requests
+    counts["auto_uploaded_pending_badge"] = auto_uploaded_pending
     return counts
 
 
@@ -3344,7 +3392,16 @@ async def save_site_settings(
     hero_subtitle: str = Form("Stream, download, and send to Telegram in one place."),
     hero_cta_text: str = Form("Browse Content"),
     hero_cta_link: str = Form("/content"),
-    footer_text: str = Form("MysticMovies")
+    footer_text: str = Form("MysticMovies"),
+    smtp_enabled: str = Form("0"),
+    smtp_host: str = Form(""),
+    smtp_port: str = Form("587"),
+    smtp_username: str = Form(""),
+    smtp_password: str = Form(""),
+    smtp_from_email: str = Form(""),
+    smtp_from_name: str = Form(""),
+    smtp_use_tls: str = Form("1"),
+    smtp_use_ssl: str = Form("0"),
 ):
     user = await get_current_user(request)
     if not _is_admin(user):
@@ -3359,6 +3416,15 @@ async def save_site_settings(
     site.hero_cta_text = (hero_cta_text or "").strip()
     site.hero_cta_link = (hero_cta_link or "/content").strip()
     site.footer_text = (footer_text or "MysticMovies").strip()
+    site.smtp_enabled = _is_truthy(smtp_enabled)
+    site.smtp_host = (smtp_host or "").strip()
+    site.smtp_port = _safe_int(smtp_port, 587) or 587
+    site.smtp_username = (smtp_username or "").strip()
+    site.smtp_password = (smtp_password or "").strip()
+    site.smtp_from_email = (smtp_from_email or "").strip()
+    site.smtp_from_name = (smtp_from_name or "").strip()
+    site.smtp_use_tls = _is_truthy(smtp_use_tls)
+    site.smtp_use_ssl = _is_truthy(smtp_use_ssl)
     site.updated_at = datetime.now()
     await site.save()
     return RedirectResponse("/main-settings", status_code=303)
@@ -3455,6 +3521,23 @@ async def update_content_request(
     row.status = action
     row.updated_at = datetime.now()
     await row.save()
+    try:
+        site = await _site_settings()
+        path = (getattr(row, "fulfilled_content_path", "") or "").strip()
+        if path and not path.startswith(("http://", "https://")):
+            if not path.startswith("/"):
+                path = "/" + path
+            content_url = f"{str(request.base_url).rstrip('/')}{path}"
+        else:
+            content_url = path
+        await notify_request_status_email(
+            site=site,
+            request_row=row,
+            status=action,
+            content_url=content_url,
+        )
+    except Exception:
+        pass
     _invalidate_admin_caches()
     target = (return_to or "/dashboard").strip()
     if not target.startswith("/"):

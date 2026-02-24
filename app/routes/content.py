@@ -5,6 +5,7 @@ import asyncio
 import os
 import html
 import time
+import logging
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -18,6 +19,7 @@ from beanie.operators import In
 
 from app.core.config import settings
 from app.core.content_store import build_content_groups, sync_content_catalog
+from app.core.mailer import build_email_html, send_email_via_site_settings
 from app.db.models import (
     ContentItem,
     FileSystemItem,
@@ -34,6 +36,7 @@ from app.utils.file_utils import format_size
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+logger = logging.getLogger(__name__)
 CATALOG_ITEMS_PER_PAGE = 24
 _SUGGEST_CACHE: dict[str, dict] = {}
 _SUGGEST_CACHE_TTL_SEC = 25.0
@@ -55,6 +58,7 @@ _LINK_TOKEN_CACHE: dict[str, object] = {"ts": 0.0, "value": ""}
 _LINK_TOKEN_CACHE_TTL_SEC = 45.0
 _HOME_SLIDER_CACHE: dict[str, object] = {"ts": 0.0, "rows": None}
 _HOME_SLIDER_CACHE_TTL_SEC = 30.0
+_ADMIN_ALERT_EMAIL_FALLBACK = (os.getenv("ADMIN_ALERT_EMAIL", "in.imrankhan3421@gmail.com") or "in.imrankhan3421@gmail.com").strip().lower()
 
 VIDEO_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".mpeg", ".mpg")
 QUALITY_RE = re.compile(r"(2160p|1440p|1080p|720p|480p|380p|360p)", re.I)
@@ -1274,6 +1278,225 @@ async def _site_settings() -> SiteSettings:
     _SITE_SETTINGS_CACHE["ts"] = now
     _SITE_SETTINGS_CACHE["row"] = row
     return row
+
+
+def _is_email(value: str) -> bool:
+    return bool(re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", (value or "").strip(), re.I))
+
+
+def _extract_user_email(user: User | None) -> str:
+    if not user:
+        return ""
+    email_field = (getattr(user, "email", "") or "").strip().lower()
+    if _is_email(email_field):
+        return email_field
+    phone_field = (getattr(user, "phone_number", "") or "").strip().lower()
+    if _is_email(phone_field):
+        return phone_field
+    return ""
+
+
+def _queue_site_email(site: SiteSettings, *, to_email: str, subject: str, html_body: str, text_body: str = "") -> None:
+    async def _runner() -> None:
+        try:
+            ok, detail = await send_email_via_site_settings(
+                site=site,
+                to_email=to_email,
+                subject=subject,
+                html_body=html_body,
+                text_body=text_body,
+            )
+            if not ok:
+                logger.info("Email skipped/failed for %s: %s", to_email, detail)
+        except Exception as exc:
+            logger.warning("Email task failed for %s: %s", to_email, exc)
+
+    try:
+        asyncio.create_task(_runner())
+    except Exception:
+        pass
+
+
+def _admin_alert_emails(site: SiteSettings) -> list[str]:
+    out: list[str] = []
+    candidates = [
+        (getattr(site, "admin_alert_email", "") or "").strip().lower(),
+        (getattr(site, "contact_email", "") or "").strip().lower(),
+        _ADMIN_ALERT_EMAIL_FALLBACK,
+    ]
+    for email in candidates:
+        if not _is_email(email):
+            continue
+        if email in out:
+            continue
+        out.append(email)
+    return out
+
+
+def _request_received_email_payload(
+    *,
+    site: SiteSettings,
+    user_name: str,
+    title: str,
+    request_type: str,
+    note: str,
+    cta_url: str = "/request-content",
+) -> tuple[str, str, str]:
+    site_name = (getattr(site, "site_name", "") or "MysticMovies").strip()
+    accent = (getattr(site, "accent_color", "") or "#facc15").strip()
+    subject = f"{site_name}: Request Received - {title}"
+    html_body = build_email_html(
+        subject="Your Request Is Submitted",
+        preheader=f"We received your request for {title}.",
+        greeting=f"Hi {user_name or 'there'},",
+        body_lines=[
+            f"We received your content request: {title}",
+            f"Type: {(request_type or 'movie').upper()}",
+            f"Notes: {note}" if note else "Notes: -",
+            "Our team will review and process this request.",
+        ],
+        cta_text="Open Request Page",
+        cta_url=cta_url,
+        footer_note="You will get another email when the status changes.",
+        brand_name=site_name,
+        accent=accent,
+    )
+    text_body = f"Request received: {title} ({request_type})."
+    return subject, html_body, text_body
+
+
+async def notify_admin_new_request_email(
+    *,
+    site: SiteSettings,
+    request_row: ContentRequest,
+    source: str = "web",
+) -> None:
+    recipients = _admin_alert_emails(site)
+    if not recipients:
+        return
+    site_name = (getattr(site, "site_name", "") or "MysticMovies").strip()
+    accent = (getattr(site, "accent_color", "") or "#facc15").strip()
+    source_label = (source or "web").strip().upper()
+    requester = (request_row.user_name or request_row.user_phone or "Unknown User").strip()
+    item_title = (request_row.title or "Untitled").strip()
+    req_type = (request_row.request_type or "movie").strip().upper()
+    note = (request_row.note or "").strip()
+    subject = f"{site_name}: New Content Request - {item_title}"
+    html_body = build_email_html(
+        subject="New Pending Content Request",
+        preheader=f"New request received: {item_title}",
+        greeting="Admin Alert,",
+        body_lines=[
+            f"Requester: {requester}",
+            f"Requested title: {item_title}",
+            f"Type: {req_type}",
+            f"Source: {source_label}",
+            f"Notes: {note}" if note else "Notes: -",
+            "Open Content Requests to review and approve/reject.",
+        ],
+        cta_text="Open Content Requests",
+        cta_url="/content-requests",
+        footer_note="This alert was generated automatically.",
+        brand_name=site_name,
+        accent=accent,
+    )
+    text_body = f"New pending request: {item_title} ({req_type}) by {requester}."
+    for email in recipients:
+        _queue_site_email(site, to_email=email, subject=subject, html_body=html_body, text_body=text_body)
+
+
+async def notify_admin_auto_upload_email(
+    *,
+    site: SiteSettings,
+    request_row: ContentRequest,
+    content_url: str = "",
+) -> None:
+    recipients = _admin_alert_emails(site)
+    if not recipients:
+        return
+    site_name = (getattr(site, "site_name", "") or "MysticMovies").strip()
+    accent = (getattr(site, "accent_color", "") or "#facc15").strip()
+    requester = (request_row.user_name or request_row.user_phone or "Unknown User").strip()
+    item_title = (request_row.title or "Untitled").strip()
+    req_type = (request_row.request_type or "movie").strip().upper()
+    subject = f"{site_name}: Auto Upload Ready - {item_title}"
+    html_body = build_email_html(
+        subject="Auto Upload Completed",
+        preheader=f"Auto-upload finished for {item_title}",
+        greeting="Admin Alert,",
+        body_lines=[
+            f"Auto-upload finished for request: {item_title}",
+            f"Type: {req_type}",
+            f"Requester: {requester}",
+            "Review this content before final request approval.",
+        ],
+        cta_text="Open Content Requests",
+        cta_url=content_url or "/content-requests",
+        footer_note="Auto-upload can include mis-matched files. Please verify before approving.",
+        brand_name=site_name,
+        accent=accent,
+    )
+    text_body = f"Auto upload completed for: {item_title}. Review in Content Requests."
+    for email in recipients:
+        _queue_site_email(site, to_email=email, subject=subject, html_body=html_body, text_body=text_body)
+
+
+async def notify_request_status_email(
+    *,
+    site: SiteSettings,
+    request_row: ContentRequest,
+    status: str,
+    content_url: str = "",
+) -> None:
+    user = await User.find_one(User.phone_number == (request_row.user_phone or ""))
+    to_email = _extract_user_email(user)
+    if not to_email:
+        return
+    receiver_name = ((request_row.user_name or "") or ((user.first_name if user else "") or "")).strip() or "there"
+    site_name = (getattr(site, "site_name", "") or "MysticMovies").strip()
+    accent = (getattr(site, "accent_color", "") or "#facc15").strip()
+    item_title = (request_row.title or "").strip() or "Requested content"
+    state = (status or "").strip().lower()
+
+    if state == "fulfilled":
+        subject = f"{site_name}: Request Approved - {item_title}"
+        html_body = build_email_html(
+            subject="Your Requested Content Is Ready",
+            preheader=f"{item_title} is now available.",
+            greeting=f"Hi {receiver_name},",
+            body_lines=[
+                f"Your request for {item_title} is approved and available now.",
+                "Open the content page from the button below.",
+            ],
+            cta_text="Watch Now",
+            cta_url=content_url or "/content",
+            footer_note="If the link does not open, visit the site and search by title.",
+            brand_name=site_name,
+            accent=accent,
+        )
+        text_body = f"{item_title} is now available."
+    elif state == "rejected":
+        subject = f"{site_name}: Request Update - {item_title}"
+        html_body = build_email_html(
+            subject="Your Request Was Reviewed",
+            preheader=f"Update for {item_title}.",
+            greeting=f"Hi {receiver_name},",
+            body_lines=[
+                f"We reviewed your request for {item_title}.",
+                "This request was not approved in current review cycle.",
+                "You can submit again with more details (language/quality/source).",
+            ],
+            cta_text="Request Again",
+            cta_url="/request-content",
+            footer_note="Thanks for helping us prioritize uploads.",
+            brand_name=site_name,
+            accent=accent,
+        )
+        text_body = f"Request update: {item_title} was reviewed."
+    else:
+        return
+
+    _queue_site_email(site, to_email=to_email, subject=subject, html_body=html_body, text_body=text_body)
 
 
 def _content_query(user: User | None, is_admin: bool):
@@ -2689,27 +2912,176 @@ async def request_content(
     title: str = Form(...),
     request_type: str = Form("movie"),
     note: str = Form(""),
-    return_to: str = Form("")
+    return_to: str = Form(""),
+    tmdb_id: str = Form(""),
+    tmdb_media_type: str = Form(""),
+    tmdb_title: str = Form(""),
+    tmdb_year: str = Form(""),
+    auto_mode: str = Form(""),
 ):
     user = await get_current_user(request)
     if not user:
         return RedirectResponse("/login")
+    clean_title = (title or "").strip()
+    normalized_type = (request_type or "movie").strip().lower()
+    if normalized_type not in {"movie", "series"}:
+        normalized_type = "movie"
+
+    selected_tmdb_id = 0
+    try:
+        selected_tmdb_id = int(str(tmdb_id or "").strip())
+    except Exception:
+        selected_tmdb_id = 0
+    selected_tmdb_type = (tmdb_media_type or normalized_type).strip().lower()
+    if selected_tmdb_type in {"tv", "webseries"}:
+        selected_tmdb_type = "series"
+    if selected_tmdb_type not in {"movie", "series"}:
+        selected_tmdb_type = normalized_type
+
+    tmdb_year_value = (tmdb_year or "").strip()
+    tmdb_title_value = (tmdb_title or "").strip()
+    if selected_tmdb_id > 0:
+        try:
+            details = await _tmdb_details(selected_tmdb_id, selected_tmdb_type == "series")
+        except Exception:
+            details = {}
+        if details:
+            fetched_title = (details.get("name") if selected_tmdb_type == "series" else details.get("title")) or ""
+            fetched_title = str(fetched_title or "").strip()
+            if fetched_title:
+                clean_title = fetched_title
+            fetched_date = (details.get("first_air_date") if selected_tmdb_type == "series" else details.get("release_date")) or ""
+            fetched_date = str(fetched_date or "").strip()
+            if fetched_date and len(fetched_date) >= 4:
+                tmdb_year_value = fetched_date[:4]
+            if fetched_title:
+                tmdb_title_value = fetched_title
+        normalized_type = selected_tmdb_type
+
     row = ContentRequest(
         user_phone=user.phone_number,
         user_name=user.first_name or user.phone_number,
-        title=(title or "").strip(),
-        request_type=(request_type or "movie").strip().lower(),
+        title=clean_title,
+        request_type=normalized_type,
         note=(note or "").strip(),
         status="pending",
         created_at=datetime.now(),
         updated_at=datetime.now(),
     )
+    if selected_tmdb_id > 0:
+        row.tmdb_id = selected_tmdb_id
+        row.tmdb_type = selected_tmdb_type
+        row.tmdb_title = tmdb_title_value or clean_title
+        row.tmdb_year = tmdb_year_value
+        row.auto_mode = (auto_mode or "tmdb_auto").strip().lower() or "tmdb_auto"
+        row.auto_status = "queued"
+    else:
+        row.auto_mode = (auto_mode or "manual").strip().lower() or "manual"
+        row.auto_status = "pending"
     await row.insert()
+
+    if selected_tmdb_id > 0:
+        try:
+            from app.routes import advance_mass_content as amc
+
+            mass_row = await amc._upsert_mass_entry(
+                clean_title,
+                normalized_type,
+                tmdb_year_value,
+                f"user_request:{user.phone_number}",
+            )
+            row.auto_mass_state_id = str(mass_row.id)
+            row.auto_status = "processing"
+            row.updated_at = datetime.now()
+            await row.save()
+            amc._schedule_process(str(mass_row.id), mode="full")
+            asyncio.create_task(amc._mass_broadcast_snapshot())
+        except Exception as exc:
+            row.auto_status = "queue_failed"
+            row.auto_error = str(exc)
+            row.updated_at = datetime.now()
+            await row.save()
+
+    site = await _site_settings()
+    try:
+        await notify_admin_new_request_email(site=site, request_row=row, source="web")
+    except Exception:
+        pass
+    user_email = _extract_user_email(user)
+    if user_email:
+        site_base = str(request.base_url).rstrip("/")
+        subject, html_body, text_body = _request_received_email_payload(
+            site=site,
+            user_name=(user.first_name or user.phone_number or "").strip(),
+            title=clean_title,
+            request_type=normalized_type,
+            note=(note or "").strip(),
+            cta_url=f"{site_base}/request-content",
+        )
+        _queue_site_email(
+            site,
+            to_email=user_email,
+            subject=subject,
+            html_body=html_body,
+            text_body=text_body,
+        )
+
     target = (return_to or "").strip()
     if not target.startswith("/"):
         target = "/content"
     sep = "&" if "?" in target else "?"
     return RedirectResponse(f"{target}{sep}requested=1", status_code=303)
+
+
+@router.get("/content/request/tmdb-search")
+async def request_content_tmdb_search(request: Request, q: str = "", request_type: str = "movie"):
+    user = await get_current_user(request)
+    if not user:
+        return JSONResponse({"ok": False, "error": "Login required"}, status_code=401)
+    if not settings.TMDB_API_KEY:
+        return JSONResponse({"ok": False, "error": "TMDB is not configured."}, status_code=400)
+
+    query = (q or "").strip()
+    if len(query) < 2:
+        return JSONResponse({"ok": False, "error": "Enter at least 2 characters."}, status_code=400)
+    ctype = (request_type or "movie").strip().lower()
+    if ctype in {"tv", "webseries"}:
+        ctype = "series"
+    if ctype not in {"movie", "series"}:
+        ctype = "movie"
+
+    search = await _tmdb_search(query, "", ctype == "series")
+    results = (search or {}).get("results") or []
+    if not results:
+        alt = "movie" if ctype == "series" else "series"
+        search_alt = await _tmdb_search(query, "", alt == "series")
+        alt_results = (search_alt or {}).get("results") or []
+        if alt_results:
+            ctype = alt
+            results = alt_results
+
+    out: list[dict] = []
+    for row in results[:18]:
+        title_value = (row.get("name") if ctype == "series" else row.get("title")) or ""
+        title_value = str(title_value or "").strip()
+        if not title_value:
+            continue
+        date_value = (row.get("first_air_date") if ctype == "series" else row.get("release_date")) or ""
+        date_value = str(date_value or "").strip()
+        year_value = date_value[:4] if len(date_value) >= 4 else ""
+        poster_path = str(row.get("poster_path") or "").strip()
+        poster_url = f"https://image.tmdb.org/t/p/w300{poster_path}" if poster_path else ""
+        out.append(
+            {
+                "id": row.get("id"),
+                "title": title_value,
+                "year": year_value,
+                "type": ctype,
+                "overview": str(row.get("overview") or "").strip(),
+                "poster": poster_url,
+            }
+        )
+    return {"ok": True, "results": out, "type": ctype}
 
 
 @router.get("/request-content")
@@ -2753,6 +3125,7 @@ async def request_content_page(request: Request, return_to: str = "", prefill_ti
         "requests": my_requests,
         "return_to": (return_to or "").strip() if (return_to or "").strip().startswith("/") else "/content",
         "prefill_title": (prefill_title or "").strip(),
+        "tmdb_configured": bool(getattr(settings, "TMDB_API_KEY", "")),
     })
 
 

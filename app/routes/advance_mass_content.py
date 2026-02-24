@@ -15,9 +15,9 @@ from fastapi.templating import Jinja2Templates
 
 from app.core.config import settings
 from app.core.telethon_storage import get_message as tl_get_message
-from app.db.models import ContentItem, FileSystemItem, MassContentState, User
+from app.db.models import ContentItem, ContentRequest, FileSystemItem, MassContentState, SiteSettings, User
 from app.routes.admin import _admin_context_base, _build_title_regex, _is_admin, _publish_items
-from app.routes.content import _parse_name, _tmdb_details, _tmdb_get, _tmdb_search
+from app.routes.content import _parse_name, _tmdb_details, _tmdb_get, _tmdb_search, notify_admin_auto_upload_email
 from app.routes.dashboard import _cast_ids, get_current_user
 from app.utils.file_utils import format_size
 
@@ -4883,6 +4883,55 @@ async def _content_exists_for_row(row: MassContentState) -> tuple[bool, dict]:
     return True, payload
 
 
+async def _mark_request_auto_uploaded(mass_row: MassContentState) -> None:
+    state_id = str(getattr(mass_row, "id", "") or "").strip()
+    if not state_id:
+        return
+    linked_rows = await ContentRequest.find({"auto_mass_state_id": state_id}).to_list()
+    if not linked_rows:
+        return
+
+    has_content, payload = await _content_exists_for_row(mass_row)
+    content_path = ""
+    if has_content:
+        slug = str(payload.get("slug") or "").strip()
+        if slug:
+            content_path = f"/content/details/{slug}"
+
+    site = await SiteSettings.find_one(SiteSettings.key == "main")
+    if not site:
+        site = SiteSettings(key="main")
+        await site.insert()
+
+    now = datetime.now()
+    for req in linked_rows:
+        req.auto_status = "uploaded" if has_content else "uploaded_no_match"
+        req.auto_uploaded_at = now
+        if has_content:
+            req.fulfilled_content_id = str(payload.get("id") or "").strip() or None
+            req.fulfilled_content_title = str(payload.get("title") or "").strip() or None
+            req.fulfilled_content_type = str(payload.get("content_type") or "").strip() or None
+            req.fulfilled_content_path = content_path or None
+        req.updated_at = now
+
+        notice_key = f"{state_id}:{payload.get('id') if has_content else 'no-content'}"
+        already_notice = str(getattr(req, "admin_auto_upload_notice_key", "") or "").strip()
+        should_notify = notice_key != already_notice
+        if should_notify:
+            req.admin_auto_upload_notice_key = notice_key
+        await req.save()
+
+        if should_notify:
+            try:
+                await notify_admin_auto_upload_email(
+                    site=site,
+                    request_row=req,
+                    content_url=content_path or "/content-requests",
+                )
+            except Exception as exc:
+                logger.warning("Auto-upload admin email failed for request %s: %s", str(req.id), exc)
+
+
 async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
     lock = _MASS_LOCKS.setdefault(f"upload:{item_id}", asyncio.Lock())
     async with lock:
@@ -4979,6 +5028,10 @@ async def _run_upload_worker(item_id: str, allow_incomplete: bool) -> None:
                 row.last_error = None
                 row.updated_at = datetime.now()
                 await row.save()
+                try:
+                    await _mark_request_auto_uploaded(row)
+                except Exception as exc:
+                    logger.warning("Failed to sync content request auto-upload for %s: %s", item_id, exc)
                 await _mass_broadcast_snapshot(force=True)
             except asyncio.CancelledError:
                 row = await MassContentState.get(item_id)

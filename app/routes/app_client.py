@@ -43,6 +43,7 @@ from app.routes.content import (
     _share_params,
     _sort_catalog_cards,
     _viewer_name,
+    notify_admin_new_request_email,
 )
 from app.routes.dashboard import get_current_user
 
@@ -1185,6 +1186,11 @@ async def app_request_content(request: Request):
         updated_at=datetime.now(),
     )
     await row.insert()
+    try:
+        site = await _site_settings()
+        await notify_admin_new_request_email(site=site, request_row=row, source="app")
+    except Exception:
+        pass
     await _track_app_event(
         request,
         action="app_content_request",

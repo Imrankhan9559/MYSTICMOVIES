@@ -180,9 +180,19 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        {% set _pending_req_badge = pending_content_requests_badge|default(0)|int %}
+                        {% set _auto_uploaded_badge = auto_uploaded_pending_badge|default(0)|int %}
                         <a href="/content-requests" class="nav-link {% if request.url.path.startswith('/content-requests') or request.url.path.startswith('/dashboard/content-requests') or request.url.path.startswith('/Content-Requests') or request.url.path.startswith('/ContentRequests') %}active{% endif %}">
-                            <i class="nav-icon fas fa-inbox"></i>
-                            <p>Content Requests</p>
+                            <i class="nav-icon fas {% if _pending_req_badge > 0 or _auto_uploaded_badge > 0 %}fa-bell text-warning{% else %}fa-inbox{% endif %}"></i>
+                            <p>
+                                Content Requests
+                                {% if _pending_req_badge > 0 %}
+                                <span class="badge badge-danger ml-2" title="Pending requests">{{ _pending_req_badge }}</span>
+                                {% endif %}
+                                {% if _auto_uploaded_badge > 0 %}
+                                <span class="badge badge-warning ml-1" title="Auto-uploaded content pending admin review"><i class="fas fa-upload"></i> {{ _auto_uploaded_badge }}</span>
+                                {% endif %}
+                            </p>
                         </a>
                     </li>
                     <li class="nav-item">

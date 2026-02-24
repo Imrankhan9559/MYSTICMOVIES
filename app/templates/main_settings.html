@@ -174,6 +174,60 @@
                             <label>Footer Text</label>
                             <input name="footer_text" value="{{ site.footer_text if site else 'MysticMovies' }}" class="form-control" />
                         </div>
+
+                        <div class="col-12">
+                            <hr class="border-secondary">
+                            <h5 class="mb-3"><i class="fas fa-envelope"></i> SMTP Email Settings</h5>
+                        </div>
+                        <div class="form-group col-md-3">
+                            <label>Enable SMTP</label>
+                            <select name="smtp_enabled" class="form-control">
+                                <option value="1" {% if site and site.smtp_enabled %}selected{% endif %}>Enabled</option>
+                                <option value="0" {% if not site or not site.smtp_enabled %}selected{% endif %}>Disabled</option>
+                            </select>
+                        </div>
+                        <div class="form-group col-md-5">
+                            <label>SMTP Host</label>
+                            <input name="smtp_host" value="{{ site.smtp_host if site else '' }}" class="form-control" placeholder="smtp.gmail.com" />
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>SMTP Port</label>
+                            <input name="smtp_port" value="{{ site.smtp_port if site else 587 }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>STARTTLS</label>
+                            <select name="smtp_use_tls" class="form-control">
+                                <option value="1" {% if not site or site.smtp_use_tls %}selected{% endif %}>On</option>
+                                <option value="0" {% if site and not site.smtp_use_tls %}selected{% endif %}>Off</option>
+                            </select>
+                        </div>
+                        <div class="form-group col-md-2">
+                            <label>SSL</label>
+                            <select name="smtp_use_ssl" class="form-control">
+                                <option value="0" {% if not site or not site.smtp_use_ssl %}selected{% endif %}>Off</option>
+                                <option value="1" {% if site and site.smtp_use_ssl %}selected{% endif %}>On</option>
+                            </select>
+                        </div>
+                        <div class="form-group col-md-4">
+                            <label>SMTP Username</label>
+                            <input name="smtp_username" value="{{ site.smtp_username if site else '' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-4">
+                            <label>SMTP Password / App Password</label>
+                            <input type="password" name="smtp_password" value="{{ site.smtp_password if site else '' }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-4">
+                            <label>From Name</label>
+                            <input name="smtp_from_name" value="{{ site.smtp_from_name if site else (site.site_name if site else 'MysticMovies') }}" class="form-control" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>From Email</label>
+                            <input name="smtp_from_email" value="{{ site.smtp_from_email if site else '' }}" class="form-control" placeholder="no-reply@yourdomain.com" />
+                        </div>
+                        <div class="form-group col-md-6">
+                            <label>Notes</label>
+                            <input class="form-control" value="Use Gmail App Password if using Gmail SMTP." readonly />
+                        </div>
                     </div>
                     <button class="btn btn-warning">Save Site Settings</button>
                 </form>
